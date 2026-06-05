@@ -1,0 +1,287 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://conclave.dev/schemas/node-output.schema.json",
+  "title": "NodeOutput",
+  "description": "Discriminated union of all node output types. Validate against this schema to accept any valid node output.",
+  "oneOf": [
+    { "$ref": "#/$defs/PlanResult" },
+    { "$ref": "#/$defs/JudgeResult" },
+    { "$ref": "#/$defs/NpcIntent" },
+    { "$ref": "#/$defs/WriterDraft" },
+    { "$ref": "#/$defs/MemoryProposalOutput" },
+    { "$ref": "#/$defs/StateChangeProposalOutput" },
+    { "$ref": "#/$defs/ArtifactPatchOutput" }
+  ],
+  "$defs": {
+    "PlanResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "mode", "nodes"],
+      "properties": {
+        "type": {
+          "const": "plan_result"
+        },
+        "mode": {
+          "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/RunMode"
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "retrieval": {
+          "type": "object",
+          "properties": {
+            "events": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "foreshadowing": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "requires_consistency_check": {
+          "type": "boolean"
+        }
+      }
+    },
+    "JudgeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "facts_valid"],
+      "properties": {
+        "type": {
+          "const": "judge_result"
+        },
+        "facts_valid": {
+          "type": "boolean"
+        },
+        "consequences": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "risk_level": {
+          "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/RiskLevel"
+        }
+      }
+    },
+    "NpcIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "character_id", "action"],
+      "properties": {
+        "type": {
+          "const": "npc_intent"
+        },
+        "character_id": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "dialogue_draft": {
+          "type": "string"
+        },
+        "visible_reaction": {
+          "type": "string"
+        }
+      }
+    },
+    "WriterDraft": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "narrative_text", "memory_candidates"],
+      "properties": {
+        "type": {
+          "const": "writer_draft"
+        },
+        "narrative_text": {
+          "type": "string"
+        },
+        "memory_candidates": {
+          "$ref": "#/$defs/MemoryProposal"
+        }
+      }
+    },
+    "MemoryProposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["events", "state_changes", "foreshadowing"],
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EventCandidate"
+          }
+        },
+        "state_changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StateChangeCandidate"
+          }
+        },
+        "foreshadowing": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ForeshadowingCandidate"
+          }
+        },
+        "summary": {
+          "type": "string"
+        }
+      }
+    },
+    "MemoryProposalOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "events", "state_changes", "foreshadowing"],
+      "properties": {
+        "type": {
+          "const": "memory_proposal"
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EventCandidate"
+          }
+        },
+        "state_changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StateChangeCandidate"
+          }
+        },
+        "foreshadowing": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ForeshadowingCandidate"
+          }
+        },
+        "summary": {
+          "type": "string"
+        }
+      }
+    },
+    "StateChangeProposalOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "proposed_by", "risk", "changes"],
+      "properties": {
+        "type": {
+          "const": "state_change_proposal"
+        },
+        "proposed_by": {
+          "type": "string"
+        },
+        "risk": {
+          "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/RiskLevel"
+        },
+        "changes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["op", "target", "to"],
+            "properties": {
+              "op": {
+                "enum": ["update", "add", "remove"]
+              },
+              "target": {
+                "type": "string"
+              },
+              "from": {},
+              "to": {},
+              "evidence_turns": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "ArtifactPatchOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "artifact_id", "patch_type", "payload"],
+      "properties": {
+        "type": {
+          "const": "artifact_patch"
+        },
+        "artifact_id": {
+          "type": "string"
+        },
+        "patch_type": {
+          "enum": ["full", "state_diff", "json_patch", "props"]
+        },
+        "payload": {
+          "type": "object"
+        }
+      }
+    },
+    "EventCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_type", "content", "characters_involved", "importance"],
+      "properties": {
+        "event_type": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "characters_involved": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "importance": {
+          "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/Importance"
+        }
+      }
+    },
+    "StateChangeCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "value"],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "value": {}
+      }
+    },
+    "ForeshadowingCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content", "importance", "trigger_conditions"],
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "importance": {
+          "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/Importance"
+        },
+        "trigger_conditions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

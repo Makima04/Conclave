@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://conclave.dev/schemas/agent-graph.schema.json",
+  "title": "AgentGraph",
+  "description": "Directed graph of agent nodes with edges, entry point, and runtime limits.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["nodes", "edges", "entry"],
+  "properties": {
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/Node"
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Edge"
+      }
+    },
+    "entry": {
+      "type": "string",
+      "description": "ID of the entry node"
+    },
+    "max_loop_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10,
+      "default": 2
+    },
+    "max_total_nodes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 20,
+      "default": 8
+    },
+    "budget": {
+      "$ref": "#/$defs/Budget"
+    }
+  },
+  "$defs": {
+    "Node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "type": {
+          "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/NodeType"
+        },
+        "config": {
+          "type": "object"
+        }
+      }
+    },
+    "Edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "type"],
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/EdgeType"
+        },
+        "condition": {
+          "type": "string"
+        }
+      }
+    },
+    "Budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_tokens_per_turn": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_duration_ms": {
+          "type": "integer",
+          "minimum": 1000
+        }
+      }
+    }
+  }
+}

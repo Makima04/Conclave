@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://conclave.dev/schemas/context-bundle.schema.json",
+  "title": "ContextBundle",
+  "description": "Context bundle assembled by the runtime for each agent/LLM call. Contains task, conversation history, state, and (optionally) permission-isolation fields.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task", "recent_context", "structured_state", "events", "foreshadowing"],
+  "properties": {
+    "agent_id": {
+      "type": "string",
+      "description": "Agent ID, used for multi-agent permission isolation"
+    },
+    "task": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recent_context": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ContextMessage"
+      }
+    },
+    "structured_state": {
+      "type": "object",
+      "description": "Freeform JSON state snapshot"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "foreshadowing": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "scene_summary": {
+      "type": "string"
+    },
+    "visible_scene": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "P2-C permission isolation: scene elements visible to this agent"
+    },
+    "allowed_memory": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "P2-C permission isolation: memory entries accessible to this agent"
+    },
+    "known_state": {
+      "type": "object",
+      "description": "P2-C permission isolation: state slice known to this agent"
+    },
+    "forbidden_topics": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "P2-C permission isolation: topics this agent must not reference"
+    }
+  },
+  "$defs": {
+    "ContextMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "content", "turn_number"],
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "turn_number": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

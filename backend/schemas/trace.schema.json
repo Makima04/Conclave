@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://conclave.dev/schemas/trace.schema.json",
+  "title": "TraceRecord",
+  "description": "Execution trace recorded after each node runs in the agent graph.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "session_id", "turn_number", "node_id", "node_type", "input_summary", "output_summary", "model_config", "token_usage", "created_at"],
+  "properties": {
+    "id": {
+      "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/UUID"
+    },
+    "session_id": {
+      "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/UUID"
+    },
+    "turn_number": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "node_id": {
+      "type": "string"
+    },
+    "node_type": {
+      "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/NodeType"
+    },
+    "agent_id": {
+      "type": "string"
+    },
+    "input_summary": {
+      "type": "string"
+    },
+    "output_summary": {
+      "type": "string"
+    },
+    "output_type": {
+      "type": "string"
+    },
+    "context_bundle": {
+      "$ref": "https://conclave.dev/schemas/context-bundle.schema.json"
+    },
+    "model_config": {
+      "$ref": "#/$defs/ModelConfig"
+    },
+    "token_usage": {
+      "$ref": "#/$defs/TokenUsage"
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "risk_level": {
+      "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/RiskLevel"
+    },
+    "error": {
+      "type": "string"
+    },
+    "created_at": {
+      "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/Timestamp"
+    }
+  },
+  "$defs": {
+    "ModelConfig": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["model"],
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "TokenUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prompt_tokens", "completion_tokens"],
+      "properties": {
+        "prompt_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "completion_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_tokens": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

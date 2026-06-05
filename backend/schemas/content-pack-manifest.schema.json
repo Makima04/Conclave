@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://conclave.dev/schemas/content-pack-manifest.schema.json",
+  "title": "ContentPackManifest",
+  "description": "Manifest for content packs (character, world, agent graph, plugin). Validates the manifest.json inside a content pack.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pack_type", "id", "name", "version"],
+  "properties": {
+    "pack_type": {
+      "enum": ["character", "world", "graph", "plugin"]
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "author": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "platform_version": {
+      "type": "string"
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

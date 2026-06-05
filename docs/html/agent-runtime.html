@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Runtime 规范 - 多 Agent RP / 写作平台</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --ink: #17202a;
+      --muted: #617083;
+      --line: #d9dee7;
+      --accent: #0d766e;
+      --blue: #315fba;
+      --orange: #9a4d12;
+      --red: #a43f3f;
+      --soft: #edf5f4;
+      --soft-blue: #eef3fb;
+      --soft-orange: #fff3e6;
+      --shadow: 0 10px 30px rgba(23, 32, 42, 0.08);
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.6;
+    }
+
+    header {
+      background: #fff;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .wrap {
+      width: min(1180px, calc(100vw - 40px));
+      margin: 0 auto;
+    }
+
+    .hero {
+      padding: 48px 0 34px;
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: clamp(34px, 5vw, 58px);
+      max-width: 960px;
+    }
+
+    h2 {
+      font-size: 28px;
+      margin-bottom: 16px;
+    }
+
+    h3 {
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+
+    p { margin: 0 0 14px; }
+
+    .lead {
+      max-width: 920px;
+      color: var(--muted);
+      font-size: 18px;
+      margin-top: 18px;
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      border-radius: 999px;
+      padding: 4px 9px;
+      background: #eef1f5;
+      color: #344050;
+      font-size: 13px;
+    }
+
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(255, 255, 255, 0.94);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(12px);
+    }
+
+    nav .wrap {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 10px 0;
+    }
+
+    nav a {
+      flex: 0 0 auto;
+      color: var(--ink);
+      text-decoration: none;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-size: 14px;
+      background: #fff;
+    }
+
+    main {
+      padding: 34px 0 70px;
+    }
+
+    section {
+      margin-top: 34px;
+    }
+
+    .band {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 26px;
+      box-shadow: var(--shadow);
+    }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+    .card {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px;
+    }
+
+    .card.tint { background: var(--soft); border-color: #c7e1de; }
+    .card.blue { background: var(--soft-blue); border-color: #c9d8f3; }
+    .card.warn { background: var(--soft-orange); border-color: #efd1ad; }
+
+    .matrix {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .matrix th,
+    .matrix td {
+      border: 1px solid var(--line);
+      padding: 12px;
+      vertical-align: top;
+      text-align: left;
+      font-size: 14px;
+    }
+
+    .matrix th {
+      background: #eef1f5;
+      color: #263341;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .step {
+      min-height: 126px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fbfcfd;
+      padding: 14px;
+    }
+
+    .step small {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .step strong {
+      display: block;
+      margin: 5px 0;
+    }
+
+    code {
+      color: #25324a;
+      background: #eef1f5;
+      border-radius: 5px;
+      padding: 2px 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 12px 0 0;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #f8fafc;
+      overflow-x: auto;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      border-radius: 0;
+    }
+
+    ul {
+      margin: 10px 0 0;
+      padding-left: 20px;
+    }
+
+    li { margin: 6px 0; }
+
+    .decision {
+      border-left: 4px solid var(--accent);
+      padding-left: 14px;
+      margin: 14px 0 0;
+      color: #23313f;
+    }
+
+    @media (max-width: 1080px) {
+      .grid.two,
+      .grid.three,
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .wrap {
+        width: min(100vw - 24px, 1180px);
+      }
+
+      .band {
+        padding: 20px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap hero">
+      <h1>Agent Runtime 规范</h1>
+      <p class="lead">定义平台自己的 RP Agent 编排内核：如何选择运行模式、执行 Agent 图、装配上下文、控制权限、提交状态、记录 trace，以及如何支持高级自由图但保持安全边界。</p>
+      <div class="tag-row">
+        <span class="tag">RP Runtime</span>
+        <span class="tag">Agent Graph</span>
+        <span class="tag">Structured Output</span>
+        <span class="tag">Proposal Commit</span>
+        <span class="tag">Trace</span>
+        <span class="tag">Advanced Graph</span>
+      </div>
+    </div>
+  </header>
+
+  <nav>
+    <div class="wrap">
+      <a href="docs.html">文档中心</a>
+      <a href="index.html">架构首页</a>
+      <a href="agent-boundaries.html">Agent 边界</a>
+      <a href="#definition">Runtime 定义</a>
+      <a href="#modes">运行模式</a>
+      <a href="#graph-levels">图分级</a>
+      <a href="#nodes">节点与边</a>
+      <a href="#turn">每轮流程</a>
+      <a href="#outputs">输出协议</a>
+      <a href="#commit">状态提交</a>
+      <a href="#advanced">自由图边界</a>
+      <a href="#tests">验收测试</a>
+    </div>
+  </nav>
+
+  <main class="wrap">
+    <section id="definition" class="band">
+      <h2>Runtime 定义</h2>
+      <p>Agent Runtime 是平台自己的 RP 编排内核，不直接绑定 LangGraph、AutoGen、CrewAI 或 OpenAI Agents SDK。外部框架可以作为参考或 adapter，但不能决定平台的角色、记忆、权限、世界状态和内容包格式。</p>
+      <div class="grid two">
+        <div class="card tint">
+          <h3>Runtime 负责控制</h3>
+          <ul>
+            <li>选择本轮 Agent 图。</li>
+            <li>装配每个节点的 <code>ContextBundle</code>。</li>
+            <li>校验权限、成本、循环和输出格式。</li>
+            <li>提交状态变化并记录 trace。</li>
+          </ul>
+        </div>
+        <div class="card warn">
+          <h3>Agent 负责建议</h3>
+          <ul>
+            <li>输出计划、裁决、意图、草稿或候选变更。</li>
+            <li>不能直接读取未授权信息。</li>
+            <li>不能直接写长期状态。</li>
+            <li>不能直接调用未授权工具。</li>
+          </ul>
+        </div>
+      </div>
+      <p class="decision"><strong>核心原则：</strong>Runtime 负责控制，Agent 负责建议。</p>
+    </section>
+
+    <section id="modes" class="band">
+      <h2>运行模式</h2>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>模式</th>
+            <th>用途</th>
+            <th>默认图</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>single_agent</code></td>
+            <td>类 SillyTavern 单角色会话。</td>
+            <td>UserInput -> Npc/Writer -> Memory</td>
+          </tr>
+          <tr>
+            <td><code>strict_director</code></td>
+            <td>超真实模式，用户不能直接口胡世界事实。</td>
+            <td>Director -> WorldJudge -> NPCs -> Writer -> Memory</td>
+          </tr>
+          <tr>
+            <td><code>collaborative_director</code></td>
+            <td>用户可提出剧情方向，导演负责合理化。</td>
+            <td>Director -> Router -> NPCs/Writer -> Consistency -> Memory</td>
+          </tr>
+          <tr>
+            <td><code>free_writing</code></td>
+            <td>小说创作模式，用户叙事权更高。</td>
+            <td>Writer -> Consistency -> Memory</td>
+          </tr>
+          <tr>
+            <td><code>multi_npc_scene</code></td>
+            <td>多 NPC 场景，按可见性、动机和关系召唤角色。</td>
+            <td>Director -> Router -> NPC parallel -> Writer -> Memory</td>
+          </tr>
+          <tr>
+            <td><code>advanced_graph</code></td>
+            <td>高级创作者提供自定义 Agent Graph Pack。</td>
+            <td>由图包定义，但受 Runtime 安全限制。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="graph-levels" class="band">
+      <h2>图分级与责任边界</h2>
+      <div class="grid three">
+        <div class="card tint">
+          <h3>官方模板图</h3>
+          <p>平台维护，默认推荐。平台负责稳定性、基础质量和安全边界。</p>
+        </div>
+        <div class="card blue">
+          <h3>自动生成图</h3>
+          <p>由角色卡和世界书生成。平台负责基础稳定，创作者负责内容质量。</p>
+        </div>
+        <div class="card warn">
+          <h3>高级自由图</h3>
+          <p>高级创作者制作，其他用户可导入。平台负责安全边界，不负责第三方图包剧情质量。</p>
+        </div>
+      </div>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>图类型</th>
+            <th>平台负责</th>
+            <th>平台不负责</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>OfficialGraphTemplate</code></td>
+            <td>质量、安全、成本上限、稳定性。</td>
+            <td>用户自改后的效果。</td>
+          </tr>
+          <tr>
+            <td><code>GeneratedGraph</code></td>
+            <td>生成规则、基础校验、安全限制。</td>
+            <td>角色卡和世界书原始质量。</td>
+          </tr>
+          <tr>
+            <td><code>CommunityGraphPack</code></td>
+            <td>schema 校验、权限校验、沙箱、trace。</td>
+            <td>剧情质量、Prompt 质量、成本经济性、是否好玩。</td>
+          </tr>
+          <tr>
+            <td><code>UnverifiedGraphPack</code></td>
+            <td>强限制运行、禁止高危权限、显示风险提示。</td>
+            <td>第三方图包稳定性和输出质量。</td>
+          </tr>
+          <tr>
+            <td><code>TrustedGraphPack</code></td>
+            <td>仍负责安全边界和权限限制。</td>
+            <td>创作者设计导致的叙事问题。</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="decision"><strong>责任边界：</strong>质量风险由图包创作者和使用者承担，安全边界由平台承担。</p>
+    </section>
+
+    <section id="nodes" class="band">
+      <h2>节点与边</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>V1 节点类型</h3>
+          <ul>
+            <li><code>DirectorNode</code>：规划、权限、召唤、裁决。</li>
+            <li><code>RouterNode</code>：条件分支和模式路由。</li>
+            <li><code>WorldJudgeNode</code>：世界规则和事实裁决。</li>
+            <li><code>NpcNode</code>：NPC 意图、台词、行为反应。</li>
+            <li><code>WriterNode</code>：最终叙事合成。</li>
+            <li><code>MemoryNode</code>：摘要、事件和状态候选变更。</li>
+            <li><code>ConsistencyNode</code>：OOC、冲突和伏笔检查。</li>
+            <li><code>ArtifactNode</code>：UI artifact 状态和 patch。</li>
+            <li><code>ToolNode</code>：受限工具调用。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>边类型</h3>
+          <ul>
+            <li><code>sequence</code>：顺序执行。</li>
+            <li><code>condition</code>：按结构化条件分支。</li>
+            <li><code>handoff</code>：受控 Agent 交接。</li>
+            <li><code>parallel</code>：并行执行多个节点。</li>
+            <li><code>merge</code>：合并多个节点结果。</li>
+            <li><code>fallback</code>：失败后的备用路径。</li>
+          </ul>
+        </div>
+      </div>
+      <p class="decision"><strong>后续扩展：</strong>V2/V3 可加入 <code>PluginNode</code>、<code>CustomPromptNode</code>、<code>ParallelGroupNode</code>、<code>HumanApprovalNode</code>。</p>
+    </section>
+
+    <section id="turn" class="band">
+      <h2>每轮执行流程</h2>
+      <div class="flow">
+        <div class="step"><small>01</small><strong>UserInput</strong><span>用户输入、创作指令或角色行动。</span></div>
+        <div class="step"><small>02</small><strong>Load State</strong><span>读取会话、世界、角色、记忆和图配置。</span></div>
+        <div class="step"><small>03</small><strong>Select Graph</strong><span>按世界模式选择官方图、生成图或高级图。</span></div>
+        <div class="step"><small>04</small><strong>Plan</strong><span>Director / Router 生成本轮执行计划。</span></div>
+        <div class="step"><small>05</small><strong>Execute</strong><span>Runtime 裁剪上下文并执行节点。</span></div>
+        <div class="step"><small>06</small><strong>Validate</strong><span>校验输出、权限、冲突和风险。</span></div>
+        <div class="step"><small>07</small><strong>Commit</strong><span>输出给用户，提交状态，保存 trace。</span></div>
+      </div>
+    </section>
+
+    <section id="outputs" class="band">
+      <h2>节点输出协议</h2>
+      <p>节点输出必须结构化。自然语言可以作为字段值，但不能作为唯一结果。</p>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>输出类型</th>
+            <th>来源节点</th>
+            <th>用途</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>PlanResult</code></td>
+            <td>Director / Router</td>
+            <td>本轮调用哪些节点、是否检索、是否审查、是否需要用户确认。</td>
+          </tr>
+          <tr>
+            <td><code>JudgeResult</code></td>
+            <td>WorldJudge</td>
+            <td>用户行为或剧情事实是否成立，以及后果。</td>
+          </tr>
+          <tr>
+            <td><code>NpcIntent</code></td>
+            <td>NpcNode</td>
+            <td>NPC 的行动意图、台词草稿和可见反应。</td>
+          </tr>
+          <tr>
+            <td><code>WriterDraft</code></td>
+            <td>WriterNode</td>
+            <td>用户可见叙事文本。</td>
+          </tr>
+          <tr>
+            <td><code>MemoryProposal</code></td>
+            <td>MemoryNode</td>
+            <td>摘要、事件、伏笔和状态候选变更。</td>
+          </tr>
+          <tr>
+            <td><code>StateChangeProposal</code></td>
+            <td>Memory / Tool / Plugin</td>
+            <td>候选状态变更，必须经过 Runtime 提交。</td>
+          </tr>
+          <tr>
+            <td><code>ArtifactPatch</code></td>
+            <td>ArtifactNode</td>
+            <td>UI artifact 的 props、state diff 或 patch。</td>
+          </tr>
+        </tbody>
+      </table>
+      <pre><code>{
+  "type": "plan_result",
+  "mode": "strict_director",
+  "nodes": ["world_judge", "npc_archivist", "writer", "memory"],
+  "retrieval": {
+    "events": ["silver_key", "old_archive"],
+    "foreshadowing": ["blood_moon_key"]
+  },
+  "requires_consistency_check": true
+}</code></pre>
+    </section>
+
+    <section id="commit" class="band">
+      <h2>状态提交与风险等级</h2>
+      <p>Runtime 使用 proposal + commit。Agent 只能提出候选变更，Runtime 根据风险等级和权限决定是否提交。</p>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>风险</th>
+            <th>例子</th>
+            <th>提交规则</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>low</code></td>
+            <td>普通事件摘要、物品数量、短期情绪、场景过渡。</td>
+            <td>schema 和权限通过后可自动提交。</td>
+          </tr>
+          <tr>
+            <td><code>medium</code></td>
+            <td>关系变化、任务状态、伏笔 hint、角色短期目标变化。</td>
+            <td>Director 审核后提交。</td>
+          </tr>
+          <tr>
+            <td><code>high</code></td>
+            <td>核心人格变化、死亡、阵营变化、世界规则变化、隐藏秘密公开。</td>
+            <td>Director 审核，可选用户确认，必须记录证据链。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="advanced" class="band">
+      <h2>高级自由图限制</h2>
+      <p>自由图可以开放给高级创作者，并允许其他用户导入使用。但 Runtime 必须限制循环、并发、成本、工具和写入权限。</p>
+      <div class="grid two">
+        <div class="card tint">
+          <h3>V1 建议限制</h3>
+          <ul>
+            <li><code>max_loop_count</code>：2-3。</li>
+            <li><code>max_total_nodes_per_turn</code>：12。</li>
+            <li><code>max_parallel_nodes</code>：3。</li>
+            <li><code>max_turn_runtime_ms</code>：按模型和部署配置。</li>
+            <li><code>max_token_budget_per_turn</code>：由用户或世界书设置。</li>
+          </ul>
+        </div>
+        <div class="card warn">
+          <h3>默认禁用</h3>
+          <ul>
+            <li>未授权插件代码。</li>
+            <li>任意网络访问。</li>
+            <li>本地文件访问。</li>
+            <li>直接写长期记忆。</li>
+            <li>读取隐藏设定和用户私密数据。</li>
+          </ul>
+        </div>
+      </div>
+      <p class="decision"><strong>导入提示：</strong>高级 Agent Graph Pack 由创作者自行设计。平台会进行基础安全校验和运行时限制，但不保证第三方图包的叙事质量、角色一致性、成本效率或稳定性。</p>
+    </section>
+
+    <section id="tests" class="band">
+      <h2>验收测试</h2>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>测试场景</th>
+            <th>通过标准</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>严格导演模式下用户口胡世界事实</td>
+            <td>Runtime 调用 WorldJudge，拒绝或合理化，不能直接写入事实。</td>
+          </tr>
+          <tr>
+            <td>多 NPC 场景</td>
+            <td>Runtime 只召唤相关且可见的 NPC，并给每个 NPC 独立 ContextBundle。</td>
+          </tr>
+          <tr>
+            <td>自由图出现循环</td>
+            <td>超过 max_loop_count 后停止并走 fallback。</td>
+          </tr>
+          <tr>
+            <td>插件节点请求隐藏设定</td>
+            <td>未授权时拒绝，并记录 trace。</td>
+          </tr>
+          <tr>
+            <td>MemoryNode 提出高风险状态变更</td>
+            <td>不能自动提交，必须 Director 审核并保留证据链。</td>
+          </tr>
+          <tr>
+            <td>节点输出 JSON 无法解析</td>
+            <td>Runtime 触发修复、重试或 fallback，不能把错误结构写入状态。</td>
+          </tr>
+          <tr>
+            <td>社区图包成本过高</td>
+            <td>Runtime 按预算中止，并提示用户这是第三方图包质量/成本风险。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

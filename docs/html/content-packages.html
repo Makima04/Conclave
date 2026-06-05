@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>内容包规范 - 多 Agent RP / 写作平台</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --panel: #ffffff; --ink: #17202a; --muted: #617083;
+      --line: #d9dee7; --accent: #0d766e; --blue: #315fba; --orange: #9a4d12;
+      --soft: #edf5f4; --soft-blue: #eef3fb; --soft-orange: #fff3e6;
+      --shadow: 0 10px 30px rgba(23, 32, 42, 0.08); --radius: 8px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.6; }
+    header { background: #fff; border-bottom: 1px solid var(--line); }
+    .wrap { width: min(1180px, calc(100vw - 40px)); margin: 0 auto; }
+    .hero { padding: 48px 0 34px; }
+    h1, h2, h3 { margin: 0; line-height: 1.18; }
+    h1 { font-size: clamp(34px, 5vw, 58px); max-width: 900px; }
+    h2 { font-size: 28px; margin-bottom: 16px; }
+    h3 { font-size: 18px; margin-bottom: 8px; }
+    p { margin: 0 0 14px; }
+    .lead { max-width: 900px; color: var(--muted); font-size: 18px; margin-top: 18px; }
+    .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+    .tags span { display: inline-block; background: var(--soft); color: var(--accent); border-radius: 999px; padding: 3px 10px; font-size: 13px; }
+    nav { position: sticky; top: 0; z-index: 10; background: rgba(255,255,255,0.94); border-bottom: 1px solid var(--line); backdrop-filter: blur(12px); }
+    nav .wrap { display: flex; gap: 8px; overflow-x: auto; padding: 10px 0; }
+    nav a { flex: 0 0 auto; color: var(--ink); text-decoration: none; border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px; font-size: 14px; background: #fff; }
+    main { padding: 34px 0 70px; }
+    section { margin-top: 34px; }
+    .band { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 26px; box-shadow: var(--shadow); }
+    .grid { display: grid; gap: 16px; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+    .card.tint { background: var(--soft); border-color: #c7e1de; }
+    .card.blue { background: var(--soft-blue); border-color: #c9d8f3; }
+    .card.warn { background: var(--soft-orange); border-color: #efd1ad; }
+    .card a { color: var(--accent); font-weight: 800; text-decoration: none; }
+    .status { display: inline-flex; align-items: center; min-height: 26px; border-radius: 999px; padding: 3px 8px; background: #eef1f5; color: #344050; font-size: 13px; margin-bottom: 10px; }
+    .matrix { width: 100%; border-collapse: collapse; background: #fff; border-radius: var(--radius); overflow: hidden; }
+    .matrix th, .matrix td { border: 1px solid var(--line); padding: 12px; vertical-align: top; text-align: left; font-size: 14px; }
+    .matrix th { background: #eef1f5; color: #263341; }
+    ul, ol { margin: 10px 0 0; padding-left: 20px; }
+    li { margin: 6px 0; }
+    code { color: #25324a; background: #eef1f5; border-radius: 5px; padding: 2px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
+    pre { background: #1e2430; color: #cfd8e3; border-radius: var(--radius); padding: 18px; overflow-x: auto; font-size: 13px; line-height: 1.55; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
+    .flow-step { display: flex; align-items: flex-start; gap: 14px; margin: 10px 0; }
+    .flow-num { flex: 0 0 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; }
+    @media (max-width: 900px) {
+      .grid.two, .grid.three, .grid.four { grid-template-columns: 1fr; }
+      .wrap { width: min(100vw - 24px, 1180px); }
+      .band { padding: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap hero">
+      <h1>内容包规范</h1>
+      <p class="lead">定义平台四种内容包（Character Pack、World Pack、Agent Graph Pack、Plugin Pack）的结构、manifest schema、资源约定、版本规则、导入导出流程和校验机制。</p>
+      <div class="tags">
+        <span>Content Pack</span><span>Character Pack</span><span>World Pack</span><span>Agent Graph Pack</span><span>Manifest</span><span>SemVer</span><span>Import Export</span>
+      </div>
+    </div>
+  </header>
+
+  <nav>
+    <div class="wrap">
+      <a href="docs.html">文档中心</a>
+      <a href="index.html">架构首页</a>
+      <a href="#common">通用规范</a>
+      <a href="#character">角色包</a>
+      <a href="#world">世界包</a>
+      <a href="#graph">行为包</a>
+      <a href="#plugin">能力包</a>
+      <a href="#import">导入导出</a>
+      <a href="#sillytavern">SillyTavern 迁移</a>
+      <a href="#risks">风险</a>
+      <a href="#tests">验收测试</a>
+    </div>
+  </nav>
+
+  <main class="wrap">
+    <section class="band">
+      <h2>目标</h2>
+      <ul>
+        <li>为四种内容包提供统一的结构和校验规范，让创作者、导入工具和 Runtime 都能以相同方式处理内容包。</li>
+        <li>普通创作者可以通过 Character Pack 和 World Pack 快速开始 RP，不需要理解 Agent 图。</li>
+        <li>高级创作者可以通过 Agent Graph Pack 自定义编排逻辑。</li>
+        <li>SillyTavern 角色卡、世界书和预设有明确的迁移路径。</li>
+        <li>所有内容包可导入、可导出、可校验、可版本管理。</li>
+      </ul>
+    </section>
+
+    <section id="common" class="band">
+      <h2>通用规范</h2>
+      <h3>Manifest Schema</h3>
+      <p>每个内容包的根目录必须包含 <code>manifest.json</code>。</p>
+      <pre><code>{
+  "pack_type": "character",
+  "id": "char_archivist",
+  "name": "档案管理员",
+  "version": "1.2.0",
+  "author": "creator_name",
+  "description": "旧档案馆的守护者，知晓古老文献和血月仪式的部分真相。",
+  "platform_version": "&gt;=0.1.0",
+  "dependencies": [],
+  "assets": ["assets/portrait.png", "assets/voice_sample.mp3"]
+}</code></pre>
+      <table class="matrix">
+        <thead><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>pack_type</code></td><td>string</td><td>是</td><td><code>character</code>、<code>world</code>、<code>graph</code>、<code>plugin</code>。</td></tr>
+          <tr><td><code>id</code></td><td>string</td><td>是</td><td>全局唯一标识，只允许 <code>[a-z0-9_]</code>。</td></tr>
+          <tr><td><code>name</code></td><td>string</td><td>是</td><td>人类可读名称。</td></tr>
+          <tr><td><code>version</code></td><td>string</td><td>是</td><td>SemVer 格式。</td></tr>
+          <tr><td><code>author</code></td><td>string</td><td>否</td><td>创作者标识。</td></tr>
+          <tr><td><code>description</code></td><td>string</td><td>否</td><td>一句话描述。</td></tr>
+          <tr><td><code>platform_version</code></td><td>string</td><td>否</td><td>兼容的平台版本范围，SemVer range 格式。</td></tr>
+          <tr><td><code>dependencies</code></td><td>string[]</td><td>否</td><td>依赖的其他包 id。</td></tr>
+          <tr><td><code>assets</code></td><td>string[]</td><td>否</td><td>包内资源文件路径列表。</td></tr>
+        </tbody>
+      </table>
+
+      <h3>版本规则</h3>
+      <ul>
+        <li>使用 Semantic Versioning：<code>MAJOR.MINOR.PATCH</code>。</li>
+        <li><code>MAJOR</code>：不兼容的结构变更。<code>MINOR</code>：向后兼容的功能新增。<code>PATCH</code>：向后兼容的修复。</li>
+      </ul>
+
+      <h3>资源文件约定</h3>
+      <ul>
+        <li>所有资源放在 <code>assets/</code> 目录下。</li>
+        <li>图片：<code>png</code>、<code>jpg</code>、<code>webp</code>，单文件不超过 5MB。</li>
+        <li>音频：<code>mp3</code>、<code>ogg</code>、<code>wav</code>，单文件不超过 20MB。</li>
+        <li>字体：<code>woff2</code>，不超过 2MB。</li>
+        <li>资源路径只允许引用包内文件，不允许绝对路径或 <code>..</code> 逃逸。</li>
+      </ul>
+    </section>
+
+    <section id="character" class="band">
+      <h2>Character Pack — 角色包</h2>
+      <p>角色包定义一个 NPC 或用户角色的完整信息，是 RP 最基础的内容单元。</p>
+      <h3>目录结构</h3>
+      <pre><code>character/
+  manifest.json          # 包元数据，pack_type = "character"
+  public.md              # 公开设定：外貌、身份、公开背景、说话风格
+  hidden.md              # 隐藏设定：秘密、真实动机、隐藏知识
+  personality.json       # PersonalityCore + 可演化 PersonalityState 初始值
+  relationships.json     # 初始关系图
+  greeting.md            # 开场白
+  example_dialogues.md   # 示例对话（可选）
+  assets/                # 头像、语音、背景图等资源</code></pre>
+
+      <h3>personality.json</h3>
+      <pre><code>{
+  "core": {
+    "values": ["knowledge_preservation", "loyalty_to_institution"],
+    "fears": ["loss_of_memory", "being_forgotten"],
+    "desires": ["uncover_blood_moon_truth"],
+    "speech_style": "正式、偶尔引用古籍，语速缓慢",
+    "knowledge_boundary": ["archive_layout", "ancient_scripts"],
+    "ooc_redlines": ["sudden_betrayal_without_cause", "casual_violence"]
+  },
+  "initial_state": {
+    "mood": "calm_vigilant",
+    "trust_player": 0.3,
+    "short_term_goals": ["assess_player_intent"],
+    "behavioral_tendencies": ["cautious_but_polite"]
+  }
+}</code></pre>
+
+      <h3>公开与隐藏设定分离</h3>
+      <ul>
+        <li><code>public.md</code>：NPC 自己知道且愿意分享的信息。</li>
+        <li><code>hidden.md</code>：NPC 不会主动透露的秘密、真实动机、隐藏知识边界。</li>
+        <li>Runtime 构建 ContextBundle 时，<code>public.md</code> 全量注入，<code>hidden.md</code> 按条件注入。</li>
+        <li>Director 和 Consistency Agent 可以读取 <code>hidden.md</code>。</li>
+      </ul>
+    </section>
+
+    <section id="world" class="band">
+      <h2>World Pack — 世界包</h2>
+      <p>世界包定义 RP 世界的地点、势力、规则、时间线和导演强度配置。</p>
+      <h3>目录结构</h3>
+      <pre><code>world/
+  manifest.json          # 包元数据，pack_type = "world"
+  lore/
+    public/              # 公开世界知识：地理、历史、文化
+    hidden/              # 隐藏世界知识：未揭示的真相、幕后势力
+  timeline.json          # 世界时间线
+  rules.json             # 世界规则：能力体系、物理规则
+  director_config.json   # 导演强度和用户权限配置
+  assets/                # 地图、势力徽章</code></pre>
+
+      <h3>rules.json 示例</h3>
+      <pre><code>{
+  "power_system": {
+    "type": "knowledge_based",
+    "rules": ["力量来源于对古老文献的理解深度"]
+  },
+  "hard_constraints": [
+    "已死角色不能复活，除非世界规则明确允许",
+    "时间不能倒流",
+    "角色不能出现在两个地点"
+  ]
+}</code></pre>
+
+      <h3>director_config.json</h3>
+      <table class="matrix">
+        <thead><tr><th>字段</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>director_strength</code></td><td><code>passive</code>（用户主导）、<code>collaborative</code>（协作）、<code>strict</code>（导演主导）。</td></tr>
+          <tr><td><code>user_narrative_authority</code></td><td><code>full</code>、<code>character_actions</code>、<code>limited</code>。</td></tr>
+          <tr><td><code>npc_autonomy</code></td><td><code>low</code>（被动响应）、<code>moderate</code>（有独立行为）、<code>high</code>（主动推动剧情）。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="graph" class="band">
+      <h2>Agent Graph Pack — 行为包</h2>
+      <p>Agent Graph Pack 定义自定义节点图，让高级创作者控制编排逻辑。参照 <a href="agent-runtime.html">Agent Runtime</a>。</p>
+      <h3>目录结构</h3>
+      <pre><code>graph/
+  manifest.json          # 包元数据，pack_type = "graph"
+  graph.json             # 节点图定义
+  prompts/               # 自定义 prompt 模板
+  config.json            # 运行时配置：循环限制、token 预算、超时
+  assets/</code></pre>
+
+      <h3>graph.json 示例</h3>
+      <pre><code>{
+  "nodes": [
+    { "id": "director", "type": "DirectorNode", "config": {} },
+    { "id": "npc_archivist", "type": "NpcNode", "config": { "character_id": "archivist" } },
+    { "id": "writer", "type": "WriterNode", "config": {} },
+    { "id": "memory", "type": "MemoryNode", "config": {} }
+  ],
+  "edges": [
+    { "from": "director", "to": "npc_archivist", "type": "sequence" },
+    { "from": "npc_archivist", "to": "writer", "type": "sequence" },
+    { "from": "writer", "to": "memory", "type": "sequence" }
+  ],
+  "entry": "director",
+  "max_loop_count": 2,
+  "max_total_nodes": 8
+}</code></pre>
+
+      <h3>权限声明</h3>
+      <table class="matrix">
+        <thead><tr><th>权限</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>read_public_lore</code></td><td>读取公开世界知识。</td></tr>
+          <tr><td><code>read_hidden_lore</code></td><td>读取隐藏世界知识，需用户授权。</td></tr>
+          <tr><td><code>write_memory</code></td><td>提交记忆候选变更。</td></tr>
+          <tr><td><code>custom_prompts</code></td><td>使用自定义 prompt 模板。</td></tr>
+          <tr><td><code>parallel_execution</code></td><td>启用并行节点。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="plugin" class="band">
+      <h2>Plugin Pack — 能力包</h2>
+      <p>Plugin Pack 为平台扩展新节点类型、工具、检索器或渲染组件。V1 只做高层定义，详细规范留待插件系统规范（待补）。</p>
+      <h3>目录结构</h3>
+      <pre><code>plugin/
+  manifest.json          # 包元数据，pack_type = "plugin"
+  permissions.json       # 权限 manifest
+  nodes/                 # 自定义节点实现
+  tools/                 # 工具定义
+  assets/</code></pre>
+
+      <h3>安全边界</h3>
+      <ul>
+        <li>Plugin Pack 默认没有读取隐藏设定、网络访问、文件访问或写入记忆的权限。</li>
+        <li>所有权限必须在 <code>permissions.json</code> 中显式声明。</li>
+        <li>用户导入时看到权限列表并逐项授权。</li>
+        <li>运行时由平台强制执行权限，插件代码节点在沙箱内运行。</li>
+      </ul>
+    </section>
+
+    <section id="import" class="band">
+      <h2>导入流程</h2>
+      <div class="flow-step"><span class="flow-num">1</span><div><strong>解压 ZIP</strong> — 检查 ZIP 结构是否合法，不含路径逃逸（<code>../</code>）。</div></div>
+      <div class="flow-step"><span class="flow-num">2</span><div><strong>Manifest 校验</strong> — 必填字段完整、id 格式合法、version 是有效 SemVer。</div></div>
+      <div class="flow-step"><span class="flow-num">3</span><div><strong>平台兼容性</strong> — 检查 <code>platform_version</code> 是否满足。</div></div>
+      <div class="flow-step"><span class="flow-num">4</span><div><strong>Schema 校验</strong> — 按 pack_type 检查必需文件是否存在，JSON 格式正确，Markdown 非空。</div></div>
+      <div class="flow-step"><span class="flow-num">5</span><div><strong>依赖检查</strong> — <code>dependencies</code> 中的包是否已导入。</div></div>
+      <div class="flow-step"><span class="flow-num">6</span><div><strong>权限声明</strong> — Plugin Pack 和 Agent Graph Pack 的权限是否被用户授权。</div></div>
+      <div class="flow-step"><span class="flow-num">7</span><div><strong>资源完整性</strong> — <code>assets</code> 声明的文件全部存在，大小和格式符合约定。</div></div>
+      <div class="flow-step"><span class="flow-num">8</span><div><strong>写入</strong> — 写入 <code>content_packs</code> 表，解压到 <code>storage_path</code>，返回导入报告。</div></div>
+
+      <h3>校验错误分级</h3>
+      <table class="matrix">
+        <thead><tr><th>级别</th><th>行为</th><th>示例</th></tr></thead>
+        <tbody>
+          <tr><td><code>error</code></td><td>阻止导入</td><td>manifest 缺少必填字段、依赖包未导入、权限未授权。</td></tr>
+          <tr><td><code>warning</code></td><td>允许导入但提示</td><td>资源文件偏大、版本过旧、缺少可选文件。</td></tr>
+        </tbody>
+      </table>
+
+      <h3>导出流程</h3>
+      <ul>
+        <li>读取 <code>content_packs</code> 表和 <code>storage_path</code>，校验内部一致性，打包为 ZIP。</li>
+        <li>以 <code>&lt;id&gt;_v&lt;version&gt;.zip</code> 命名返回。</li>
+        <li>导出不包含运行时数据（trace、state、memory），只包含创作者原始内容。</li>
+      </ul>
+    </section>
+
+    <section id="sillytavern" class="band">
+      <h2>SillyTavern 迁移映射</h2>
+      <div class="grid two">
+        <div class="card tint">
+          <span class="status">角色卡 → Character Pack</span>
+          <ul>
+            <li><code>description</code> → <code>public.md</code></li>
+            <li><code>personality</code> → <code>personality.json</code> core</li>
+            <li><code>mes_example</code> → <code>example_dialogues.md</code></li>
+            <li><code>first_mes</code> → <code>greeting.md</code></li>
+            <li><code>system_prompt</code> → <code>personality.json</code> system_prompt</li>
+          </ul>
+        </div>
+        <div class="card blue">
+          <span class="status">世界书 → World Pack</span>
+          <ul>
+            <li>公开条目 → <code>lore/public/*.md</code></li>
+            <li>隐藏/选择性插入条目 → <code>lore/hidden/*.md</code></li>
+            <li>触发条件 → 条目 metadata</li>
+          </ul>
+        </div>
+      </div>
+      <h3>迁移风险提示</h3>
+      <ul>
+        <li>公开/隐藏设定划分：无法可靠自动分离时，全部放入 <code>public.md</code>，提示用户手动整理 <code>hidden.md</code>。</li>
+        <li>世界书选择性插入逻辑与平台 ContextBundle 可见性机制不完全对应。</li>
+        <li>SillyTavern 扩展脚本和自定义 CSS 需通过 Plugin Pack / Artifact Renderer 重新实现。</li>
+      </ul>
+    </section>
+
+    <section id="risks" class="band">
+      <h2>风险</h2>
+      <table class="matrix">
+        <thead><tr><th>风险</th><th>影响</th><th>缓解措施</th></tr></thead>
+        <tbody>
+          <tr><td>公开/隐藏设定划分不当</td><td>NPC 泄露不该知道的秘密。</td><td>导入后提供可见性预览工具。</td></tr>
+          <tr><td>资源文件体积失控</td><td>导入包过大。</td><td>资源大小限制 + 导入时警告 + 运行时懒加载。</td></tr>
+          <tr><td>Agent Graph Pack prompt 注入</td><td>恶意 prompt 可能绕过权限。</td><td>prompt 只在节点自己的 ContextBundle 内使用，输出经过 Runtime 校验。</td></tr>
+          <tr><td>版本兼容性断裂</td><td>新旧版本不兼容。</td><td>manifest 声明 <code>platform_version</code>，导入时严格检查。</td></tr>
+          <tr><td>SillyTavern 迁移信息丢失</td><td>自动迁移不完美。</td><td>迁移报告列出无法自动处理的部分。</td></tr>
+          <tr><td>依赖包缺失</td><td>引用的包未导入。</td><td>导入时检查依赖，缺失时阻止导入。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="tests" class="band">
+      <h2>验收测试</h2>
+      <table class="matrix">
+        <thead><tr><th>测试场景</th><th>通过标准</th></tr></thead>
+        <tbody>
+          <tr><td>导入合法 Character Pack</td><td>ZIP 解压、校验通过，写入 <code>content_packs</code> 表，可被会话引用。</td></tr>
+          <tr><td>导入缺少 manifest 的 ZIP</td><td>返回 <code>error</code>，阻止导入。</td></tr>
+          <tr><td>导入含路径逃逸的 ZIP</td><td>返回 <code>error</code>，阻止导入。</td></tr>
+          <tr><td>Agent Graph Pack 权限声明</td><td>导入时展示权限列表，未授权时阻止。</td></tr>
+          <tr><td>角色包公开/隐藏分离</td><td>NPC ContextBundle 不包含 <code>hidden.md</code> 中未知秘密。</td></tr>
+          <tr><td>版本兼容性检查</td><td>不兼容版本的包导入时被拒绝。</td></tr>
+          <tr><td>导出再导入一致性</td><td>导出 ZIP 重新导入后内容一致。</td></tr>
+          <tr><td>SillyTavern 角色卡迁移</td><td>导入后生成 Character Pack，报告列出警告和不可迁移项。</td></tr>
+          <tr><td>依赖检查</td><td>缺失依赖时返回错误。</td></tr>
+          <tr><td>资源完整性校验</td><td>资源缺失时返回 warning 或 error。</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

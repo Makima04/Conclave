@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://conclave.dev/schemas/common.schema.json",
+  "title": "Conclave Common Definitions",
+  "description": "Shared type definitions referenced by all other Conclave schemas.",
+  "$defs": {
+    "UUID": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "UUID v4 string"
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 / ISO 8601 timestamp"
+    },
+    "Importance": {
+      "type": "string",
+      "enum": ["trivial", "normal", "important", "critical"],
+      "description": "Importance level for events, foreshadowing, and proposals"
+    },
+    "RiskLevel": {
+      "type": "string",
+      "enum": ["low", "medium", "high"],
+      "description": "Risk level for state change proposals: low=auto-commit, medium=Director review, high=user confirmation"
+    },
+    "NodeType": {
+      "type": "string",
+      "enum": [
+        "DirectorNode",
+        "RouterNode",
+        "WorldJudgeNode",
+        "NpcNode",
+        "WriterNode",
+        "MemoryNode",
+        "ConsistencyNode",
+        "ArtifactNode",
+        "ToolNode"
+      ],
+      "description": "Agent graph node types"
+    },
+    "EdgeType": {
+      "type": "string",
+      "enum": ["sequence", "condition", "handoff", "parallel", "merge", "fallback"],
+      "description": "Agent graph edge types"
+    },
+    "RunMode": {
+      "type": "string",
+      "enum": [
+        "single_agent",
+        "strict_director",
+        "collaborative_director",
+        "free_writing",
+        "multi_npc_scene",
+        "advanced_graph"
+      ],
+      "description": "Session execution mode"
+    }
+  }
+}

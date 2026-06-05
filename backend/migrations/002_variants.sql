@@ -1,0 +1,2 @@
+-- P2: add variants column for message version history
+-- Handled in db.rs to avoid errors on repeated runs

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://conclave.dev/schemas/memory-event.schema.json",
+  "title": "MemoryEvent",
+  "description": "Memory event record stored in the event ledger.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "session_id",
+    "turn_number",
+    "event_type",
+    "content",
+    "characters_involved",
+    "importance",
+    "is_public",
+    "related_state_keys",
+    "created_at"
+  ],
+  "properties": {
+    "id": {
+      "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/UUID"
+    },
+    "session_id": {
+      "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/UUID"
+    },
+    "turn_number": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "action",
+        "dialogue",
+        "discovery",
+        "combat",
+        "state_change",
+        "world_event",
+        "system"
+      ]
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1
+    },
+    "characters_involved": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "location": {
+      "type": "string"
+    },
+    "importance": {
+      "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/Importance"
+    },
+    "is_public": {
+      "type": "boolean"
+    },
+    "related_state_keys": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/Timestamp"
+    }
+  }
+}

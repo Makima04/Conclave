@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>项目实现优先级 - 多 Agent RP / 写作平台</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --ink: #17202a;
+      --muted: #617083;
+      --line: #d9dee7;
+      --accent: #0d766e;
+      --blue: #315fba;
+      --orange: #9a4d12;
+      --red: #a43f3f;
+      --soft: #edf5f4;
+      --soft-blue: #eef3fb;
+      --soft-orange: #fff3e6;
+      --shadow: 0 10px 30px rgba(23, 32, 42, 0.08);
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.6;
+    }
+
+    header {
+      background: #fff;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .wrap {
+      width: min(1180px, calc(100vw - 40px));
+      margin: 0 auto;
+    }
+
+    .hero {
+      padding: 48px 0 34px;
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: clamp(34px, 5vw, 58px);
+      max-width: 940px;
+    }
+
+    h2 {
+      font-size: 28px;
+      margin-bottom: 16px;
+    }
+
+    h3 {
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+
+    p { margin: 0 0 14px; }
+
+    .lead {
+      max-width: 900px;
+      color: var(--muted);
+      font-size: 18px;
+      margin-top: 18px;
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      border-radius: 999px;
+      padding: 4px 9px;
+      background: #eef1f5;
+      color: #344050;
+      font-size: 13px;
+    }
+
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(255, 255, 255, 0.94);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(12px);
+    }
+
+    nav .wrap {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 10px 0;
+    }
+
+    nav a {
+      flex: 0 0 auto;
+      color: var(--ink);
+      text-decoration: none;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-size: 14px;
+      background: #fff;
+    }
+
+    main {
+      padding: 34px 0 70px;
+    }
+
+    section {
+      margin-top: 34px;
+    }
+
+    .band {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 26px;
+      box-shadow: var(--shadow);
+    }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+    .card {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px;
+    }
+
+    .card.tint { background: var(--soft); border-color: #c7e1de; }
+    .card.blue { background: var(--soft-blue); border-color: #c9d8f3; }
+    .card.warn { background: var(--soft-orange); border-color: #efd1ad; }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      border-radius: 999px;
+      padding: 3px 8px;
+      background: #eef1f5;
+      color: #344050;
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+
+    .matrix {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .matrix th,
+    .matrix td {
+      border: 1px solid var(--line);
+      padding: 12px;
+      vertical-align: top;
+      text-align: left;
+      font-size: 14px;
+    }
+
+    .matrix th {
+      background: #eef1f5;
+      color: #263341;
+    }
+
+    ol, ul {
+      margin: 10px 0 0;
+      padding-left: 22px;
+    }
+
+    li { margin: 6px 0; }
+
+    code, pre {
+      color: #25324a;
+      background: #eef1f5;
+      border-radius: 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    code { padding: 2px 6px; }
+
+    pre {
+      padding: 14px;
+      overflow-x: auto;
+      line-height: 1.5;
+    }
+
+    @media (max-width: 900px) {
+      .grid.two,
+      .grid.three {
+        grid-template-columns: 1fr;
+      }
+
+      .wrap {
+        width: min(100vw - 24px, 1180px);
+      }
+
+      .band {
+        padding: 20px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap hero">
+      <h1>项目实现优先级</h1>
+      <p class="lead">把当前架构文档落成可执行的实现顺序。先跑通安全、可追踪、可长期续写的 RP 最小闭环，再扩展高级 Agent 图、Artifact 和插件生态。</p>
+      <div class="tag-row">
+        <span class="tag">Implementation Priority</span>
+        <span class="tag">MVP</span>
+        <span class="tag">Runtime First</span>
+        <span class="tag">Memory First</span>
+        <span class="tag">Docs Sync</span>
+      </div>
+    </div>
+  </header>
+
+  <nav>
+    <div class="wrap">
+      <a href="docs.html">文档中心</a>
+      <a href="index.html">架构首页</a>
+      <a href="#principles">排序原则</a>
+      <a href="#p0">P0</a>
+      <a href="#p1">P1</a>
+      <a href="#p2">P2</a>
+      <a href="#p3">P3</a>
+      <a href="#p4">P4</a>
+      <a href="#sequence">落地顺序</a>
+      <a href="#sync">进度同步</a>
+    </div>
+  </nav>
+
+  <main class="wrap">
+    <section id="principles" class="band">
+      <h2>排序原则</h2>
+      <div class="grid two">
+        <div class="card tint">
+          <h3>先定义契约，再写实现</h3>
+          <p>跨后端、前端、Runtime、记忆和内容包共享的数据结构必须先有 schema 或规范。</p>
+        </div>
+        <div class="card blue">
+          <h3>先跑通单轮，再扩展多 Agent</h3>
+          <p>首个可用版本先支持 <code>single_agent</code> 最小闭环，再加入 Director、WorldJudge、Consistency 和高级图。</p>
+        </div>
+        <div class="card">
+          <h3>先保证边界，再开放扩展</h3>
+          <p>插件、自由图、自定义 artifact 必须在权限、沙箱、预算、trace 和 proposal + commit 稳定后再开放。</p>
+        </div>
+        <div class="card warn">
+          <h3>Markdown 与 HTML 同步</h3>
+          <p>每份正式文档必须同时维护 Markdown 和 HTML 版本，入口、阅读顺序、待补列表和实现进度也要同步。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="p0" class="band">
+      <h2>P0：实现前必补</h2>
+      <p>P0 是进入代码实现前的前置工作。它们不直接产出产品界面，但决定后续实现是否能保持一致。</p>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>事项</th>
+            <th>产出</th>
+            <th>为什么优先</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>数据库与 API 规范</td>
+            <td>会话、消息、状态、记忆、trace、artifact 的 API 和数据模型草案。</td>
+            <td>后端、前端、Runtime 需要共同契约。</td>
+          </tr>
+          <tr>
+            <td>内容包规范</td>
+            <td><code>Character Pack</code>、<code>World Pack</code>、<code>Agent Graph Pack</code>、assets、版本兼容和导入导出。</td>
+            <td>普通创作者入口依赖内容包，SillyTavern 迁移也依赖它。</td>
+          </tr>
+          <tr>
+            <td>Artifact Renderer 规范</td>
+            <td>UI schema、props、state diff、patch、iframe sandbox、资源预算和快照策略。</td>
+            <td>防止 LLM 生成代码污染主 DOM 或拖垮长会话性能。</td>
+          </tr>
+          <tr>
+            <td>测试与评测规范</td>
+            <td>长会话、OOC、伏笔、权限、循环、成本和 artifact 隔离测试。</td>
+            <td>平台核心风险必须能回归验证。</td>
+          </tr>
+          <tr>
+            <td>文档同步规则</td>
+            <td><code>AGENT.md</code>、Markdown 文档、HTML 文档、文档中心和架构首页同步规则。</td>
+            <td>防止实现进度与文档描述长期漂移。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="p1" class="band">
+      <h2>P1：最小可运行 MVP</h2>
+      <div class="grid three">
+        <div class="card">
+          <span class="status">后端骨架</span>
+          <h3>Rust API</h3>
+          <p>使用 <code>axum + tokio + sqlx + SQLite</code>，实现健康检查、会话、消息、流式输出和 provider adapter 边界。</p>
+        </div>
+        <div class="card">
+          <span class="status">前端骨架</span>
+          <h3>React UI</h3>
+          <p>实现会话列表、聊天 / 写作界面、流式输出展示、角色卡和世界书编辑入口。</p>
+        </div>
+        <div class="card tint">
+          <span class="status">Runtime</span>
+          <h3>Single Agent</h3>
+          <p>实现 <code>UserInput -> Npc/Writer -> Memory</code>，每轮记录 trace 和记忆候选。</p>
+        </div>
+      </div>
+      <p><strong>基础记忆：</strong>Recent Context、Scene Summary、Structured State、Event Ledger、Foreshadowing Registry。</p>
+    </section>
+
+    <section id="p2" class="band">
+      <h2>P2：平台核心差异化</h2>
+      <div class="grid two">
+        <div class="card tint">
+          <h3>官方模板图</h3>
+          <ol>
+            <li><code>single_agent</code></li>
+            <li><code>collaborative_director</code></li>
+            <li><code>strict_director</code></li>
+          </ol>
+        </div>
+        <div class="card">
+          <h3>Proposal + Commit</h3>
+          <p>Memory、Tool、Plugin、Agent 都只能提出候选变更。Runtime 负责校验 schema、权限、风险等级和冲突，再提交到主状态。</p>
+        </div>
+        <div class="card">
+          <h3>ContextBundle 权限隔离</h3>
+          <ul>
+            <li>NPC 不能读取导演计划。</li>
+            <li>NPC 不能读取未知隐藏秘密。</li>
+            <li>Writer 不能擅自发明未裁决事实。</li>
+            <li>Plugin 只能读取 manifest 授权范围内的数据。</li>
+          </ul>
+        </div>
+        <div class="card warn">
+          <h3>Consistency 检查</h3>
+          <p>先实现世界事实、时间线、角色 OOC、关系跳变、能力膨胀和伏笔状态的结构化检查，再引入 LLM 审查。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="p3" class="band">
+      <h2>P3：高级创作者能力</h2>
+      <div class="grid three">
+        <div class="card">
+          <h3>Agent Graph 编辑</h3>
+          <p>使用 React Flow 做图编辑，支持节点、边、条件、模型、预算和权限配置。</p>
+        </div>
+        <div class="card tint">
+          <h3>Artifact Renderer</h3>
+          <p>聊天消息只引用 <code>artifact_id</code> 和 <code>version</code>，高级 UI 才允许 iframe sandbox 自定义代码。</p>
+        </div>
+        <div class="card">
+          <h3>SillyTavern 迁移</h3>
+          <p>支持导入角色卡、世界书和预设，把历史上下文迁移为摘要、事件账本和结构化状态候选。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="p4" class="band">
+      <h2>P4：插件与生态</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>插件系统</h3>
+          <ul>
+            <li>插件 manifest。</li>
+            <li>权限申请与用户授权。</li>
+            <li>代码节点沙箱。</li>
+            <li>工具调用预算和超时。</li>
+            <li>插件输出结构化校验。</li>
+          </ul>
+        </div>
+        <div class="card warn">
+          <h3>图包与插件分发</h3>
+          <p>支持 <code>TrustedGraphPack</code> / <code>UnverifiedGraphPack</code> 分级、版本兼容声明、风险提示、导入报告、示例包和测试夹具。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="sequence" class="band">
+      <h2>推荐落地顺序</h2>
+      <pre>1. docs/ 数据库与 API 规范
+2. docs/ 内容包规范
+3. docs/ Artifact Renderer 规范
+4. schemas/ 核心 JSON schema 草案
+5. backend/ axum + SQLite 最小服务
+6. frontend/ React + Vite 最小界面
+7. provider adapter + 流式输出
+8. single_agent Runtime
+9. Recent Context + Scene Summary + Structured State
+10. Event Ledger + Foreshadowing Registry
+11. trace 查看与回放
+12. Character Pack / World Pack 导入
+13. Director / WorldJudge / Writer 官方模板图
+14. ContextBundle 权限隔离
+15. proposal + commit 风险提交
+16. Consistency 检查
+17. Artifact Renderer
+18. Agent Graph 编辑器
+19. SillyTavern 迁移
+20. 插件系统</pre>
+    </section>
+
+    <section id="not-now" class="band">
+      <h2>暂不优先</h2>
+      <div class="grid three">
+        <div class="card">复杂插件市场</div>
+        <div class="card">向量库作为唯一记忆方案</div>
+        <div class="card">自由图无限开放</div>
+        <div class="card">多供应商高级路由策略</div>
+        <div class="card">桌面端 Tauri 打包</div>
+        <div class="card">大规模多人协作权限</div>
+      </div>
+    </section>
+
+    <section id="sync" class="band">
+      <h2>进度同步要求</h2>
+      <ul>
+        <li><code>implementation-priority.md</code> 是否仍反映真实进度。</li>
+        <li>对应 HTML 文档是否同步。</li>
+        <li><code>docs.md</code> 和 <code>docs/html/docs.html</code> 是否同步更新入口。</li>
+        <li><code>index.md</code> 和 <code>docs/html/index.html</code> 是否同步更新总览。</li>
+        <li><code>AGENT.md</code> 的项目结构索引、当前状态、待补规范是否需要调整。</li>
+      </ul>
+      <p><strong>禁止：</strong>Markdown、HTML、项目实际目录三者描述不同步。</p>
+    </section>
+  </main>
+</body>
+</html>

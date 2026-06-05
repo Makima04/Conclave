@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://conclave.dev/schemas/foreshadowing.schema.json",
+  "title": "ForeshadowingItem",
+  "description": "Foreshadowing item in the foreshadowing registry.",
+  "$comment": "Note: importance uses the standardized 4-level scale (trivial/normal/important/critical). The DB spec previously used 'low' which maps to 'trivial'.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "session_id",
+    "content",
+    "status",
+    "importance",
+    "related_characters",
+    "trigger_conditions",
+    "planted_at_turn",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "id": {
+      "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/UUID"
+    },
+    "session_id": {
+      "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/UUID"
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "open",
+        "hinted",
+        "triggered",
+        "resolved",
+        "abandoned"
+      ]
+    },
+    "importance": {
+      "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/Importance"
+    },
+    "related_characters": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "trigger_conditions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "resolution_plan": {
+      "type": "string"
+    },
+    "planted_at_turn": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "last_hint_turn": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "resolved_at_turn": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "created_at": {
+      "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/Timestamp"
+    },
+    "updated_at": {
+      "$ref": "https://conclave.dev/schemas/common.schema.json#/$defs/Timestamp"
+    }
+  }
+}

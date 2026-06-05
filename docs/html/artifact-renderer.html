@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Artifact Renderer 规范 - 多 Agent RP / 写作平台</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --panel: #ffffff; --ink: #17202a; --muted: #617083;
+      --line: #d9dee7; --accent: #0d766e; --blue: #315fba; --orange: #9a4d12;
+      --soft: #edf5f4; --soft-blue: #eef3fb; --soft-orange: #fff3e6;
+      --shadow: 0 10px 30px rgba(23, 32, 42, 0.08); --radius: 8px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.6; }
+    header { background: #fff; border-bottom: 1px solid var(--line); }
+    .wrap { width: min(1180px, calc(100vw - 40px)); margin: 0 auto; }
+    .hero { padding: 48px 0 34px; }
+    h1, h2, h3 { margin: 0; line-height: 1.18; }
+    h1 { font-size: clamp(34px, 5vw, 58px); max-width: 900px; }
+    h2 { font-size: 28px; margin-bottom: 16px; }
+    h3 { font-size: 18px; margin-bottom: 8px; }
+    p { margin: 0 0 14px; }
+    .lead { max-width: 900px; color: var(--muted); font-size: 18px; margin-top: 18px; }
+    .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+    .tags span { display: inline-block; background: var(--soft); color: var(--accent); border-radius: 999px; padding: 3px 10px; font-size: 13px; }
+    nav { position: sticky; top: 0; z-index: 10; background: rgba(255,255,255,0.94); border-bottom: 1px solid var(--line); backdrop-filter: blur(12px); }
+    nav .wrap { display: flex; gap: 8px; overflow-x: auto; padding: 10px 0; }
+    nav a { flex: 0 0 auto; color: var(--ink); text-decoration: none; border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px; font-size: 14px; background: #fff; }
+    main { padding: 34px 0 70px; }
+    section { margin-top: 34px; }
+    .band { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 26px; box-shadow: var(--shadow); }
+    .grid { display: grid; gap: 16px; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+    .card.tint { background: var(--soft); border-color: #c7e1de; }
+    .card.blue { background: var(--soft-blue); border-color: #c9d8f3; }
+    .card.warn { background: var(--soft-orange); border-color: #efd1ad; }
+    .card a { color: var(--accent); font-weight: 800; text-decoration: none; }
+    .status { display: inline-flex; align-items: center; min-height: 26px; border-radius: 999px; padding: 3px 8px; background: #eef1f5; color: #344050; font-size: 13px; margin-bottom: 10px; }
+    .matrix { width: 100%; border-collapse: collapse; background: #fff; border-radius: var(--radius); overflow: hidden; }
+    .matrix th, .matrix td { border: 1px solid var(--line); padding: 12px; vertical-align: top; text-align: left; font-size: 14px; }
+    .matrix th { background: #eef1f5; color: #263341; }
+    ul, ol { margin: 10px 0 0; padding-left: 20px; }
+    li { margin: 6px 0; }
+    code { color: #25324a; background: #eef1f5; border-radius: 5px; padding: 2px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
+    pre { background: #1e2430; color: #cfd8e3; border-radius: var(--radius); padding: 18px; overflow-x: auto; font-size: 13px; line-height: 1.55; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
+    .flow-step { display: flex; align-items: flex-start; gap: 14px; margin: 10px 0; }
+    .flow-num { flex: 0 0 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; }
+    @media (max-width: 900px) {
+      .grid.two, .grid.three { grid-template-columns: 1fr; }
+      .wrap { width: min(100vw - 24px, 1180px); }
+      .band { padding: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap hero">
+      <h1>Artifact Renderer 规范</h1>
+      <p class="lead">定义 LLM 生成的 UI 内容如何安全、高效地渲染：三层渲染模型、Artifact 生命周期、UI Schema、iframe 沙箱、资源预算和快照策略。</p>
+      <div class="tags">
+        <span>Artifact</span><span>iframe Sandbox</span><span>State Diff</span><span>Resource Budget</span><span>Snapshot</span><span>UI Schema</span>
+      </div>
+    </div>
+  </header>
+
+  <nav>
+    <div class="wrap">
+      <a href="docs.html">文档中心</a>
+      <a href="index.html">架构首页</a>
+      <a href="#tiers">三层模型</a>
+      <a href="#lifecycle">生命周期</a>
+      <a href="#schema">UI Schema</a>
+      <a href="#sandbox">iframe 沙箱</a>
+      <a href="#budget">资源预算</a>
+      <a href="#snapshot">快照策略</a>
+      <a href="#risks">风险</a>
+      <a href="#tests">验收测试</a>
+    </div>
+  </nav>
+
+  <main class="wrap">
+    <section class="band">
+      <h2>目标</h2>
+      <ul>
+        <li>LLM 输出不直接注入主聊天 DOM，所有 UI 变化通过受控渲染通道。</li>
+        <li>支持从简单状态更新到复杂自定义 UI 的渐进式渲染能力。</li>
+        <li>每个渲染单元有独立的资源预算，长会话不会因 DOM 堆积而卡顿。</li>
+        <li>离屏渲染单元可安全卸载并恢复，不影响用户体验。</li>
+        <li>自定义代码在 iframe 沙箱中运行，无法访问主页面 DOM、存储或网络。</li>
+      </ul>
+    </section>
+
+    <section id="tiers" class="band">
+      <h2>三层渲染模型</h2>
+      <div class="grid three">
+        <div class="card tint">
+          <span class="status">第一层</span>
+          <h3>数据驱动 UI</h3>
+          <p>LLM 输出结构化 state diff，平台用内置组件渲染。</p>
+          <p><strong>适用：</strong>物品增减、属性变化、任务状态更新、关系变化。</p>
+          <p><strong>安全性：</strong>最高。无代码执行，纯数据更新。</p>
+        </div>
+        <div class="card blue">
+          <span class="status">第二层</span>
+          <h3>主题化组件</h3>
+          <p>LLM 声明 renderer + theme + props，平台校验后渲染。</p>
+          <p><strong>适用：</strong>奇幻物品卡片、角色面板、地图标记、好感度组件。</p>
+          <p><strong>安全性：</strong>高。渲染器是平台内置的，LLM 只填数据。</p>
+        </div>
+        <div class="card warn">
+          <span class="status">第三层</span>
+          <h3>自定义 Artifact</h3>
+          <p>LLM 提供 HTML/CSS/JS，在 iframe 沙箱中运行。</p>
+          <p><strong>适用：</strong>小游戏、复杂交互面板、独特角色 UI。</p>
+          <p><strong>安全性：</strong>需要权限声明和资源预算控制。</p>
+        </div>
+      </div>
+
+      <h3>层级选择</h3>
+      <table class="matrix">
+        <thead><tr><th>场景</th><th>推荐层</th><th>LLM 输出</th><th>是否允许代码</th></tr></thead>
+        <tbody>
+          <tr><td>新增普通物品</td><td>第一层</td><td><code>state_diff</code></td><td>否</td></tr>
+          <tr><td>新增带图物品</td><td>第二层</td><td><code>component_declaration</code></td><td>否</td></tr>
+          <tr><td>特殊视觉效果</td><td>第二层</td><td><code>component_declaration</code> + theme</td><td>否</td></tr>
+          <tr><td>复杂交互面板</td><td>第三层</td><td><code>artifact_patch</code></td><td>受限</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="lifecycle" class="band">
+      <h2>Artifact 生命周期</h2>
+      <div class="flow-step"><span class="flow-num">1</span><div><strong>创建</strong> — LLM 首次输出 <code>artifact_patch</code>（<code>patch_type: "full"</code>），Runtime 校验权限后写入 <code>artifacts</code> 表。</div></div>
+      <div class="flow-step"><span class="flow-num">2</span><div><strong>版本更新</strong> — 后续 patch 引用同一 <code>artifact_id</code>，基于上一版本应用 patch 生成新版本。</div></div>
+      <div class="flow-step"><span class="flow-num">3</span><div><strong>离屏卸载</strong> — 滚出视口后保存静态 HTML 快照，销毁 iframe 释放资源。</div></div>
+      <div class="flow-step"><span class="flow-num">4</span><div><strong>恢复</strong> — 滚回视口后先展示快照，后台重建 iframe 并恢复状态。</div></div>
+      <div class="flow-step"><span class="flow-num">5</span><div><strong>销毁</strong> — 会话删除或手动移除时软删除。</div></div>
+    </section>
+
+    <section id="schema" class="band">
+      <h2>UI Schema 定义</h2>
+      <div class="grid three">
+        <div class="card tint">
+          <span class="status">State Diff</span>
+          <pre><code>{
+  "type": "state_diff",
+  "changes": {
+    "items.add": [{ "id": "key", "name": "钥匙" }],
+    "character.player.hp": { "from": 80, "to": 65 }
+  }
+}</code></pre>
+        </div>
+        <div class="card blue">
+          <span class="status">Component Declaration</span>
+          <pre><code>{
+  "type": "component_declaration",
+  "renderer": "item_card",
+  "theme": "dark_fantasy",
+  "props": {
+    "name": "血月碎片",
+    "rarity": "legendary"
+  }
+}</code></pre>
+        </div>
+        <div class="card warn">
+          <span class="status">Artifact Patch</span>
+          <pre><code>{
+  "type": "artifact_patch",
+  "artifact_id": "combat_panel",
+  "patch_type": "full",
+  "payload": {
+    "html": "&lt;div&gt;...&lt;/div&gt;",
+    "css": "...",
+    "js": "..."
+  }
+}</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="sandbox" class="band">
+      <h2>iframe 沙箱规范</h2>
+      <h3>sandbox 属性</h3>
+      <pre><code>&lt;iframe sandbox="allow-scripts allow-same-origin"
+        referrer-policy="no-referrer"
+        loading="lazy"&gt;&lt;/iframe&gt;</code></pre>
+      <ul>
+        <li>不允许 <code>allow-top-navigation</code> — 阻止 iframe 跳转主页面。</li>
+        <li>不允许 <code>allow-popups</code> — 阻止弹窗。</li>
+        <li>不允许 <code>allow-forms</code> — 阻止表单提交。</li>
+      </ul>
+
+      <h3>postMessage 通信协议</h3>
+      <div class="grid two">
+        <div class="card tint">
+          <span class="status">主页面 → iframe</span>
+          <table class="matrix">
+            <thead><tr><th>消息类型</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>init</code></td><td>初始状态和 props。</td></tr>
+              <tr><td><code>state_update</code></td><td>状态更新。</td></tr>
+              <tr><td><code>patch</code></td><td>增量 patch。</td></tr>
+              <tr><td><code>resize</code></td><td>容器尺寸变化。</td></tr>
+              <tr><td><code>visibility</code></td><td>可见性变化。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card blue">
+          <span class="status">iframe → 主页面</span>
+          <table class="matrix">
+            <thead><tr><th>消息类型</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>ready</code></td><td>iframe 加载完成。</td></tr>
+              <tr><td><code>state_change</code></td><td>用户交互导致的状态变化。</td></tr>
+              <tr><td><code>resize_request</code></td><td>请求调整容器大小。</td></tr>
+              <tr><td><code>error</code></td><td>iframe 内错误报告。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <h3>可用 API 白名单</h3>
+      <table class="matrix">
+        <thead><tr><th>API</th><th>可用</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>document</code></td><td>是</td><td>iframe 内的 DOM 操作。</td></tr>
+          <tr><td><code>postMessage</code></td><td>是</td><td>与主页面通信。</td></tr>
+          <tr><td><code>requestAnimationFrame</code></td><td>是</td><td>动画。</td></tr>
+          <tr><td><code>setTimeout</code> / <code>setInterval</code></td><td>是</td><td>受平台托管，超时自动清理。</td></tr>
+          <tr><td><code>fetch</code> / <code>XHR</code></td><td>否</td><td>CSP <code>connect-src 'none'</code> 阻止。</td></tr>
+          <tr><td><code>localStorage</code> / <code>IndexedDB</code></td><td>否</td><td>无权限。</td></tr>
+          <tr><td><code>getUserMedia</code></td><td>否</td><td>无权限。</td></tr>
+          <tr><td><code>window.open</code></td><td>否</td><td><code>allow-popups</code> 未启用。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="budget" class="band">
+      <h2>资源预算</h2>
+      <table class="matrix">
+        <thead><tr><th>资源</th><th>限制</th><th>超限行为</th></tr></thead>
+        <tbody>
+          <tr><td>DOM 节点数</td><td>1000</td><td>截断渲染，显示提示。</td></tr>
+          <tr><td>JS 大小</td><td>200KB</td><td>拒绝加载，显示静态预览。</td></tr>
+          <tr><td>CSS 大小</td><td>100KB</td><td>拒绝加载。</td></tr>
+          <tr><td>HTML 大小</td><td>500KB</td><td>拒绝加载。</td></tr>
+          <tr><td>单次 JS 执行时间</td><td>50ms</td><td>暂停执行 1 秒。</td></tr>
+          <tr><td>连续无响应</td><td>3 秒</td><td>冻结 iframe，显示重启按钮。</td></tr>
+          <tr><td>内存</td><td>50MB</td><td>销毁 iframe，显示快照。</td></tr>
+          <tr><td>动画帧率</td><td>30fps</td><td>限制 <code>requestAnimationFrame</code>。</td></tr>
+          <tr><td>定时器数量</td><td>10</td><td>拒绝新定时器。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="snapshot" class="band">
+      <h2>快照策略</h2>
+      <h3>触发条件</h3>
+      <table class="matrix">
+        <thead><tr><th>条件</th><th>行为</th></tr></thead>
+        <tbody>
+          <tr><td>artifact 滚出视口</td><td>保存快照，卸载 iframe。</td></tr>
+          <tr><td>用户切换会话</td><td>保存快照，卸载 iframe。</td></tr>
+          <tr><td>标签页进入后台</td><td>保存快照，冻结 iframe。</td></tr>
+          <tr><td>资源预算超限</td><td>保存快照，销毁 iframe。</td></tr>
+        </tbody>
+      </table>
+      <h3>恢复流程</h3>
+      <p>先进入视口时先展示快照（即时可见），后台创建 iframe 加载最新版本，ready 后替换快照。</p>
+      <h3>最大同时活跃 artifact</h3>
+      <p>同时运行的 iframe 数量限制为 5 个。超过限制时，最久未交互的 artifact 自动转为快照。</p>
+    </section>
+
+    <section class="band">
+      <h2>白名单渲染器</h2>
+      <table class="matrix">
+        <thead><tr><th>渲染器</th><th>用途</th><th>核心 props</th></tr></thead>
+        <tbody>
+          <tr><td><code>item_card</code></td><td>物品卡片</td><td><code>name</code>, <code>description</code>, <code>rarity</code>, <code>image</code>, <code>effects</code></td></tr>
+          <tr><td><code>character_panel</code></td><td>角色状态面板</td><td><code>name</code>, <code>portrait</code>, <code>hp</code>, <code>mp</code>, <code>status</code>, <code>buffs</code></td></tr>
+          <tr><td><code>map_marker</code></td><td>地图标记</td><td><code>location</code>, <code>coordinates</code>, <code>icon</code>, <code>label</code></td></tr>
+          <tr><td><code>quest_tracker</code></td><td>任务追踪</td><td><code>quests[]</code>, <code>title</code>, <code>status</code>, <code>objectives</code></td></tr>
+          <tr><td><code>relationship_graph</code></td><td>关系图</td><td><code>characters[]</code>, <code>relationships[]</code></td></tr>
+          <tr><td><code>status_bar</code></td><td>状态栏</td><td><code>label</code>, <code>value</code>, <code>max</code>, <code>color</code>, <code>icon</code></td></tr>
+          <tr><td><code>notification_toast</code></td><td>通知提示</td><td><code>message</code>, <code>type</code>, <code>duration</code></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="risks" class="band">
+      <h2>风险</h2>
+      <table class="matrix">
+        <thead><tr><th>风险</th><th>影响</th><th>缓解措施</th></tr></thead>
+        <tbody>
+          <tr><td>LLM 输出恶意 JS</td><td>在 iframe 内执行恶意代码。</td><td>sandbox + CSP + postMessage + 资源预算。</td></tr>
+          <tr><td>iframe 逃逸</td><td>绕过沙箱。</td><td>不使用 <code>allow-top-navigation</code>、<code>allow-popups</code>、<code>allow-forms</code>。</td></tr>
+          <tr><td>DOM 堆积导致卡顿</td><td>长会话创建大量 iframe。</td><td>虚拟列表 + 离屏卸载 + 最大活跃数限制。</td></tr>
+          <tr><td>状态 patch 冲突</td><td>多节点同时 patch。</td><td>artifact patch 通过 Runtime 串行化。</td></tr>
+          <tr><td>资源预算被绕过</td><td>代码动态分配内存。</td><td>预算检查在主页面侧执行。</td></tr>
+          <tr><td>快照质量丢失</td><td>无法还原动画和交互。</td><td>快照只用于过渡，停留后立即重建 iframe。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="tests" class="band">
+      <h2>验收测试</h2>
+      <table class="matrix">
+        <thead><tr><th>测试场景</th><th>通过标准</th></tr></thead>
+        <tbody>
+          <tr><td>第一层 state diff 渲染</td><td>内置组件正确显示物品、属性或任务变化。</td></tr>
+          <tr><td>第二层白名单渲染器</td><td>校验 renderer 和 props，使用白名单组件渲染。</td></tr>
+          <tr><td>第二层非法渲染器</td><td>拒绝渲染，回退到第一层或显示错误。</td></tr>
+          <tr><td>第三层 iframe 沙箱隔离</td><td>无法访问 <code>window.parent.document</code>、<code>localStorage</code>、网络。</td></tr>
+          <tr><td>postMessage 通信</td><td>主页面发送 init 和 state_update，iframe 正确接收和响应。</td></tr>
+          <tr><td>离屏卸载与恢复</td><td>iframe 被卸载后恢复，用户无感知中断。</td></tr>
+          <tr><td>资源预算 DOM 超限</td><td>超过 1000 节点时截断渲染。</td></tr>
+          <tr><td>资源预算 JS 超限</td><td>超过 200KB 时拒绝加载。</td></tr>
+          <tr><td>最大同时活跃数</td><td>超过 5 个时自动转为快照。</td></tr>
+          <tr><td>多节点 patch 同一 artifact</td><td>patch 按序应用，不出现覆盖冲突。</td></tr>
+          <tr><td>长会话 500 轮后性能</td><td>聊天滚动流畅。</td></tr>
+          <tr><td>LLM 无法注入主 DOM</td><td>所有层的输出都不直接插入主聊天 DOM。</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

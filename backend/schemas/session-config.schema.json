@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://conclave.dev/schemas/session-config.schema.json",
+  "title": "SessionConfig",
+  "description": "Session configuration stored in sessions.config column.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "max_context_turns": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 20
+    },
+    "stream": {
+      "type": "boolean",
+      "default": true
+    },
+    "temperature": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 2,
+      "default": 0.8
+    },
+    "top_p": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 1.0
+    },
+    "max_tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 2048
+    },
+    "frequency_penalty": {
+      "type": "number",
+      "minimum": -2,
+      "maximum": 2,
+      "default": 0
+    },
+    "presence_penalty": {
+      "type": "number",
+      "minimum": -2,
+      "maximum": 2,
+      "default": 0
+    },
+    "system_prompt": {
+      "type": "string"
+    }
+  }
+}

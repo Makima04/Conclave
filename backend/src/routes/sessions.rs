@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::error::AppError;
 use crate::routes::messages::AppState;
-use crate::runtime::{initializer, state_initializer};
+use crate::runtime::{initializer, state_initializer, sub_agent, user_settings};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionConfig {
@@ -44,6 +44,11 @@ pub struct SessionConfig {
     pub render_mode: String,
     #[serde(default)]
     pub user_persona: UserPersona,
+    #[serde(default = "default_user_setting_merge_strategy")]
+    pub user_setting_merge_strategy: String,
+    /// Active preset ID for prompt module injection
+    #[serde(default)]
+    pub active_preset_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -99,6 +104,10 @@ fn default_render_mode() -> String {
     "auto".to_string()
 }
 
+fn default_user_setting_merge_strategy() -> String {
+    user_settings::USER_OVERRIDES_WORLDBOOK.to_string()
+}
+
 #[derive(Deserialize)]
 pub struct CreateSession {
     pub title: Option<String>,
@@ -142,7 +151,8 @@ pub struct SessionResponse {
 }
 
 fn row_to_response(row: SessionRow) -> SessionResponse {
-    let config: SessionConfig = normalize_session_config(serde_json::from_str(&row.config).unwrap_or_default());
+    let config: SessionConfig =
+        normalize_session_config(serde_json::from_str(&row.config).unwrap_or_default());
     SessionResponse {
         id: row.id,
         title: row.title,
@@ -164,7 +174,42 @@ fn normalize_session_config(mut config: SessionConfig) -> SessionConfig {
     ) {
         config.render_mode = default_render_mode();
     }
+    if !matches!(
+        config.user_setting_merge_strategy.as_str(),
+        user_settings::USER_OVERRIDES_WORLDBOOK | user_settings::WORLDBOOK_OVERRIDES_USER
+    ) {
+        config.user_setting_merge_strategy = default_user_setting_merge_strategy();
+    }
     config
+}
+
+async fn sync_user_persona_agent(
+    pool: &sqlx::SqlitePool,
+    session_id: &str,
+    config: &SessionConfig,
+) -> Result<(), AppError> {
+    let persona = user_settings::UserPersonaSettings {
+        name: config.user_persona.name.clone(),
+        avatar: config.user_persona.avatar.clone(),
+        address: config.user_persona.address.clone(),
+        background: config.user_persona.background.clone(),
+        style: config.user_persona.style.clone(),
+    };
+    let (label, persona_context) = user_settings::persona_context(&persona);
+    let world_pack_id: Option<String> = sqlx::query_scalar(
+        "SELECT world_pack_id FROM sessions WHERE id = ? AND deleted_at IS NULL",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    let worldbook_context =
+        user_settings::load_worldbook_user_context(pool, world_pack_id.as_deref()).await?;
+    let context = user_settings::merge_context(
+        &persona_context,
+        &worldbook_context,
+        &config.user_setting_merge_strategy,
+    );
+    sub_agent::sync_user_agent_from_persona(pool, session_id, &label, &context).await
 }
 
 pub async fn create_session(
@@ -175,9 +220,10 @@ pub async fn create_session(
     let now = chrono::Utc::now().to_rfc3339();
     let title = body.title.unwrap_or_default();
     let mode = body.mode.unwrap_or_else(|| "single_agent".to_string());
-    let config = normalize_session_config(body
-        .config
-        .unwrap_or_else(|| serde_json::from_str("{}").unwrap_or_default()));
+    let config = normalize_session_config(
+        body.config
+            .unwrap_or_else(|| serde_json::from_str("{}").unwrap_or_default()),
+    );
     let config_json = serde_json::to_string(&config).unwrap_or_else(|_| "{}".to_string());
 
     sqlx::query(
@@ -215,6 +261,9 @@ pub async fn create_session(
     if mode == "multi_agent" {
         if let Err(e) = initializer::initialize_multi_agent_session(&state.pool, &id).await {
             tracing::warn!(session = %id, "Failed to initialize multi-agent session: {}", e);
+        }
+        if let Err(e) = sync_user_persona_agent(&state.pool, &id, &config).await {
+            tracing::warn!(session = %id, "Failed to sync user persona agent: {}", e);
         }
     }
 
@@ -293,9 +342,10 @@ pub async fn update_session(
     } else {
         row.title_source.clone()
     };
-    let config = normalize_session_config(body
-        .config
-        .unwrap_or_else(|| serde_json::from_str(&row.config).unwrap_or_default()));
+    let config = normalize_session_config(
+        body.config
+            .unwrap_or_else(|| serde_json::from_str(&row.config).unwrap_or_default()),
+    );
     let config_json = serde_json::to_string(&config).unwrap_or_else(|_| "{}".to_string());
 
     sqlx::query(
@@ -308,6 +358,10 @@ pub async fn update_session(
     .bind(&id)
     .execute(&state.pool)
     .await?;
+
+    if row.mode == "multi_agent" {
+        sync_user_persona_agent(&state.pool, &id, &config).await?;
+    }
 
     Ok(Json(SessionResponse {
         id: row.id,

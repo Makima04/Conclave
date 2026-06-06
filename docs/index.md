@@ -19,6 +19,7 @@
 - [技术选型](tech-selection.md)
 - [长期记忆](long-context-memory.md)
 - [Agent Runtime](agent-runtime.md)
+- [Actor Agent 架构](actor-agent-architecture.md)
 - [动态总控架构](dynamic-master-architecture.md)
 - [Agent 边界](agent-boundaries.md)
 - [实现优先级](implementation-priority.md)
@@ -50,7 +51,7 @@
 
 ## Agent 编排架构
 
-采用动态总控（Dynamic Master）架构，由 Master Agent 每轮动态决定调用哪些子 Agent。详见 [动态总控架构](dynamic-master-architecture.md)。
+采用动态总控（Dynamic Master）架构，由 Master Agent 每轮动态决定调用哪些 Agent。互动角色统一为 Actor Agent，详见 [Actor Agent 架构](actor-agent-architecture.md)。
 
 **4 层流水线：**
 

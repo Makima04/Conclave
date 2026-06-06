@@ -1,4 +1,4 @@
-import type { Session, SessionConfig, Message, ProviderConfig, WorldBook, WorldBookDetail, WorldBookEntry, CharacterCard, ParsedWorldBookEntry } from './types';
+import type { Session, SessionConfig, Message, ProviderConfig, WorldBook, WorldBookDetail, WorldBookEntry, CharacterCard, ParsedWorldBookEntry, Preset, PresetDetail } from './types';
 
 const BASE_URL = '/api';
 
@@ -251,8 +251,10 @@ export interface SubAgent {
   label: string;
   status: string;
   last_active_turn: number;
+  context: string;
   context_preview: string;
   config: Record<string, any>;
+  fixed: boolean;
 }
 
 export async function listAgents(sessionId: string): Promise<{ items: SubAgent[] }> {
@@ -368,4 +370,52 @@ export async function updateCharacterCard(id: string, data: Partial<CharacterCar
 
 export async function parseWorldBook(id: string): Promise<{ status: string; entries: ParsedWorldBookEntry[] }> {
   return request(`/worldbooks/${id}/parse`, { method: 'POST' });
+}
+
+// --- Presets ---
+
+export async function importPreset(data: any, sessionId?: string): Promise<PresetDetail> {
+  return request('/presets', {
+    method: 'POST',
+    body: JSON.stringify({ data, session_id: sessionId || null }),
+  });
+}
+
+export async function listPresets(sessionId?: string): Promise<{ items: Preset[] }> {
+  const qs = sessionId ? `?session_id=${sessionId}` : '';
+  return request(`/presets${qs}`);
+}
+
+export async function getPreset(id: string): Promise<PresetDetail> {
+  return request(`/presets/${id}`);
+}
+
+export async function updatePreset(id: string, data: { name?: string }): Promise<any> {
+  return request(`/presets/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deletePreset(id: string): Promise<void> {
+  await request(`/presets/${id}`, { method: 'DELETE' });
+}
+
+export async function parsePreset(id: string): Promise<{ status: string; modules: number }> {
+  return request(`/presets/${id}/parse`, { method: 'POST' });
+}
+
+export async function updatePresetModule(
+  presetId: string,
+  moduleId: string,
+  data: { target_agents?: string[]; enabled?: boolean }
+): Promise<any> {
+  return request(`/presets/${presetId}/modules/${moduleId}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deletePresetModule(presetId: string, moduleId: string): Promise<void> {
+  await request(`/presets/${presetId}/modules/${moduleId}`, { method: 'DELETE' });
 }

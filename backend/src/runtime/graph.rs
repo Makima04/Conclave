@@ -1,6 +1,6 @@
 use crate::error::AppError;
-use crate::provider::openai::OpenAiProvider;
 use crate::routes::sessions::SessionConfig;
+use crate::runtime::executor::resolve_model_target;
 use crate::runtime::types::{AgentCall, AgentStatusEvent, AgentTrace};
 use crate::runtime::{
     compression, context, dag, master, parser, plan_validator, sub_agent, turn_finalizer,
@@ -14,10 +14,10 @@ use tracing::instrument;
 /// Returns the final narrative text.
 ///
 /// Flow: ContextBundle → Parser → Master → Sub-agents → Writer → Compression
-#[instrument(skip(pool, provider, session_config, user_input), fields(session = session_id, turn = turn_number))]
+#[instrument(skip(pool, _provider, session_config, user_input), fields(session = session_id, turn = turn_number))]
 pub async fn execute_multi_agent_turn(
     pool: &SqlitePool,
-    provider: &OpenAiProvider,
+    _provider: &crate::provider::openai::OpenAiProvider,
     model: &str,
     session_id: &str,
     turn_number: i32,
@@ -67,8 +67,17 @@ pub async fn execute_multi_agent_turn(
     let parser_agent = active_agents.iter().find(|a| a.agent_type == "parser");
     let parsed_intent = if session_config.parser_enabled {
         let sub_model = resolve_model(model, &session_config.sub_agent_model);
+        let target = resolve_model_target(pool, model, sub_model).await?;
         emit_status(&status_tx, "parser", "解析器", "working");
-        match parser::run_parser(provider, sub_model, user_input, &ctx, parser_agent).await {
+        match parser::run_parser(
+            &target.provider,
+            &target.model,
+            user_input,
+            &ctx,
+            parser_agent,
+        )
+        .await
+        {
             Ok(intent) => {
                 emit_status(&status_tx, "parser", "解析器", "done");
                 tracing::info!(
@@ -97,12 +106,13 @@ pub async fn execute_multi_agent_turn(
 
     // 6. Run Master Agent → execution plan (with full context)
     let master_model = resolve_model(model, &session_config.master_model);
+    let master_target = resolve_model_target(pool, model, master_model).await?;
     let master_agent = active_agents.iter().find(|a| a.agent_type == "master");
 
     emit_status(&status_tx, "master", "总控", "working");
     let plan = master::run_master(
-        provider,
-        master_model,
+        &master_target.provider,
+        &master_target.model,
         user_input,
         &active_agents,
         &state,
@@ -179,7 +189,7 @@ pub async fn execute_multi_agent_turn(
         // Collect agent info first (to avoid borrow conflicts with futures)
         let mut level_agents = Vec::new();
         let mut level_calls = Vec::new();
-        let mut level_models: Vec<String> = Vec::new();
+        let mut level_targets = Vec::new();
 
         for call in level {
             let agent = active_agents.iter().find(|a| a.id == call.agent_id);
@@ -202,13 +212,13 @@ pub async fn execute_multi_agent_turn(
                 .model
                 .as_deref()
                 .filter(|m| !m.is_empty())
-                .unwrap_or(sub_model)
-                .to_string();
+                .unwrap_or(sub_model);
+            let target = resolve_model_target(pool, model, effective_model).await?;
 
             emit_status(&status_tx, &agent.agent_type, &agent.label, "working");
             level_agents.push(agent);
             level_calls.push(call);
-            level_models.push(effective_model);
+            level_targets.push(target);
         }
 
         // Build futures after the borrow loop
@@ -216,8 +226,8 @@ pub async fn execute_multi_agent_turn(
         for i in 0..level_agents.len() {
             futures.push(sub_agent::execute_sub_agent(
                 pool,
-                provider,
-                &level_models[i],
+                &level_targets[i].provider,
+                &level_targets[i].model,
                 level_agents[i],
                 level_calls[i],
                 &state,
@@ -231,7 +241,7 @@ pub async fn execute_multi_agent_turn(
         // Process results
         for (i, result) in results.into_iter().enumerate() {
             let agent = level_agents[i];
-            let agent_model = &level_models[i];
+            let agent_model = &level_targets[i].trace_model;
             emit_status(&status_tx, &agent.agent_type, &agent.label, "done");
 
             match result {
@@ -295,13 +305,20 @@ pub async fn execute_multi_agent_turn(
                 inject_from: all_output_ids,
             };
             emit_status(&status_tx, "writer", &writer.label, "working");
+            let writer_target = resolve_model_target(pool, model, sub_model).await?;
             let output = sub_agent::execute_sub_agent(
-                pool, provider, sub_model, writer, &call, &state, &ctx,
+                pool,
+                &writer_target.provider,
+                &writer_target.model,
+                writer,
+                &call,
+                &state,
+                &ctx,
             )
             .await?;
             emit_status(&status_tx, "writer", &writer.label, "done");
             sub_agent::touch_agent(pool, &writer.id, turn_number).await;
-            traces.push(build_agent_trace(&output, sub_model));
+            traces.push(build_agent_trace(&output, &writer_target.trace_model));
             turn_state::set_output(&mut state, &writer.id, output);
         }
     }
@@ -345,13 +362,14 @@ pub async fn execute_multi_agent_turn(
 
     // 11. Variable state update: state agent proposes concrete `variables.*` changes.
     let sub_model = resolve_model(model, &session_config.sub_agent_model);
+    let state_target = resolve_model_target(pool, model, sub_model).await?;
     let state_agent = active_agents.iter().find(|a| a.agent_type == "state");
     let mut state_proposals = Vec::new();
     if let Some(agent) = state_agent {
         emit_status(&status_tx, "state", &agent.label, "working");
         match variable_state_agent::propose_variable_changes(
-            provider,
-            sub_model,
+            &state_target.provider,
+            &state_target.model,
             user_input,
             &narrative,
             &ctx,
@@ -393,12 +411,13 @@ pub async fn execute_multi_agent_turn(
     } else {
         &session_config.compression_model
     };
+    let compression_target = resolve_model_target(pool, model, compression_model).await?;
 
     let (compression_result, compression_job) = if run_compression_inline {
         emit_status(&status_tx, "state", "压缩", "working");
         let result = match compression::generate_compression(
-            provider,
-            compression_model,
+            &compression_target.provider,
+            &compression_target.model,
             user_input,
             &narrative,
             &ctx,

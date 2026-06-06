@@ -2,6 +2,7 @@ pub mod agents;
 pub mod charactercards;
 pub mod health;
 pub mod messages;
+pub mod presets;
 pub mod proposals;
 pub mod providers;
 pub mod sessions;

@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import * as api from '../api/client';
 import type { SubAgent } from '../api/client';
 import type { ProviderConfig } from '../api/types';
+import { describeModelRef, ModelPicker } from '../settings/modelSelection';
 
 const STATUS_COLORS: Record<string, string> = {
   active: '#5B8A5E',
@@ -11,7 +12,13 @@ const STATUS_COLORS: Record<string, string> = {
   dead: '#C92546',
 };
 
-const AGENT_TYPES = ['npc', 'writer', 'director', 'parser', 'state', 'user'];
+const AGENT_TYPES = ['npc', 'writer', 'director', 'parser', 'state'];
+
+function sortAgents(a: SubAgent, b: SubAgent) {
+  if (a.agent_type === 'user' && b.agent_type !== 'user') return -1;
+  if (b.agent_type === 'user' && a.agent_type !== 'user') return 1;
+  return a.agent_type.localeCompare(b.agent_type) || a.label.localeCompare(b.label);
+}
 
 export default function AgentManager() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -25,14 +32,12 @@ export default function AgentManager() {
   const [newLabel, setNewLabel] = useState('');
   const [newContext, setNewContext] = useState('');
   const [newModel, setNewModel] = useState('');
-  const [newModelSource, setNewModelSource] = useState<'default' | 'provider' | 'custom'>('default');
 
   // Edit modal state
   const [editingAgent, setEditingAgent] = useState<SubAgent | null>(null);
   const [editLabel, setEditLabel] = useState('');
   const [editContext, setEditContext] = useState('');
   const [editModel, setEditModel] = useState('');
-  const [editModelSource, setEditModelSource] = useState<'default' | 'provider' | 'custom'>('default');
 
   useEffect(() => {
     if (!sessionId) {
@@ -59,7 +64,7 @@ export default function AgentManager() {
     setError(null);
     try {
       const data = await api.listAgents(sessionId);
-      setAgents(Array.isArray(data?.items) ? data.items : []);
+      setAgents(Array.isArray(data?.items) ? [...data.items].sort(sortAgents) : []);
     } catch (err: any) {
       const message = err?.message || '加载 Agent 列表失败，请稍后重试。';
       setError(message);
@@ -97,27 +102,18 @@ export default function AgentManager() {
     }
   }
 
-  function resolveModel(source: 'default' | 'provider' | 'custom', value: string): string | undefined {
-    if (source === 'default') return undefined;
-    if (source === 'custom') return value || undefined;
-    // provider: value is the provider id, find its model
-    const provider = providers.find(p => p.id === value);
-    return provider?.model || undefined;
-  }
-
   async function handleCreate() {
     try {
       await api.createAgent(sessionId!, {
         agent_type: newType,
         label: newLabel || undefined,
         context: newContext || undefined,
-        model: resolveModel(newModelSource, newModel),
+        model: newModel || undefined,
       });
       setShowCreate(false);
       setNewLabel('');
       setNewContext('');
       setNewModel('');
-      setNewModelSource('default');
       loadAgents();
     } catch (err: any) {
       setError(err?.message || '创建 Agent 失败');
@@ -127,30 +123,16 @@ export default function AgentManager() {
   function openEdit(agent: SubAgent) {
     setEditingAgent(agent);
     setEditLabel(agent.label || '');
-    setEditContext(agent.context_preview || '');
-    const agentModel = agent.config?.model || '';
-    if (!agentModel) {
-      setEditModelSource('default');
-      setEditModel('');
-    } else {
-      const matchingProvider = providers.find(p => p.model === agentModel);
-      if (matchingProvider) {
-        setEditModelSource('provider');
-        setEditModel(matchingProvider.id);
-      } else {
-        setEditModelSource('custom');
-        setEditModel(agentModel);
-      }
-    }
+    setEditContext(agent.context || '');
+    setEditModel(agent.config?.model || '');
   }
 
   async function handleSaveEdit() {
     if (!editingAgent) return;
     try {
-      const resolvedModel = resolveModel(editModelSource, editModel);
       const newConfig = { ...editingAgent.config };
-      if (resolvedModel) {
-        newConfig.model = resolvedModel;
+      if (editModel) {
+        newConfig.model = editModel;
       } else {
         delete newConfig.model;
       }
@@ -214,38 +196,7 @@ export default function AgentManager() {
           </div>
           <div className="form-row">
             <label>模型:</label>
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <select
-                value={newModelSource === 'provider' ? newModel : newModelSource}
-                onChange={e => {
-                  const val = e.target.value;
-                  if (val === 'default') {
-                    setNewModelSource('default');
-                    setNewModel('');
-                  } else if (val === 'custom') {
-                    setNewModelSource('custom');
-                    setNewModel('');
-                  } else {
-                    setNewModelSource('provider');
-                    setNewModel(val);
-                  }
-                }}
-              >
-                <option value="default">使用 session 默认模型</option>
-                {providers.map(p => (
-                  <option key={p.id} value={p.id}>{p.name} — {p.model}{p.is_default ? ' (默认)' : ''}</option>
-                ))}
-                <option value="custom">自定义模型名称...</option>
-              </select>
-              {newModelSource === 'custom' && (
-                <input
-                  type="text"
-                  value={newModel}
-                  onChange={e => setNewModel(e.target.value)}
-                  placeholder="输入模型名称，如 gpt-4o"
-                />
-              )}
-            </div>
+            <ModelPicker value={newModel} providers={providers} defaultText="使用 session 默认模型" onChange={setNewModel} />
           </div>
           <div className="form-row">
             <label>上下文:</label>
@@ -265,9 +216,10 @@ export default function AgentManager() {
           <p className="empty">暂无 Agent。创建一个多 Agent 会话后，系统会自动初始化默认 Agent。</p>
         ) : (
           agents.map(agent => (
-            <div key={agent.id} className="agent-card">
+            <div key={agent.id} className={`agent-card ${agent.fixed ? 'agent-card-fixed' : ''}`}>
               <div className="agent-card-header">
                 <span className="agent-type-badge">{agent.agent_type}</span>
+                {agent.fixed && <span className="agent-type-badge">fixed</span>}
                 <span
                   className="agent-status-badge"
                   style={{ backgroundColor: STATUS_COLORS[agent.status] || '#666' }}
@@ -277,7 +229,7 @@ export default function AgentManager() {
               </div>
               <h3 className="agent-label">{agent.label || agent.id.slice(0, 8)}</h3>
               {agent.config?.model && (
-                <p className="agent-model">模型: {agent.config.model}</p>
+                <p className="agent-model">模型: {describeModelRef(agent.config.model, providers)}</p>
               )}
               {agent.character_id && (
                 <p className="agent-char-id">角色: {agent.character_id}</p>
@@ -286,13 +238,13 @@ export default function AgentManager() {
               <p className="agent-turn">最后活跃: 第 {agent.last_active_turn} 轮</p>
               <div className="agent-actions">
                 <button className="edit-btn" onClick={() => openEdit(agent)}>编辑</button>
-                {agent.status === 'active' && agent.agent_type === 'npc' && (
+                {agent.status === 'active' && agent.agent_type === 'npc' && !agent.fixed && (
                   <button className="cooldown-btn" onClick={() => handleCooldown(agent.id)}>冷却</button>
                 )}
-                {agent.status === 'cooldown' && (
+                {agent.status === 'cooldown' && !agent.fixed && (
                   <button className="restore-btn" onClick={() => handleRestore(agent.id)}>恢复</button>
                 )}
-                {(agent.status === 'active' || agent.status === 'cooldown') && (
+                {(agent.status === 'active' || agent.status === 'cooldown') && !agent.fixed && (
                   <button className="delete-btn" onClick={() => handleDelete(agent.id)}>删除</button>
                 )}
               </div>
@@ -315,38 +267,7 @@ export default function AgentManager() {
             </div>
             <div className="form-row">
               <label>模型:</label>
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <select
-                  value={editModelSource === 'provider' ? editModel : editModelSource}
-                  onChange={e => {
-                    const val = e.target.value;
-                    if (val === 'default') {
-                      setEditModelSource('default');
-                      setEditModel('');
-                    } else if (val === 'custom') {
-                      setEditModelSource('custom');
-                      setEditModel('');
-                    } else {
-                      setEditModelSource('provider');
-                      setEditModel(val);
-                    }
-                  }}
-                >
-                  <option value="default">使用 session 默认模型</option>
-                  {providers.map(p => (
-                    <option key={p.id} value={p.id}>{p.name} — {p.model}{p.is_default ? ' (默认)' : ''}</option>
-                  ))}
-                  <option value="custom">自定义模型名称...</option>
-                </select>
-                {editModelSource === 'custom' && (
-                  <input
-                    type="text"
-                    value={editModel}
-                    onChange={e => setEditModel(e.target.value)}
-                    placeholder="输入模型名称"
-                  />
-                )}
-              </div>
+              <ModelPicker value={editModel} providers={providers} defaultText="使用 session 默认模型" onChange={setEditModel} />
             </div>
             <div className="form-row">
               <label>上下文:</label>

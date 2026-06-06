@@ -5,6 +5,7 @@ import Settings from './pages/Settings';
 import AgentManager from './pages/AgentManager';
 import WorldBooks from './pages/WorldBooks';
 import CharacterCardPage from './pages/CharacterCard';
+import Presets from './pages/Presets';
 import './styles/global.css';
 
 export default function App() {
@@ -16,6 +17,7 @@ export default function App() {
         <Route path="/chat/:sessionId/agents" element={<AgentManager />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/worldbooks" element={<WorldBooks />} />
+        <Route path="/presets" element={<Presets />} />
         <Route path="/charactercards/:id" element={<CharacterCardPage />} />
       </Routes>
     </BrowserRouter>

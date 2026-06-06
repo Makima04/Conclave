@@ -8,6 +8,7 @@
 
 - [文档中心](docs.md)
 - [架构首页](index.md)
+- [Actor Agent 架构](actor-agent-architecture.md)
 - [Agent 边界](agent-boundaries.md)
 
 ---
@@ -69,11 +70,11 @@ Agent Runtime 是平台自己的 RP 编排内核，不直接绑定 LangGraph、A
 
 - `Parser`：解析用户意图，输出结构化 `ParsedIntent`。
 - `Master`：总控调度，基于上下文和意图生成 `MasterPlan`。
-- `npc`：NPC 角色执行，拥有独立上下文和 LLM 调用。
+- `user`：固定 Actor Agent，代表用户扮演角色；每个 multi-agent 会话有且只有一个，不可删除或冷却。
+- `npc`：动态 Actor Agent，拥有独立上下文和 LLM 调用，可由 Master 或用户调节生命周期。
 - `Writer`：最终叙事合成，输出用户可见文本。
 - `Director`：叙事节奏排列（可选，由 Master 按需调用）。
 - `State`（Compression Agent）：后处理压缩，生成 scene_summary + events + foreshadowing + state_changes。
-- `user_proxy`：用户角色代理，自动生成用户角色行为（可选）。
 
 ### single_agent 模式
 

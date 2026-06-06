@@ -235,6 +235,7 @@ pub async fn send_message(
 
             let mut accumulated = String::new();
             let mut chunk_count: u64 = 0;
+            let mut stream_error: Option<String> = None;
             let mut pinned = std::pin::pin!(stream_result.stream);
             while let Some(chunk) = pinned.next().await {
                 match chunk {
@@ -275,22 +276,46 @@ pub async fn send_message(
                     }
                     Err(e) => {
                         tracing::error!(session = %session_id_clone, turn = turn_number, "LLM stream error: {}", e);
-                        let _ = sqlx::query(
-                            "UPDATE sessions SET status = 'failed_generation' WHERE id = ?",
-                        )
-                        .bind(&session_id_clone)
-                        .execute(&pool)
-                        .await;
-                        let _ =
-                            broadcast_tx.send(crate::runtime::sse_types::SseEvent::StreamError {
-                                error: e.to_string(),
-                            });
-                        let _ = tx.send(Ok(Event::default()
-                            .event("stream_error")
-                            .data(serde_json::json!({"error": e.to_string()}).to_string())));
+                        stream_error = Some(e.to_string());
                         break;
                     }
                 }
+            }
+
+            if stream_error.is_none() && accumulated.trim().is_empty() {
+                stream_error = Some("模型返回了空内容，请重试或检查模型配置。".to_string());
+            }
+
+            if let Some(error) = stream_error {
+                tracing::error!(
+                    session = %session_id_clone,
+                    turn = turn_number,
+                    chunks = chunk_count,
+                    content_len = accumulated.len(),
+                    "LLM stream failed before persistence: {}",
+                    error
+                );
+                let _ =
+                    sqlx::query("UPDATE sessions SET status = 'failed_generation' WHERE id = ?")
+                        .bind(&session_id_clone)
+                        .execute(&pool)
+                        .await;
+                let _ = broadcast_tx.send(crate::runtime::sse_types::SseEvent::StreamError {
+                    error: error.clone(),
+                });
+                let _ = tx.send(Ok(Event::default()
+                    .event("stream_error")
+                    .data(serde_json::json!({"error": error}).to_string())));
+                let _ = broadcast_tx
+                    .send(crate::runtime::sse_types::SseEvent::TurnReady { turn_number });
+                active_turns_clone
+                    .lock()
+                    .await
+                    .remove(&session_id_for_active);
+                let _ = tx.send(Ok(Event::default()
+                    .event("turn_ready")
+                    .data(serde_json::json!({"turn_number": turn_number}).to_string())));
+                return;
             }
 
             tracing::info!(
@@ -383,6 +408,33 @@ pub async fn send_message(
                         &state_proposals,
                     )
                     .await;
+                    if let Ok(fallback_model) =
+                        crate::runtime::executor::load_provider_model(&pool).await
+                    {
+                        let model_ref = compression_job
+                            .as_ref()
+                            .map(|j| j.model.as_str())
+                            .filter(|m| !m.is_empty())
+                            .unwrap_or(fallback_model.as_str());
+                        if let Ok(target) = crate::runtime::executor::resolve_model_target(
+                            &pool,
+                            &fallback_model,
+                            model_ref,
+                        )
+                        .await
+                        {
+                            turn_finalizer::persist_turn_knowledge(
+                                &pool,
+                                &target.provider,
+                                &target.model,
+                                &session_id_clone,
+                                turn_number,
+                                &user_input,
+                                &display_content,
+                            )
+                            .await;
+                        }
+                    }
                     let _ = sqlx::query("UPDATE sessions SET status = 'idle' WHERE id = ?")
                         .bind(&session_id_clone)
                         .execute(&pool)

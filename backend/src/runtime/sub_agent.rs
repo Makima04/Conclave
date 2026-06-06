@@ -2,6 +2,7 @@ use crate::error::AppError;
 use crate::provider::adapter::ProviderAdapter;
 use crate::provider::openai::OpenAiProvider;
 use crate::provider::types::{ChatMessage, ChatRequest};
+use crate::runtime::knowledge;
 use crate::runtime::recall;
 use crate::runtime::turn_state;
 use crate::runtime::types::{
@@ -151,6 +152,65 @@ fn format_recent_context(messages: &[ContextMessage], max_turns: usize) -> Strin
         .join("\n")
 }
 
+fn format_role_contexts(context: &ContextBundle) -> String {
+    if context.role_contexts.is_empty() {
+        return String::new();
+    }
+    context
+        .role_contexts
+        .iter()
+        .map(|r| {
+            let label = if r.label.trim().is_empty() {
+                r.agent_type.as_str()
+            } else {
+                r.label.as_str()
+            };
+            if r.context.trim().is_empty() {
+                format!("- {} ({})", label, r.agent_type)
+            } else {
+                format!("- {} ({}): {}", label, r.agent_type, r.context.trim())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_visible_knowledge(agent: &SubAgent, context: &ContextBundle) -> String {
+    if context.knowledge_events.is_empty() {
+        return String::new();
+    }
+    let current_role = context.role_contexts.iter().find(|r| {
+        r.agent_type == agent.agent_type
+            && (r.label == agent.label
+                || agent
+                    .character_id
+                    .as_deref()
+                    .is_some_and(|id| r.character_id.as_deref() == Some(id)))
+    });
+
+    context
+        .knowledge_events
+        .iter()
+        .filter(|event| {
+            current_role
+                .map(|role| knowledge::visible_to_agent(event, role, &agent.agent_type))
+                .unwrap_or_else(|| {
+                    matches!(
+                        agent.agent_type.as_str(),
+                        "writer" | "director" | "master" | "state" | "parser"
+                    )
+                })
+        })
+        .map(|event| {
+            format!(
+                "[T{}|{}|{}] {}",
+                event.turn_number, event.source_type, event.visibility, event.fact
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Filter structured state by visibility rules.
 /// Removes fields matching sensitive patterns (hidden_*, secret_*, internal_*).
 fn filter_state_for_visibility(state: &serde_json::Value, agent_type: &str) -> serde_json::Value {
@@ -232,9 +292,64 @@ fn build_contextual_system_prompt(
 ) -> String {
     let mut prompt = agent.system_prompt.clone();
 
-    // Agent-specific context (static, from DB)
-    if !agent.context.is_empty() {
-        prompt.push_str(&format!("\n\n---\n你的专属上下文:\n{}", agent.context));
+    let current_role = context.role_contexts.iter().find(|r| {
+        r.agent_type == agent.agent_type
+            && (r.label == agent.label
+                || agent
+                    .character_id
+                    .as_deref()
+                    .is_some_and(|id| r.character_id.as_deref() == Some(id)))
+    });
+
+    // User Agent gets dynamically merged user/worldbook context from ContextBundle.
+    // Other agents keep their DB-owned static context.
+    let self_context = if agent.agent_type == "user" {
+        current_role.map(|role| role.context.as_str()).unwrap_or("")
+    } else {
+        agent.context.as_str()
+    };
+    if !self_context.trim().is_empty() {
+        prompt.push_str(&format!(
+            "\n\n---\n你的专属上下文:\n{}",
+            self_context.trim()
+        ));
+    }
+
+    if matches!(agent.agent_type.as_str(), "writer" | "director" | "user") {
+        let role_context = format_role_contexts(context);
+        if !role_context.is_empty() {
+            prompt.push_str(&format!("\n\n---\n当前参与角色:\n{}", role_context));
+        }
+    }
+
+    if matches!(
+        agent.agent_type.as_str(),
+        "npc" | "user" | "writer" | "director" | "master"
+    ) {
+        let visible_knowledge = format_visible_knowledge(agent, context);
+        if !visible_knowledge.is_empty() {
+            prompt.push_str(&format!("\n\n---\n已知事实:\n{}", visible_knowledge));
+        }
+    }
+
+    // Inject preset modules assigned to this agent type
+    if !context.preset_modules.is_empty() {
+        let visible_modules: Vec<_> = context
+            .preset_modules
+            .iter()
+            .filter(|m| {
+                m.target_agents.contains(&agent.agent_type)
+                    || m.target_agents.contains(&"inject_all".to_string())
+            })
+            .collect();
+        if !visible_modules.is_empty() {
+            prompt.push_str("\n\n---\n预设指令:\n");
+            for m in &visible_modules {
+                if !m.content.is_empty() {
+                    prompt.push_str(&format!("\n[{}]\n{}\n", m.name, m.content));
+                }
+            }
+        }
     }
 
     match agent.agent_type.as_str() {
@@ -354,6 +469,7 @@ fn build_contextual_system_prompt(
         let wb_entries: Vec<_> = context
             .world_book_entries
             .iter()
+            .filter(|e| e.category != "user")
             .filter(|e| {
                 // Filter by visibility based on agent type
                 match e.visibility.as_str() {
@@ -448,12 +564,73 @@ pub async fn get_all_agents(
     Ok(agents)
 }
 
+pub async fn sync_user_agent_from_persona(
+    pool: &SqlitePool,
+    session_id: &str,
+    label: &str,
+    context: &str,
+) -> Result<(), AppError> {
+    let label = label.trim();
+    let context = context.trim();
+    if label.is_empty() && context.is_empty() {
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE sub_agents SET status = 'dead', updated_at = ? WHERE session_id = ? AND agent_type = 'user' AND status != 'dead'",
+        )
+        .bind(&now)
+        .bind(session_id)
+        .execute(pool)
+        .await?;
+        return Ok(());
+    }
+
+    let label = if label.is_empty() { "用户" } else { label };
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let existing_id: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM sub_agents WHERE session_id = ? AND agent_type = 'user' AND status != 'dead' ORDER BY created_at LIMIT 1",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some(id) = existing_id {
+        sqlx::query(
+            "UPDATE sub_agents SET label = ?, context = ?, status = 'active', updated_at = ? WHERE id = ?",
+        )
+        .bind(label)
+        .bind(context)
+        .bind(&now)
+        .bind(&id)
+        .execute(pool)
+        .await?;
+    } else {
+        let action = LifecycleAction {
+            action: "create".to_string(),
+            agent_type: "user".to_string(),
+            character_id: Some("user".to_string()),
+            label: label.to_string(),
+            reason: "sync user persona".to_string(),
+            context: Some(context.to_string()),
+        };
+        create_agent(pool, session_id, &action, 0).await?;
+    }
+
+    Ok(())
+}
+
 pub async fn create_agent(
     pool: &SqlitePool,
     session_id: &str,
     action: &LifecycleAction,
     turn_number: i32,
 ) -> Result<SubAgent, AppError> {
+    if action.agent_type == "user" {
+        if let Some(existing) = get_user_agent(pool, session_id).await? {
+            return Ok(existing);
+        }
+    }
+
     tracing::debug!(
         session = session_id,
         agent_type = %action.agent_type,
@@ -516,6 +693,14 @@ pub async fn cooldown_agent(
     reason: &str,
     turn_number: i32,
 ) -> Result<(), AppError> {
+    if is_user_agent(pool, agent_id).await? {
+        tracing::warn!(
+            agent_id = agent_id,
+            "Ignoring cooldown for fixed User Agent"
+        );
+        return Ok(());
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
         "UPDATE sub_agents SET status = 'cooldown', cooldown_reason = ?, updated_at = ? WHERE id = ? AND status = 'active'"
@@ -536,6 +721,11 @@ pub async fn cooldown_agent(
 }
 
 pub async fn delete_agent(pool: &SqlitePool, agent_id: &str) -> Result<(), AppError> {
+    if is_user_agent(pool, agent_id).await? {
+        tracing::warn!(agent_id = agent_id, "Ignoring delete for fixed User Agent");
+        return Ok(());
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query("UPDATE sub_agents SET status = 'dead', updated_at = ? WHERE id = ?")
         .bind(&now)
@@ -568,6 +758,25 @@ pub async fn restore_agent(
         "Agent restored from cooldown"
     );
     Ok(())
+}
+
+async fn is_user_agent(pool: &SqlitePool, agent_id: &str) -> Result<bool, AppError> {
+    let agent_type: Option<String> =
+        sqlx::query_scalar("SELECT agent_type FROM sub_agents WHERE id = ?")
+            .bind(agent_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(agent_type.as_deref() == Some("user"))
+}
+
+async fn get_user_agent(pool: &SqlitePool, session_id: &str) -> Result<Option<SubAgent>, AppError> {
+    let agent = sqlx::query_as::<_, SubAgent>(
+        "SELECT id, session_id, agent_type, character_id, label, system_prompt, context, status, last_active_turn, config FROM sub_agents WHERE session_id = ? AND agent_type = 'user' AND status != 'dead' ORDER BY created_at LIMIT 1",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(agent)
 }
 
 /// Auto-cooldown agents that haven't been active for too many turns

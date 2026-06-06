@@ -5,9 +5,16 @@ import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import * as api from '../api/client';
-import type { CharacterCard, Message, RenderMode, SessionConfig, UserPersona } from '../api/types';
+import type { CharacterCard, Message, RenderMode, SessionConfig, UserPersona, UserSettingMergeStrategy } from '../api/types';
 import { DEFAULT_SESSION_CONFIG } from '../api/types';
-import { loadGlobalSessionDefaults, normalizeRenderMode, normalizeSessionConfig, saveGlobalSessionDefaults } from '../settings/sessionDefaults';
+import {
+  loadGlobalSessionDefaults,
+  loadUserPersonaPresets,
+  normalizeRenderMode,
+  normalizeSessionConfig,
+  saveGlobalSessionDefaults,
+  type UserPersonaPreset,
+} from '../settings/sessionDefaults';
 
 function CodeBlock({ className, children }: { className?: string; children?: React.ReactNode }) {
   const [copied, setCopied] = useState(false);
@@ -1403,6 +1410,7 @@ export default function Chat() {
   const [config, setConfig] = useState<SessionConfig>({ ...DEFAULT_SESSION_CONFIG });
   const [configDirty, setConfigDirty] = useState(false);
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
+  const [regenerateErrors, setRegenerateErrors] = useState<Record<string, string>>({});
   const [rawViewIds, setRawViewIds] = useState<Set<string>>(new Set());
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1426,6 +1434,7 @@ export default function Chat() {
   const [renderMode, setRenderMode] = useState<RenderMode>('auto');
   const [sandboxActionLog, setSandboxActionLog] = useState<Array<{time: number, action: string, payload: any}>>([]);
   const [userPersona, setUserPersona] = useState<UserPersona>({ name: '', avatar: '', address: '', background: '', style: '' });
+  const [userPresets, setUserPresets] = useState<UserPersonaPreset[]>([]);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -1435,6 +1444,7 @@ export default function Chat() {
   const memoryPendingRef = useRef(false);
   const recoverAbortRef = useRef<AbortController | null>(null);
   const initialMsgCountRef = useRef(0);
+  const streamHadErrorRef = useRef(false);
   const inputLocked = streaming || recovering || memoryPending;
   const cardHasStatusRenderer = hasStatusRenderer(characterCard);
   const cardHasComplexUi = hasComplexCardUi(characterCard);
@@ -1612,6 +1622,7 @@ export default function Chat() {
     });
     loadSession();
     loadSessionState();
+    setUserPresets(loadUserPersonaPresets());
     return () => {
       stopRecovery();
     };
@@ -1674,22 +1685,25 @@ export default function Chat() {
     }
   }
 
-  async function saveConfig() {
+  async function persistConfig(nextConfig: SessionConfig) {
     try {
-      const nextConfig = normalizeSessionConfig({
-        ...config,
-        render_mode: renderMode,
-        user_persona: userPersona,
-      });
-      const updated = await api.updateSession(sessionId!, { config: nextConfig });
+      const updated = await api.updateSession(sessionId!, { config: normalizeSessionConfig(nextConfig) });
       const savedConfig = normalizeSessionConfig(updated.config);
       setConfig(savedConfig);
-      setRenderMode(savedConfig.render_mode);
-      setUserPersona(savedConfig.user_persona);
+    setRenderMode(savedConfig.render_mode);
+    setUserPersona(savedConfig.user_persona);
       setConfigDirty(false);
     } catch (err) {
       console.error('Failed to save config:', err);
     }
+  }
+
+  async function saveConfig() {
+    await persistConfig({
+      ...config,
+      render_mode: renderMode,
+      user_persona: userPersona,
+    });
   }
 
   function updateConfig<K extends keyof SessionConfig>(key: K, value: SessionConfig[K]) {
@@ -1705,6 +1719,28 @@ export default function Chat() {
   function updateUserPersona(key: keyof UserPersona, value: string) {
     setUserPersona(prev => ({ ...prev, [key]: value }));
     setConfigDirty(true);
+  }
+
+  function updateUserSettingMergeStrategy(value: UserSettingMergeStrategy) {
+    updateConfig('user_setting_merge_strategy', value);
+  }
+
+  async function applyUserPersonaPreset(value: string) {
+    if (!value) return;
+    const persona = value === 'global'
+      ? loadGlobalSessionDefaults().user_persona
+      : userPresets.find(p => p.id === value)?.persona;
+    if (!persona) return;
+
+    const nextConfig = normalizeSessionConfig({
+      ...config,
+      render_mode: renderMode,
+      user_persona: persona,
+    });
+    setUserPersona(persona);
+    setConfig(nextConfig);
+    setConfigDirty(true);
+    await persistConfig(nextConfig);
   }
 
   async function applyGlobalDefaultsToSession() {
@@ -1737,6 +1773,7 @@ export default function Chat() {
     if (!content || streaming || recovering || memoryPending) return;
     setFailedContent(null);
     setStreamError(null);
+    streamHadErrorRef.current = false;
     setMemoryBusy(false);
 
     if (configDirty) {
@@ -1776,6 +1813,7 @@ export default function Chat() {
         if (event === 'message_delta' && data.content) {
           setAgentStatuses([]);
           setStreamError(null);
+          streamHadErrorRef.current = false;
           setStreamText(prev => {
             const next = prev + data.content;
             streamTextRef.current = next;
@@ -1783,6 +1821,7 @@ export default function Chat() {
           });
         }
         if (event === 'stream_error') {
+          streamHadErrorRef.current = true;
           setStreamError(data.error || '生成出现错误，正在重试...');
         }
         if (event === 'memory_start') {
@@ -1792,6 +1831,7 @@ export default function Chat() {
           setStreamError(data.error || '记忆整理失败，已允许继续');
         }
         if (event === 'turn_end') {
+          if (streamHadErrorRef.current) return;
           setAgentStatuses([]);
           setStreamError(null);
           const content = streamTextRef.current || data.message_content;
@@ -1841,7 +1881,6 @@ export default function Chat() {
         setMemoryBusy(false);
         setStreamText('');
         setAgentStatuses([]);
-        setStreamError(null);
         clearPending();
         setFailedContent(content);
       },
@@ -1851,11 +1890,18 @@ export default function Chat() {
         streamingRef.current = false;
         setStreaming(false);
         setMemoryBusy(false);
-        setStreamError(null);
         setAgentStatuses([]);
 
         if (wasStreaming) {
           clearPending();
+        }
+
+        if (streamHadErrorRef.current) {
+          setFailedContent(content);
+          setStreamText('');
+          streamTextRef.current = '';
+          streamHadErrorRef.current = false;
+          return;
         }
 
         // Persist accumulated streamText if turn_end was never received
@@ -1988,6 +2034,11 @@ export default function Chat() {
   async function handleRegenerate(msgId: string) {
     if (streaming || memoryPending || regeneratingId) return;
     setRegeneratingId(msgId);
+    setRegenerateErrors(prev => {
+      const next = { ...prev };
+      delete next[msgId];
+      return next;
+    });
     try {
       const result = await api.regenerateMessage(sessionId!, msgId);
       setMessages(prev => prev.map(m =>
@@ -1995,6 +2046,10 @@ export default function Chat() {
       ));
     } catch (err) {
       console.error('Regenerate failed:', err);
+      setRegenerateErrors(prev => ({
+        ...prev,
+        [msgId]: err instanceof Error ? err.message : '重新生成失败',
+      }));
     } finally {
       setRegeneratingId(null);
     }
@@ -2365,6 +2420,9 @@ export default function Chat() {
                 const displayPos = activeIndex === -1 ? total : activeIndex + 1;
                 return (
                   <div className="message-actions">
+                    {regenerateErrors[msg.id] && (
+                      <span className="send-failed-badge">{regenerateErrors[msg.id]}</span>
+                    )}
                     <button
                       className="action-btn"
                       onClick={() => toggleRawView(msg.id)}
@@ -2637,6 +2695,14 @@ export default function Chat() {
             <div className="inspector-section-title">User Persona</div>
             {!userEditing ? (
               <>
+                <div className="inspector-field">
+                  <label>套用 User 配置</label>
+                  <select value="" onChange={e => applyUserPersonaPreset(e.target.value)}>
+                    <option value="">选择后套用到当前会话</option>
+                    <option value="global">全局默认 User</option>
+                    {userPresets.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
+                  </select>
+                </div>
                 <div className="user-summary-card">
                   <div className="user-summary-avatar">
                     {userPersona.avatar ? <img src={userPersona.avatar} alt={userPersona.name || 'User'} /> : <span>{(userPersona.name || '用').charAt(0)}</span>}
@@ -2648,15 +2714,31 @@ export default function Chat() {
                 </div>
                 <div className="debug-row"><span className="debug-key">背景</span><span className="debug-value">{userPersona.background.trim() ? shortText(userPersona.background, 18) : '未设置'}</span></div>
                 <div className="debug-row"><span className="debug-key">风格</span><span className="debug-value">{userPersona.style.trim() ? shortText(userPersona.style, 18) : '未设置'}</span></div>
+                <div className="debug-row"><span className="debug-key">覆盖策略</span><span className="debug-value">{config.user_setting_merge_strategy === 'worldbook_overrides_user' ? '世界书优先' : '用户优先'}</span></div>
                 <button className="inspector-btn primary full-width" onClick={() => setUserEditing(true)}>编辑 User</button>
               </>
             ) : (
               <>
+                <div className="inspector-field">
+                  <label>套用 User 配置</label>
+                  <select value="" onChange={e => applyUserPersonaPreset(e.target.value)}>
+                    <option value="">选择后填入下方表单</option>
+                    <option value="global">全局默认 User</option>
+                    {userPresets.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
+                  </select>
+                </div>
                 <div className="inspector-field"><label>名称</label><input type="text" value={userPersona.name} onChange={e => updateUserPersona('name', e.target.value)} placeholder="你的名字" /></div>
                 <div className="inspector-field"><label>头像 URL</label><input type="url" value={userPersona.avatar} onChange={e => updateUserPersona('avatar', e.target.value)} placeholder="https://..." /></div>
                 <div className="inspector-field"><label>称呼</label><input type="text" value={userPersona.address} onChange={e => updateUserPersona('address', e.target.value)} placeholder="角色如何称呼你" /></div>
                 <div className="inspector-field"><label>背景 / 设定</label><textarea value={userPersona.background} onChange={e => updateUserPersona('background', e.target.value)} placeholder="用户角色的背景设定" rows={3} /></div>
                 <div className="inspector-field"><label>默认扮演风格</label><textarea value={userPersona.style} onChange={e => updateUserPersona('style', e.target.value)} placeholder="写作/扮演的风格偏好" rows={3} /></div>
+                <div className="inspector-field">
+                  <label>User 与世界书冲突时</label>
+                  <select value={config.user_setting_merge_strategy} onChange={e => updateUserSettingMergeStrategy(e.target.value as UserSettingMergeStrategy)}>
+                    <option value="user_overrides_worldbook">用户设定优先</option>
+                    <option value="worldbook_overrides_user">世界书设定优先</option>
+                  </select>
+                </div>
                 <button className="inspector-btn primary full-width" onClick={() => { saveConfig(); setUserEditing(false); }}>保存会话 User</button>
               </>
             )}

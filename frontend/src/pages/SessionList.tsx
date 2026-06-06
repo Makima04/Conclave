@@ -1,24 +1,30 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as api from '../api/client';
-import type { Session, WorldBook } from '../api/types';
-import { loadGlobalSessionDefaults } from '../settings/sessionDefaults';
+import type { Preset, Session, WorldBook } from '../api/types';
+import { applyUserPersonaToConfig, loadGlobalSessionDefaults, loadUserPersonaPresets, type UserPersonaPreset } from '../settings/sessionDefaults';
 
 export default function SessionList() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [title, setTitle] = useState('');
-  const [mode, setMode] = useState('single_agent');
+  const [mode, setMode] = useState('multi_agent');
   const [loading, setLoading] = useState(true);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [worldBooks, setWorldBooks] = useState<WorldBook[]>([]);
   const [selectedWorldBookId, setSelectedWorldBookId] = useState('');
   const [filterWorldBookId, setFilterWorldBookId] = useState<string>('');
+  const [presets, setPresets] = useState<Preset[]>([]);
+  const [selectedPresetId, setSelectedPresetId] = useState('');
+  const [userPresets, setUserPresets] = useState<UserPersonaPreset[]>([]);
+  const [selectedUserPresetId, setSelectedUserPresetId] = useState('');
   const navigate = useNavigate();
 
   useEffect(() => {
     loadSessions();
     api.listWorldBooks().then(d => setWorldBooks(d.items)).catch(() => {});
+    api.listPresets().then(d => setPresets(d.items)).catch(() => {});
+    setUserPresets(loadUserPersonaPresets());
     const interval = setInterval(loadSessions, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -36,9 +42,19 @@ export default function SessionList() {
 
   async function handleCreate() {
     try {
-      const session = await api.createSession(title || undefined, mode, selectedWorldBookId || undefined, loadGlobalSessionDefaults());
+      let defaults = loadGlobalSessionDefaults();
+      if (selectedUserPresetId) {
+        const preset = userPresets.find(p => p.id === selectedUserPresetId);
+        if (preset) defaults = applyUserPersonaToConfig(defaults, preset.persona);
+      }
+      if (selectedPresetId) {
+        defaults = { ...defaults, active_preset_id: selectedPresetId };
+      }
+      const session = await api.createSession(title || undefined, mode, selectedWorldBookId || undefined, defaults);
       setTitle('');
       setSelectedWorldBookId('');
+      setSelectedPresetId('');
+      setSelectedUserPresetId('');
       navigate(`/chat/${session.id}`);
     } catch (err) {
       console.error('Failed to create session:', err);
@@ -91,6 +107,7 @@ export default function SessionList() {
 
       <div className="top-actions">
         <button className="settings-btn" onClick={() => navigate('/worldbooks')}>世界书</button>
+        <button className="settings-btn" onClick={() => navigate('/presets')}>预设</button>
         <button className="settings-btn" onClick={() => navigate('/settings')}>设置</button>
       </div>
 
@@ -104,14 +121,28 @@ export default function SessionList() {
         />
         <select value={mode} onChange={e => setMode(e.target.value)}>
           <option value="single_agent">单 Agent</option>
-          <option value="multi_agent">多 Agent (动态总控)</option>
+          <option value="multi_agent">多 Agent</option>
         </select>
+        {presets.length > 0 && (
+          <select value={selectedPresetId} onChange={e => setSelectedPresetId(e.target.value)}>
+            <option value="">不选择预设</option>
+            {presets.map(p => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        )}
         {worldBooks.length > 0 && (
           <select value={selectedWorldBookId} onChange={e => handleWorldBookSelect(e.target.value)}>
             <option value="">不选择世界书</option>
             {worldBooks.map(wb => (
               <option key={wb.id} value={wb.id}>{wb.name} ({wb.entry_count}条)</option>
             ))}
+          </select>
+        )}
+        {userPresets.length > 0 && (
+          <select value={selectedUserPresetId} onChange={e => setSelectedUserPresetId(e.target.value)}>
+            <option value="">User：当前全局默认</option>
+            {userPresets.map(p => <option key={p.id} value={p.id}>User：{p.title}</option>)}
           </select>
         )}
         <button onClick={handleCreate}>新建会话</button>

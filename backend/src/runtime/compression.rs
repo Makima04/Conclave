@@ -72,6 +72,8 @@ JSON格式：
 6. visibility控制事件/伏笔对哪些Agent可见: "public"(所有人可见), "gm_only"(仅director/master可见), "character:角色id"(仅对应角色可见), "writer_only"(仅writer/director/master可见)。默认"public"。
 7. 如果本轮对话没有产生有意义的变化，可以输出空数组。"#;
 
+    tracing::debug!(model = model, "generate_compression: starting");
+
     // Use agent's DB prompt if available, otherwise fall back to hardcoded default
     let system_prompt = agent
         .filter(|a| !a.system_prompt.is_empty())
@@ -124,12 +126,14 @@ JSON格式：
         stream: false,
     };
 
-    tracing::debug!("Compression Agent: sending LLM request");
+    tracing::debug!(model = model, "Compression Agent: sending LLM request");
 
+    let llm_start = std::time::Instant::now();
     let response = provider
         .chat_completion_with_retry(request, 3)
         .await
         .map_err(|e| AppError::Provider(e.to_string()))?;
+    let llm_duration_ms = llm_start.elapsed().as_millis() as i64;
 
     let text = response
         .choices
@@ -138,9 +142,21 @@ JSON格式：
         .unwrap_or_default();
 
     tracing::info!(
-        "Compression output: {} tokens, text preview: {}",
-        response.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0),
-        truncate_str(&text, 200)
+        model = model,
+        duration_ms = llm_duration_ms,
+        total_tokens = response.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0),
+        prompt_tokens = response
+            .usage
+            .as_ref()
+            .map(|u| u.prompt_tokens)
+            .unwrap_or(0),
+        completion_tokens = response
+            .usage
+            .as_ref()
+            .map(|u| u.completion_tokens)
+            .unwrap_or(0),
+        text_preview = truncate_str(&text, 200),
+        "Compression Agent: LLM call completed"
     );
 
     let schema_hint = r#"{"scene_summary":"...","events":[{"event_type":"...","content":"...","characters_involved":[...],"importance":"...","visibility":"public"}],"foreshadowing":[{"content":"...","importance":"...","trigger_conditions":[...],"action":"new","visibility":"public"}],"state_changes":[{"op":"update","target":"path","to":"value"}]}"#;
@@ -202,6 +218,16 @@ pub async fn persist_compression(
     turn_number: i32,
     result: &CompressionResult,
 ) -> Result<(), AppError> {
+    tracing::info!(
+        session = session_id,
+        turn = turn_number,
+        events_count = result.events.len(),
+        structured_events_count = result.structured_events.len(),
+        foreshadowing_count = result.foreshadowing.len(),
+        state_changes_count = result.state_changes.len(),
+        "persist_compression: starting"
+    );
+
     // 1. Save scene summary
     if !result.scene_summary.is_empty() {
         if let Err(e) = summaries::save_summary(
@@ -391,6 +417,12 @@ pub async fn persist_compression(
             }
         }
     }
+
+    tracing::info!(
+        session = session_id,
+        turn = turn_number,
+        "persist_compression: completed"
+    );
 
     Ok(())
 }

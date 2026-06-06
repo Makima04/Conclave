@@ -74,7 +74,7 @@ CREATE TABLE sessions (
 | 字段 | 说明 |
 |---|---|
 | `mode` | `single_agent` 或 `multi_agent`（动态总控 4 层流水线）。 |
-| `config` | JSON 配置：`max_context_turns`、`stream`、`temperature`、`top_p`、`max_tokens`、`frequency_penalty`、`presence_penalty`、`system_prompt`、`master_model`、`sub_agent_model`、`compression_model`、`cooldown_turns`（默认 10）、`user_auto_mode`（默认 "ask"）、`max_active_agents`（默认 8）、`parser_enabled`（默认 true）。 |
+| `config` | JSON 配置：`max_context_turns`、`stream`、`temperature`、`top_p`、`max_tokens`、`frequency_penalty`、`presence_penalty`、`system_prompt`、`master_model`、`sub_agent_model`、`compression_model`、`cooldown_turns`（默认 10）、`user_auto_mode`（默认 "ask"）、`max_active_agents`（默认 8）、`parser_enabled`（默认 true）、`user_persona`、`user_setting_merge_strategy`（`user_overrides_worldbook` 或 `worldbook_overrides_user`）。 |
 | `current_turn` | 当前轮次号，每轮递增。 |
 | `title_source` | `auto`（LLM 自动生成）或 `manual`（用户手动命名）。 |
 | `status` | `idle` 或 `processing`。后端启动时自动重置残留的 `processing` 状态。 |
@@ -241,7 +241,7 @@ CREATE INDEX idx_traces_session_node ON traces(session_id, node_type);
 
 | 字段 | 说明 |
 |---|---|
-| `node_type` | `parser`、`master`、`npc`、`writer`、`state`、`director`、`user_proxy`。 |
+| `node_type` | `parser`、`master`、`user`、`npc`、`writer`、`state`、`director`。 |
 | `token_usage` | JSON：`{"prompt_tokens":N,"completion_tokens":N}`。 |
 
 ---
@@ -263,7 +263,7 @@ CREATE INDEX idx_summaries_session_type ON turn_summaries(session_id, summary_ty
 
 ---
 
-### sub_agents — 子 Agent 管理
+### sub_agents — Agent 管理
 
 ```sql
 CREATE TABLE sub_agents (
@@ -288,7 +288,7 @@ CREATE INDEX idx_sub_agents_session_status ON sub_agents(session_id, status);
 
 | 字段 | 说明 |
 |---|---|
-| `agent_type` | `master`、`parser`、`npc`、`writer`、`director`、`state`、`user_proxy`。 |
+| `agent_type` | `master`、`parser`、`user`、`npc`、`writer`、`director`、`state`。`user` 是固定 Actor Agent，每个 multi-agent 会话有且只有一个。 |
 | `status` | `active`、`cooldown`、`retired`、`dead`。 |
 | `config` | JSON：`max_context_turns`、`max_tokens`、`temperature`、`recall_mode`、`max_recall_events`。 |
 
@@ -369,6 +369,37 @@ CREATE TABLE provider_configs (
   updated_at    TEXT NOT NULL
 );
 ```
+
+---
+
+### agent_knowledge_events — Agent 认知事件
+
+```sql
+CREATE TABLE agent_knowledge_events (
+  id          TEXT PRIMARY KEY,
+  session_id  TEXT NOT NULL REFERENCES sessions(id),
+  turn_number INTEGER NOT NULL,
+  fact        TEXT NOT NULL DEFAULT '',
+  source_type TEXT NOT NULL DEFAULT 'narration',
+  actors      TEXT NOT NULL DEFAULT '[]',
+  targets     TEXT NOT NULL DEFAULT '[]',
+  observers   TEXT NOT NULL DEFAULT '[]',
+  knowers     TEXT NOT NULL DEFAULT '[]',
+  visibility  TEXT NOT NULL DEFAULT 'writer_only',
+  confidence  REAL NOT NULL DEFAULT 0.5,
+  evidence    TEXT NOT NULL DEFAULT '',
+  created_at  TEXT NOT NULL
+);
+```
+
+| 字段 | 说明 |
+|---|---|
+| `fact` | 被抽取出的事实。 |
+| `source_type` | `speech`、`action`、`visual_observation`、`inner_monologue`、`narration`、`inference`。 |
+| `knowers` | JSON 数组，知道该事实的 Actor 名称或 character_id。 |
+| `visibility` | `public`、`private`、`observed_by`、`told_to`、`writer_only`。 |
+| `confidence` | 0-1 置信度。 |
+| `evidence` | 简短证据文本。 |
 
 ---
 

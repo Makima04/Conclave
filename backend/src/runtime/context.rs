@@ -1,4 +1,8 @@
-use super::types::{ContextBundle, ContextMessage, WorldBookContextEntry};
+use super::types::{
+    ContextBundle, ContextMessage, KnowledgeEvent, PresetModuleContext, RoleContext,
+    WorldBookContextEntry,
+};
+use super::user_settings::{self, UserPersonaSettings};
 use crate::error::AppError;
 use sqlx::SqlitePool;
 
@@ -35,6 +39,24 @@ async fn build_context_inner(
             turn_number,
         })
         .collect();
+
+    let mut role_contexts: Vec<RoleContext> = sqlx::query_as::<_, (String, String, Option<String>, String)>(
+        "SELECT agent_type, label, character_id, context FROM sub_agents WHERE session_id = ? AND status = 'active' AND agent_type IN ('npc', 'user') ORDER BY created_at"
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .filter(|(_, label, _, context)| !label.trim().is_empty() || !context.trim().is_empty())
+    .map(|(agent_type, label, character_id, context)| RoleContext {
+        agent_type,
+        label,
+        character_id,
+        context,
+    })
+    .collect();
+
+    let knowledge_events = load_knowledge_events(pool, session_id, max_turns).await?;
 
     let state_snapshot: Option<String> = sqlx::query_scalar(
         "SELECT state_json FROM state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 1",
@@ -90,9 +112,67 @@ async fn build_context_inner(
         vec![]
     };
 
+    // Load preset modules if session has an active preset
+    let session_config_json: Option<String> =
+        sqlx::query_scalar("SELECT config FROM sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await?;
+
+    let session_config_value = session_config_json
+        .as_deref()
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let active_preset_id = session_config_value
+        .get("active_preset_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let user_persona = session_config_value
+        .get("user_persona")
+        .cloned()
+        .and_then(|v| serde_json::from_value::<UserPersonaSettings>(v).ok())
+        .unwrap_or_default();
+    let strategy = session_config_value
+        .get("user_setting_merge_strategy")
+        .and_then(|v| v.as_str())
+        .unwrap_or(user_settings::USER_OVERRIDES_WORLDBOOK);
+    let (user_label, user_persona_context) = user_settings::persona_context(&user_persona);
+    let worldbook_user_context =
+        user_settings::load_worldbook_user_context(pool, world_pack_id.as_deref())
+            .await
+            .unwrap_or_default();
+    let merged_user_context =
+        user_settings::merge_context(&user_persona_context, &worldbook_user_context, strategy);
+
+    if !merged_user_context.trim().is_empty() {
+        if let Some(user_role) = role_contexts.iter_mut().find(|r| r.agent_type == "user") {
+            if user_role.label.trim().is_empty() || user_role.label == "用户" {
+                user_role.label = user_label;
+            }
+            user_role.context = merged_user_context;
+        } else {
+            role_contexts.push(RoleContext {
+                agent_type: "user".to_string(),
+                label: user_label,
+                character_id: Some("user".to_string()),
+                context: merged_user_context,
+            });
+        }
+    }
+
+    let preset_modules = if let Some(ref pid) = active_preset_id {
+        load_preset_modules(pool, pid).await.unwrap_or_default()
+    } else {
+        vec![]
+    };
+
     Ok(ContextBundle {
         task: "Continue the roleplay narrative".to_string(),
         recent_context: recent_messages,
+        role_contexts,
+        knowledge_events,
         structured_state,
         events,
         event_visibilities,
@@ -100,7 +180,52 @@ async fn build_context_inner(
         foreshadow_visibilities,
         scene_summary,
         world_book_entries,
+        preset_modules,
     })
+}
+
+async fn load_knowledge_events(
+    pool: &SqlitePool,
+    session_id: &str,
+    max_turns: usize,
+) -> Result<Vec<KnowledgeEvent>, AppError> {
+    let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String, f32, String, i32)>(
+        "SELECT fact, source_type, actors, targets, observers, knowers, visibility, confidence, evidence, turn_number FROM agent_knowledge_events WHERE session_id = ? ORDER BY turn_number DESC, created_at DESC LIMIT ?"
+    )
+    .bind(session_id)
+    .bind((max_turns * 6).max(20) as i32)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .rev()
+        .map(
+            |(
+                fact,
+                source_type,
+                actors,
+                targets,
+                observers,
+                knowers,
+                visibility,
+                confidence,
+                evidence,
+                turn_number,
+            )| KnowledgeEvent {
+                fact,
+                source_type,
+                actors: serde_json::from_str(&actors).unwrap_or_default(),
+                targets: serde_json::from_str(&targets).unwrap_or_default(),
+                observers: serde_json::from_str(&observers).unwrap_or_default(),
+                knowers: serde_json::from_str(&knowers).unwrap_or_default(),
+                visibility,
+                confidence,
+                evidence,
+                turn_number,
+            },
+        )
+        .collect())
 }
 
 /// Load world book entries for context injection. Prefers parsed entries (multi-agent),
@@ -165,20 +290,60 @@ async fn load_world_book_entries(
 
     let entries: Vec<WorldBookContextEntry> = raw_rows
         .into_iter()
-        .map(|(keys_json, content, constant, priority, _comment)| {
+        .map(|(keys_json, content, constant, priority, comment)| {
             let keys: Vec<String> = serde_json::from_str(&keys_json).unwrap_or_default();
+            let category = if user_settings::looks_like_user_setting(&keys, &content, &comment) {
+                "user"
+            } else {
+                "global"
+            };
             WorldBookContextEntry {
                 content,
                 keys,
                 constant: constant != 0,
                 priority,
                 visibility: "public".to_string(),
-                category: "global".to_string(),
+                category: category.to_string(),
             }
         })
         .collect();
 
     Ok(entries)
+}
+
+/// Load preset modules for context injection.
+async fn load_preset_modules(
+    pool: &SqlitePool,
+    preset_id: &str,
+) -> Result<Vec<PresetModuleContext>, AppError> {
+    let rows = sqlx::query_as::<_, (String, String, String, String, i32)>(
+        "SELECT name, content, role, target_agents, injection_order FROM preset_modules WHERE preset_id = ? AND enabled = 1 ORDER BY injection_order ASC, created_at ASC"
+    )
+    .bind(preset_id)
+    .fetch_all(pool)
+    .await?;
+
+    let modules = rows
+        .into_iter()
+        .filter_map(
+            |(name, content, role, target_agents_json, injection_order)| {
+                let target_agents: Vec<String> =
+                    serde_json::from_str(&target_agents_json).unwrap_or_default();
+                if target_agents.is_empty() {
+                    return None; // Skip unclassified modules
+                }
+                Some(PresetModuleContext {
+                    name,
+                    content,
+                    role,
+                    target_agents,
+                    injection_order,
+                })
+            },
+        )
+        .collect();
+
+    Ok(modules)
 }
 
 pub async fn build_context(

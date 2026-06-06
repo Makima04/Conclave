@@ -1,5 +1,8 @@
 use super::context;
-use super::types::{MemoryProposal, StateChangeProposal, TurnResult, WriterDraft};
+use super::types::{
+    ContextBundle, MemoryProposal, RoleContext, StateChangeProposal, TurnResult,
+    WorldBookContextEntry, WriterDraft,
+};
 use crate::config::AppConfig;
 use crate::error::AppError;
 use crate::provider::adapter::ProviderAdapter;
@@ -45,175 +48,70 @@ pub struct StreamTurnResult {
     pub broadcast_tx: Option<broadcast::Sender<SseEvent>>,
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct SessionRow {
-    id: String,
-    mode: String,
-    current_turn: i32,
-    config: String,
-    title_source: String,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct ProviderRow {
-    id: String,
-    base_url: String,
-    api_key: String,
-    model: String,
-}
-
-async fn load_provider(pool: &SqlitePool) -> Result<OpenAiProvider, AppError> {
-    let row = sqlx::query_as::<_, ProviderRow>(
-        "SELECT id, base_url, api_key, model FROM provider_configs WHERE is_default = 1 LIMIT 1",
-    )
-    .fetch_optional(pool)
-    .await?;
-
-    match row {
-        Some(r) => Ok(OpenAiProvider::new(&r.base_url, &r.api_key)),
-        None => Err(AppError::BadRequest(
-            "未配置默认模型，请先在设置中添加。".to_string(),
-        )),
+fn format_world_book_reference(entries: &[WorldBookContextEntry]) -> Option<String> {
+    let mut visible_entries: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.category != "user")
+        .filter(|entry| !entry.content.trim().is_empty())
+        .collect();
+    if visible_entries.is_empty() {
+        return None;
     }
-}
 
-pub async fn load_default_provider(pool: &SqlitePool) -> Result<OpenAiProvider, AppError> {
-    load_provider(pool).await
-}
-
-pub async fn load_provider_model(pool: &SqlitePool) -> Result<String, AppError> {
-    let model: Option<String> =
-        sqlx::query_scalar("SELECT model FROM provider_configs WHERE is_default = 1 LIMIT 1")
-            .fetch_optional(pool)
-            .await?;
-
-    model.ok_or_else(|| AppError::BadRequest("未配置默认模型。".to_string()))
-}
-
-#[instrument(skip(pool, _app_config, user_input), fields(session = session_id))]
-pub async fn execute_turn(
-    pool: &SqlitePool,
-    _app_config: &AppConfig,
-    session_id: &str,
-    user_input: &str,
-) -> Result<TurnResult, AppError> {
-    let provider = load_provider(pool).await?;
-    let model = load_provider_model(pool).await?;
-
-    let session = sqlx::query_as::<_, SessionRow>(
-        "SELECT id, mode, current_turn, config, title_source FROM sessions WHERE id = ? AND deleted_at IS NULL"
-    )
-    .bind(session_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
-
-    let session_config: SessionConfig = serde_json::from_str(&session.config).unwrap_or_default();
-    let turn_number = session.current_turn + 1;
-
-    tracing::info!(
-        session = session_id,
-        turn = turn_number,
-        model = %model,
-        "execute_turn: non-streaming turn start"
-    );
-
-    // Multi-agent execution: dispatch to dynamic Master Agent architecture
-    if session.mode == "multi_agent" {
-        let commit = super::graph::execute_multi_agent_turn(
-            pool,
-            &provider,
-            &model,
-            session_id,
-            turn_number,
-            user_input,
-            &session_config,
-            None,
-            true,
-        )
-        .await?;
-
-        // Single transaction: user msg + assistant msg + traces + current_turn
-        let mut tx = pool.begin().await?;
-        turn_finalizer::finalize_turn(
-            &mut tx,
-            session_id,
-            turn_number,
-            user_input,
-            &commit.narrative,
-            &commit.traces,
-        )
-        .await?;
-        tx.commit().await?;
-
-        // Post-commit extras (non-fatal)
-        turn_finalizer::persist_turn_extras(
-            pool,
-            session_id,
-            turn_number,
-            &commit.compression,
-            &commit.state_proposals,
-        )
-        .await;
-
-        let display = variable_update::extract(&commit.narrative).display_text;
-        let message_content = if display.is_empty() {
-            commit.narrative.clone()
+    visible_entries.sort_by_key(|entry| -entry.priority);
+    let mut content = String::from("[World Book Reference]\n");
+    for entry in visible_entries {
+        if entry.constant {
+            content.push_str(&format!("[Always Active] {}\n\n", entry.content));
         } else {
-            display
-        };
-
-        auto_title(
-            pool,
-            session_id,
-            user_input,
-            &message_content,
-            turn_number,
-            &session.title_source,
-        )
-        .await;
-
-        return Ok(TurnResult {
-            message_content,
-            writer_draft: WriterDraft {
-                narrative_text: commit.narrative,
-                memory_candidates: MemoryProposal::default(),
-            },
-            turn_number,
-        });
+            content.push_str(&format!("{}\n\n", entry.content));
+        }
     }
+    Some(content)
+}
 
-    // Single-agent execution (existing path)
-    let context_bundle = context::build_context(
-        pool,
-        session_id,
-        turn_number,
-        session_config.max_context_turns as usize,
-    )
-    .await?;
+fn format_role_reference(roles: &[RoleContext]) -> Option<String> {
+    let lines: Vec<String> = roles
+        .iter()
+        .filter(|role| !role.label.trim().is_empty() || !role.context.trim().is_empty())
+        .map(|role| {
+            let label = if role.label.trim().is_empty() {
+                role.agent_type.as_str()
+            } else {
+                role.label.as_str()
+            };
+            if role.context.trim().is_empty() {
+                format!("- {} ({})", label, role.agent_type)
+            } else {
+                format!("- {} ({}): {}", label, role.agent_type, role.context.trim())
+            }
+        })
+        .collect();
 
-    tracing::debug!(
-        session = session_id,
-        turn = turn_number,
-        context_msgs = context_bundle.recent_context.len(),
-        events = context_bundle.events.len(),
-        foreshadowing = context_bundle.foreshadowing.len(),
-        has_summary = context_bundle.scene_summary.is_some(),
-        "Context bundle built"
-    );
-
-    // Build messages for LLM
-    let system_prompt = if session_config.system_prompt.is_empty() {
-        default_system_prompt()
+    if lines.is_empty() {
+        None
     } else {
-        session_config.system_prompt.clone()
-    };
+        Some(format!("[Role Reference]\n{}", lines.join("\n")))
+    }
+}
 
+fn build_single_agent_messages(
+    system_prompt: String,
+    context_bundle: &ContextBundle,
+) -> Vec<ChatMessage> {
     let mut messages = vec![ChatMessage {
         role: "system".to_string(),
         content: system_prompt,
         reasoning_content: None,
     }];
+
+    if let Some(role_content) = format_role_reference(&context_bundle.role_contexts) {
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: role_content,
+            reasoning_content: None,
+        });
+    }
 
     for msg in &context_bundle.recent_context {
         messages.push(ChatMessage {
@@ -265,20 +163,8 @@ pub async fn execute_turn(
         });
     }
 
-    // World book context injection
-    if !context_bundle.world_book_entries.is_empty() {
-        let mut wb_content = String::from("[World Book Reference]\n");
-        let mut entries: Vec<_> = context_bundle.world_book_entries.iter().collect();
-        entries.sort_by_key(|e| -e.priority);
-        for entry in &entries {
-            if !entry.content.is_empty() {
-                if entry.constant {
-                    wb_content.push_str(&format!("[Always Active] {}\n\n", entry.content));
-                } else {
-                    wb_content.push_str(&format!("{}\n\n", entry.content));
-                }
-            }
-        }
+    // User-character world-book entries are merged into Role Reference above.
+    if let Some(wb_content) = format_world_book_reference(&context_bundle.world_book_entries) {
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: wb_content,
@@ -286,10 +172,303 @@ pub async fn execute_turn(
         });
     }
 
-    let model_for_trace = model.clone();
+    messages
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct SessionRow {
+    id: String,
+    mode: String,
+    current_turn: i32,
+    config: String,
+    title_source: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct ProviderRow {
+    id: String,
+    base_url: String,
+    api_key: String,
+    model: String,
+}
+
+#[derive(Clone)]
+pub struct ModelTarget {
+    pub provider: OpenAiProvider,
+    pub model: String,
+    pub trace_model: String,
+}
+
+async fn load_provider(pool: &SqlitePool) -> Result<OpenAiProvider, AppError> {
+    let row = sqlx::query_as::<_, ProviderRow>(
+        "SELECT id, base_url, api_key, model FROM provider_configs WHERE is_default = 1 LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    match row {
+        Some(r) => Ok(OpenAiProvider::new(&r.base_url, &r.api_key)),
+        None => Err(AppError::BadRequest(
+            "未配置默认模型，请先在设置中添加。".to_string(),
+        )),
+    }
+}
+
+pub async fn load_default_provider(pool: &SqlitePool) -> Result<OpenAiProvider, AppError> {
+    load_provider(pool).await
+}
+
+pub async fn load_provider_model(pool: &SqlitePool) -> Result<String, AppError> {
+    let model: Option<String> =
+        sqlx::query_scalar("SELECT model FROM provider_configs WHERE is_default = 1 LIMIT 1")
+            .fetch_optional(pool)
+            .await?;
+
+    model.ok_or_else(|| AppError::BadRequest("未配置默认模型。".to_string()))
+}
+
+fn parse_provider_model_ref(value: &str) -> Option<(String, String)> {
+    let rest = value.strip_prefix("provider:")?;
+    let (provider_id, encoded_model) = rest.split_once(':')?;
+    if provider_id.is_empty() || encoded_model.is_empty() {
+        return None;
+    }
+    Some((provider_id.to_string(), percent_decode(encoded_model)))
+}
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_value(bytes[i + 1]), hex_value(bytes[i + 2])) {
+                output.push((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+        }
+        output.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(output).unwrap_or_else(|_| value.to_string())
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+pub async fn resolve_model_target(
+    pool: &SqlitePool,
+    fallback_model: &str,
+    model_ref: &str,
+) -> Result<ModelTarget, AppError> {
+    if let Some((provider_id, model)) = parse_provider_model_ref(model_ref) {
+        let row = sqlx::query_as::<_, ProviderRow>(
+            "SELECT id, base_url, api_key, model FROM provider_configs WHERE id = ?",
+        )
+        .bind(&provider_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("所选模型配置不存在。".to_string()))?;
+
+        return Ok(ModelTarget {
+            provider: OpenAiProvider::new(&row.base_url, &row.api_key),
+            trace_model: format!("{}:{}", row.id, model),
+            model,
+        });
+    }
+
+    let provider = load_provider(pool).await?;
+    let model = if model_ref.is_empty() {
+        fallback_model.to_string()
+    } else {
+        model_ref.to_string()
+    };
+    Ok(ModelTarget {
+        provider,
+        trace_model: model.clone(),
+        model,
+    })
+}
+
+#[instrument(skip(pool, _app_config, user_input), fields(session = session_id))]
+pub async fn execute_turn(
+    pool: &SqlitePool,
+    _app_config: &AppConfig,
+    session_id: &str,
+    user_input: &str,
+) -> Result<TurnResult, AppError> {
+    let provider = load_provider(pool).await?;
+    let model = load_provider_model(pool).await?;
+
+    let session = sqlx::query_as::<_, SessionRow>(
+        "SELECT id, mode, current_turn, config, title_source FROM sessions WHERE id = ? AND deleted_at IS NULL"
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+
+    let session_config: SessionConfig = serde_json::from_str(&session.config).unwrap_or_default();
+    let turn_number = session.current_turn + 1;
+
+    tracing::info!(
+        session = session_id,
+        turn = turn_number,
+        model = %model,
+        "execute_turn: non-streaming turn start"
+    );
+
+    // Multi-agent execution: dispatch to dynamic Master Agent architecture
+    if session.mode == "multi_agent" {
+        tracing::info!(
+            session = session_id,
+            turn = turn_number,
+            model = %model,
+            mode = "multi_agent",
+            "Multi-agent turn starting"
+        );
+
+        let ma_start = std::time::Instant::now();
+        let commit = super::graph::execute_multi_agent_turn(
+            pool,
+            &provider,
+            &model,
+            session_id,
+            turn_number,
+            user_input,
+            &session_config,
+            None,
+            true,
+        )
+        .await?;
+
+        let ma_duration_ms = ma_start.elapsed().as_millis() as i32;
+        tracing::info!(
+            session = session_id,
+            turn = turn_number,
+            duration_ms = ma_duration_ms,
+            content_len = commit.narrative.len(),
+            trace_count = commit.traces.len(),
+            has_compression = commit.compression.is_some(),
+            "Multi-agent turn completed"
+        );
+
+        if commit.narrative.trim().is_empty() {
+            return Err(AppError::Provider(
+                "模型返回了空内容，请重试或检查模型配置。".to_string(),
+            ));
+        }
+
+        // Single transaction: user msg + assistant msg + traces + current_turn
+        tracing::info!(
+            session = session_id,
+            turn = turn_number,
+            "Persisting multi-agent turn to database"
+        );
+        let mut tx = pool.begin().await?;
+        turn_finalizer::finalize_turn(
+            &mut tx,
+            session_id,
+            turn_number,
+            user_input,
+            &commit.narrative,
+            &commit.traces,
+        )
+        .await?;
+        tx.commit().await?;
+        tracing::info!(
+            session = session_id,
+            turn = turn_number,
+            "Multi-agent turn persisted successfully"
+        );
+
+        // Post-commit extras (non-fatal)
+        turn_finalizer::persist_turn_extras(
+            pool,
+            session_id,
+            turn_number,
+            &commit.compression,
+            &commit.state_proposals,
+        )
+        .await;
+        turn_finalizer::persist_turn_knowledge(
+            pool,
+            &provider,
+            &model,
+            session_id,
+            turn_number,
+            user_input,
+            &commit.narrative,
+        )
+        .await;
+
+        let display = variable_update::extract(&commit.narrative).display_text;
+        let message_content = if display.is_empty() {
+            commit.narrative.clone()
+        } else {
+            display
+        };
+
+        auto_title(
+            pool,
+            session_id,
+            user_input,
+            &message_content,
+            turn_number,
+            &session.title_source,
+        )
+        .await;
+
+        return Ok(TurnResult {
+            message_content,
+            writer_draft: WriterDraft {
+                narrative_text: commit.narrative,
+                memory_candidates: MemoryProposal::default(),
+            },
+            turn_number,
+        });
+    }
+
+    // Single-agent execution (existing path)
+    let target = resolve_model_target(pool, &model, &model).await?;
+    let context_bundle = context::build_context(
+        pool,
+        session_id,
+        turn_number,
+        session_config.max_context_turns as usize,
+    )
+    .await?;
+
+    tracing::debug!(
+        session = session_id,
+        turn = turn_number,
+        context_msgs = context_bundle.recent_context.len(),
+        events = context_bundle.events.len(),
+        foreshadowing = context_bundle.foreshadowing.len(),
+        has_summary = context_bundle.scene_summary.is_some(),
+        "Context bundle built"
+    );
+
+    // Build messages for LLM
+    let system_prompt = if session_config.system_prompt.is_empty() {
+        default_system_prompt()
+    } else {
+        session_config.system_prompt.clone()
+    };
+
+    let messages = build_single_agent_messages(system_prompt, &context_bundle);
+
+    let model_for_trace = target.trace_model.clone();
 
     let request = ChatRequest {
-        model,
+        model: target.model.clone(),
         messages,
         temperature: Some(session_config.temperature),
         top_p: Some(session_config.top_p),
@@ -299,18 +478,54 @@ pub async fn execute_turn(
         stream: false,
     };
 
+    tracing::info!(
+        session = session_id,
+        turn = turn_number,
+        model = %target.model,
+        msg_count = request.messages.len(),
+        max_tokens = request.max_tokens,
+        temperature = request.temperature,
+        "LLM call starting (non-streaming)"
+    );
+
     let start = std::time::Instant::now();
-    let response = provider
+    let response = target
+        .provider
         .chat_completion_with_retry(request, 3)
         .await
         .map_err(|e| AppError::Provider(e.to_string()))?;
     let duration_ms = start.elapsed().as_millis() as i32;
 
+    let content_len = response
+        .choices
+        .first()
+        .map(|c| c.message.content.len())
+        .unwrap_or(0);
+    let has_reasoning = response
+        .choices
+        .first()
+        .and_then(|c| c.message.reasoning_content.as_ref())
+        .is_some();
+    let prompt_tokens = response
+        .usage
+        .as_ref()
+        .map(|u| u.prompt_tokens)
+        .unwrap_or(0);
+    let completion_tokens = response
+        .usage
+        .as_ref()
+        .map(|u| u.completion_tokens)
+        .unwrap_or(0);
+
     tracing::info!(
         session = session_id,
         turn = turn_number,
         duration_ms = duration_ms,
-        "LLM non-streaming call completed"
+        content_len = content_len,
+        has_reasoning_content = has_reasoning,
+        prompt_tokens = prompt_tokens,
+        completion_tokens = completion_tokens,
+        "LLM call completed (non-streaming)"
     );
 
     let narrative_text = response
@@ -318,6 +533,12 @@ pub async fn execute_turn(
         .first()
         .map(|c| c.message.content.clone())
         .unwrap_or_default();
+
+    if narrative_text.trim().is_empty() {
+        return Err(AppError::Provider(
+            "模型返回了空内容，请重试或检查模型配置。".to_string(),
+        ));
+    }
 
     // Build a trace for the single-agent LLM call
     let trace = super::types::AgentTrace {
@@ -340,6 +561,11 @@ pub async fn execute_turn(
     };
 
     // Single transaction: user msg + assistant msg + traces + current_turn
+    tracing::info!(
+        session = session_id,
+        turn = turn_number,
+        "Persisting turn to database"
+    );
     let mut tx = pool.begin().await?;
     turn_finalizer::finalize_turn(
         &mut tx,
@@ -351,6 +577,11 @@ pub async fn execute_turn(
     )
     .await?;
     tx.commit().await?;
+    tracing::info!(
+        session = session_id,
+        turn = turn_number,
+        "Turn persisted successfully"
+    );
 
     // Auto-title
     let display = variable_update::extract(&narrative_text).display_text;
@@ -659,6 +890,7 @@ pub async fn execute_turn_stream(
     }
 
     // Single-agent streaming path (existing)
+    let target = resolve_model_target(pool, &model, &model).await?;
     // Build context
     let context_bundle = context::build_context(
         pool,
@@ -684,64 +916,10 @@ pub async fn execute_turn_stream(
         session_config.system_prompt.clone()
     };
 
-    let mut messages = vec![ChatMessage {
-        role: "system".to_string(),
-        content: system_prompt,
-        reasoning_content: None,
-    }];
-
-    for msg in &context_bundle.recent_context {
-        messages.push(ChatMessage {
-            role: msg.role.clone(),
-            content: msg.content.clone(),
-            reasoning_content: None,
-        });
-    }
-
-    if !context_bundle.events.is_empty() {
-        messages.push(ChatMessage {
-            role: "system".to_string(),
-            content: format!("Known events:\n{}", context_bundle.events.join("\n")),
-            reasoning_content: None,
-        });
-    }
-
-    if !context_bundle.foreshadowing.is_empty() {
-        messages.push(ChatMessage {
-            role: "system".to_string(),
-            content: format!(
-                "Open foreshadowing items:\n{}",
-                context_bundle.foreshadowing.join("\n")
-            ),
-            reasoning_content: None,
-        });
-    }
-
-    if let Some(ref summary) = context_bundle.scene_summary {
-        messages.push(ChatMessage {
-            role: "system".to_string(),
-            content: format!("Scene summary:\n{}", summary),
-            reasoning_content: None,
-        });
-    }
-
-    if !context_bundle
-        .structured_state
-        .as_object()
-        .map_or(true, |o| o.is_empty())
-    {
-        messages.push(ChatMessage {
-            role: "system".to_string(),
-            content: format!(
-                "Current world state:\n{}",
-                serde_json::to_string_pretty(&context_bundle.structured_state).unwrap_or_default()
-            ),
-            reasoning_content: None,
-        });
-    }
+    let messages = build_single_agent_messages(system_prompt, &context_bundle);
 
     let request = ChatRequest {
-        model: model.clone(),
+        model: target.model.clone(),
         messages,
         temperature: Some(session_config.temperature),
         top_p: Some(session_config.top_p),
@@ -751,8 +929,19 @@ pub async fn execute_turn_stream(
         stream: true,
     };
 
+    tracing::info!(
+        session = session_id,
+        turn = turn_number,
+        model = %target.model,
+        msg_count = request.messages.len(),
+        max_tokens = request.max_tokens,
+        temperature = request.temperature,
+        stream = true,
+        "LLM call starting (streaming)"
+    );
+
     let model_config_json = serde_json::json!({
-        "model": model,
+        "model": target.trace_model,
         "temperature": session_config.temperature,
         "top_p": session_config.top_p,
         "max_tokens": session_config.max_tokens,
@@ -760,7 +949,8 @@ pub async fn execute_turn_stream(
     })
     .to_string();
 
-    let provider_stream = provider
+    let provider_stream = target
+        .provider
         .chat_completion_stream(request)
         .await
         .map_err(|e| AppError::Provider(e.to_string()))?;
@@ -808,7 +998,6 @@ pub async fn regenerate_turn(
     session_id: &str,
     message_id: &str,
 ) -> Result<(String, String, i32), AppError> {
-    let provider = load_provider(pool).await?;
     let model = load_provider_model(pool).await?;
 
     // Load the assistant message
@@ -861,87 +1050,13 @@ pub async fn regenerate_turn(
         session_config.system_prompt.clone()
     };
 
-    let mut messages = vec![ChatMessage {
-        role: "system".to_string(),
-        content: system_prompt,
-        reasoning_content: None,
-    }];
+    let messages = build_single_agent_messages(system_prompt, &context_bundle);
 
-    for ctx_msg in &context_bundle.recent_context {
-        messages.push(ChatMessage {
-            role: ctx_msg.role.clone(),
-            content: ctx_msg.content.clone(),
-            reasoning_content: None,
-        });
-    }
-
-    if !context_bundle.events.is_empty() {
-        messages.push(ChatMessage {
-            role: "system".to_string(),
-            content: format!("Known events:\n{}", context_bundle.events.join("\n")),
-            reasoning_content: None,
-        });
-    }
-
-    if !context_bundle.foreshadowing.is_empty() {
-        messages.push(ChatMessage {
-            role: "system".to_string(),
-            content: format!(
-                "Open foreshadowing items:\n{}",
-                context_bundle.foreshadowing.join("\n")
-            ),
-            reasoning_content: None,
-        });
-    }
-
-    if let Some(ref summary) = context_bundle.scene_summary {
-        messages.push(ChatMessage {
-            role: "system".to_string(),
-            content: format!("Scene summary:\n{}", summary),
-            reasoning_content: None,
-        });
-    }
-
-    if !context_bundle
-        .structured_state
-        .as_object()
-        .map_or(true, |o| o.is_empty())
-    {
-        messages.push(ChatMessage {
-            role: "system".to_string(),
-            content: format!(
-                "Current world state:\n{}",
-                serde_json::to_string_pretty(&context_bundle.structured_state).unwrap_or_default()
-            ),
-            reasoning_content: None,
-        });
-    }
-
-    // World book context injection
-    if !context_bundle.world_book_entries.is_empty() {
-        let mut wb_content = String::from("[World Book Reference]\n");
-        let mut entries: Vec<_> = context_bundle.world_book_entries.iter().collect();
-        entries.sort_by_key(|e| -e.priority);
-        for entry in &entries {
-            if !entry.content.is_empty() {
-                if entry.constant {
-                    wb_content.push_str(&format!("[Always Active] {}\n\n", entry.content));
-                } else {
-                    wb_content.push_str(&format!("{}\n\n", entry.content));
-                }
-            }
-        }
-        messages.push(ChatMessage {
-            role: "system".to_string(),
-            content: wb_content,
-            reasoning_content: None,
-        });
-    }
-
-    let model_for_trace = model.clone();
+    let target = resolve_model_target(pool, &model, &model).await?;
+    let model_for_trace = target.trace_model.clone();
 
     let request = ChatRequest {
-        model,
+        model: target.model.clone(),
         messages,
         temperature: Some(session_config.temperature),
         top_p: Some(session_config.top_p),
@@ -951,18 +1066,69 @@ pub async fn regenerate_turn(
         stream: false,
     };
 
+    tracing::info!(
+        session = session_id,
+        turn = turn_number,
+        message_id = message_id,
+        model = %target.model,
+        msg_count = request.messages.len(),
+        max_tokens = request.max_tokens,
+        temperature = request.temperature,
+        "LLM call starting for regenerate"
+    );
+
     let start = std::time::Instant::now();
-    let response = provider
+    let response = target
+        .provider
         .chat_completion_with_retry(request, 3)
         .await
         .map_err(|e| AppError::Provider(e.to_string()))?;
     let duration_ms = start.elapsed().as_millis() as i32;
+
+    let content_len = response
+        .choices
+        .first()
+        .map(|c| c.message.content.len())
+        .unwrap_or(0);
+    let has_reasoning = response
+        .choices
+        .first()
+        .and_then(|c| c.message.reasoning_content.as_ref())
+        .is_some();
+    let prompt_tokens = response
+        .usage
+        .as_ref()
+        .map(|u| u.prompt_tokens)
+        .unwrap_or(0);
+    let completion_tokens = response
+        .usage
+        .as_ref()
+        .map(|u| u.completion_tokens)
+        .unwrap_or(0);
+
+    tracing::info!(
+        session = session_id,
+        turn = turn_number,
+        message_id = message_id,
+        duration_ms = duration_ms,
+        content_len = content_len,
+        has_reasoning_content = has_reasoning,
+        prompt_tokens = prompt_tokens,
+        completion_tokens = completion_tokens,
+        "LLM regenerate call completed"
+    );
 
     let new_content = response
         .choices
         .first()
         .map(|c| c.message.content.clone())
         .unwrap_or_default();
+
+    if new_content.trim().is_empty() {
+        return Err(AppError::Provider(
+            "模型返回了空内容，请重试或检查模型配置。".to_string(),
+        ));
+    }
 
     // Push current content to variants
     let mut variants: Vec<String> = serde_json::from_str(&variants_str).unwrap_or_default();
@@ -990,6 +1156,12 @@ pub async fn regenerate_turn(
     };
 
     // Single transaction: update message + insert trace
+    tracing::info!(
+        session = session_id,
+        turn = turn_number,
+        message_id = message_id,
+        "Persisting regeneration to database"
+    );
     let mut tx = pool.begin().await?;
     turn_finalizer::finalize_regenerate(
         &mut tx,
@@ -1002,6 +1174,12 @@ pub async fn regenerate_turn(
     )
     .await?;
     tx.commit().await?;
+    tracing::info!(
+        session = session_id,
+        turn = turn_number,
+        message_id = message_id,
+        "Regeneration persisted successfully"
+    );
 
     info!(
         turn = turn_number,

@@ -18,7 +18,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::config::AppConfig;
 use crate::routes::{
-    agents, charactercards, health, messages, proposals, providers, sessions, worldbooks,
+    agents, charactercards, health, messages, presets, proposals, providers, sessions, worldbooks,
 };
 
 #[tokio::main]
@@ -177,6 +177,23 @@ async fn create_app(config: AppConfig) -> Router {
         .route(
             "/api/worldbooks/{id}/entries/{entry_id}",
             delete(worldbooks::delete_entry),
+        )
+        .route("/api/presets", post(presets::import_preset))
+        .route("/api/presets", get(presets::list_presets))
+        .route("/api/presets/{id}", get(presets::get_preset))
+        .route(
+            "/api/presets/{id}",
+            axum::routing::patch(presets::update_preset),
+        )
+        .route("/api/presets/{id}", delete(presets::delete_preset))
+        .route("/api/presets/{id}/parse", post(presets::parse_preset))
+        .route(
+            "/api/presets/{id}/modules/{mid}",
+            put(presets::update_module),
+        )
+        .route(
+            "/api/presets/{id}/modules/{mid}",
+            delete(presets::delete_module),
         )
         .route(
             "/api/charactercards",

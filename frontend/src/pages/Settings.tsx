@@ -1,8 +1,19 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as api from '../api/client';
-import type { ProviderConfig, RenderMode, SessionConfig } from '../api/types';
-import { loadGlobalSessionDefaults, resetGlobalSessionDefaults, saveGlobalSessionDefaults } from '../settings/sessionDefaults';
+import type { ProviderConfig, RenderMode, SessionConfig, UserPersona } from '../api/types';
+import { ModelPicker } from '../settings/modelSelection';
+import {
+  applyUserPersonaToConfig,
+  loadDefaultUserPersonaPresetId,
+  loadGlobalSessionDefaults,
+  loadUserPersonaPresets,
+  resetGlobalSessionDefaults,
+  saveDefaultUserPersonaPresetId,
+  saveGlobalSessionDefaults,
+  saveUserPersonaPresets,
+  type UserPersonaPreset,
+} from '../settings/sessionDefaults';
 
 export default function Settings() {
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
@@ -16,6 +27,9 @@ export default function Settings() {
   const [loading, setLoading] = useState(true);
   const [globalDefaults, setGlobalDefaults] = useState<SessionConfig>(() => loadGlobalSessionDefaults());
   const [defaultsDirty, setDefaultsDirty] = useState(false);
+  const [userPresets, setUserPresets] = useState<UserPersonaPreset[]>(() => loadUserPersonaPresets());
+  const [selectedUserPresetId, setSelectedUserPresetId] = useState(() => loadDefaultUserPersonaPresetId());
+  const [userPresetTitle, setUserPresetTitle] = useState('');
 
   // Model fetching state
   const [fetchingModels, setFetchingModels] = useState(false);
@@ -23,6 +37,16 @@ export default function Settings() {
   const [fetchError, setFetchError] = useState('');
 
   const navigate = useNavigate();
+
+  useEffect(() => {
+    const selected = userPresets.find(p => p.id === selectedUserPresetId);
+    if (selected) {
+      setUserPresetTitle(selected.title);
+      setGlobalDefaults(prev => applyUserPersonaToConfig(prev, selected.persona));
+    } else {
+      setUserPresetTitle('');
+    }
+  }, [selectedUserPresetId]);
 
   useEffect(() => {
     loadProviders();
@@ -123,18 +147,71 @@ export default function Settings() {
       ...prev,
       user_persona: { ...prev.user_persona, [key]: value },
     }));
+    setUserPresets(prev => {
+      const selected = prev.find(p => p.id === selectedUserPresetId);
+      if (!selected) return prev;
+      return prev.map(p => p.id === selectedUserPresetId ? {
+        ...p,
+        persona: { ...p.persona, [key]: value },
+      } : p);
+    });
     setDefaultsDirty(true);
   }
 
   function handleSaveDefaults() {
+    if (selectedUserPresetId) {
+      saveUserPersonaPresets(userPresets);
+      saveDefaultUserPersonaPresetId(selectedUserPresetId);
+    }
     saveGlobalSessionDefaults(globalDefaults);
     setGlobalDefaults(loadGlobalSessionDefaults());
+    setUserPresets(loadUserPersonaPresets());
     setDefaultsDirty(false);
   }
 
   function handleResetDefaults() {
     setGlobalDefaults(resetGlobalSessionDefaults());
     setDefaultsDirty(false);
+  }
+
+  function handleSelectUserPreset(id: string) {
+    setSelectedUserPresetId(id);
+    const selected = userPresets.find(p => p.id === id);
+    if (selected) {
+      setGlobalDefaults(prev => applyUserPersonaToConfig(prev, selected.persona));
+      setDefaultsDirty(true);
+    }
+  }
+
+  function handleCreateUserPreset() {
+    const id = `user-${Date.now()}`;
+    const persona: UserPersona = { ...globalDefaults.user_persona };
+    const title = persona.name || '新用户配置';
+    const next = [...userPresets, { id, title, persona }];
+    setUserPresets(next);
+    setSelectedUserPresetId(id);
+    setUserPresetTitle(title);
+    setDefaultsDirty(true);
+  }
+
+  function handleUpdateUserPresetTitle(value: string) {
+    setUserPresetTitle(value);
+    setUserPresets(prev => prev.map(p => p.id === selectedUserPresetId ? { ...p, title: value || '未命名用户' } : p));
+    setDefaultsDirty(true);
+  }
+
+  function handleDeleteUserPreset() {
+    if (!selectedUserPresetId) return;
+    const next = userPresets.filter(p => p.id !== selectedUserPresetId);
+    const nextSelected = next[0]?.id || '';
+    setUserPresets(next);
+    setSelectedUserPresetId(nextSelected);
+    saveUserPersonaPresets(next);
+    saveDefaultUserPersonaPresetId(nextSelected);
+    if (next[0]) {
+      setGlobalDefaults(prev => applyUserPersonaToConfig(prev, next[0].persona));
+    }
+    setDefaultsDirty(true);
   }
 
   if (loading) return <div className="loading">加载中...</div>;
@@ -197,9 +274,9 @@ export default function Settings() {
               <h3>默认 Agents</h3>
               <p className="form-hint">用于新建多 Agent 会话的默认调度参数。</p>
               <div className="global-default-grid">
-                <div className="form-field"><label>Master 模型</label><input value={globalDefaults.master_model} onChange={e => updateGlobalDefault('master_model', e.target.value)} placeholder="留空使用默认模型" /></div>
-                <div className="form-field"><label>Sub Agent 模型</label><input value={globalDefaults.sub_agent_model} onChange={e => updateGlobalDefault('sub_agent_model', e.target.value)} placeholder="留空使用默认模型" /></div>
-                <div className="form-field"><label>压缩模型</label><input value={globalDefaults.compression_model} onChange={e => updateGlobalDefault('compression_model', e.target.value)} placeholder="留空使用默认模型" /></div>
+                <ModelPicker label="Master 模型" value={globalDefaults.master_model} providers={providers} defaultText="使用默认模型配置" onChange={value => updateGlobalDefault('master_model', value)} />
+                <ModelPicker label="Sub Agent 模型" value={globalDefaults.sub_agent_model} providers={providers} defaultText="使用默认模型配置" onChange={value => updateGlobalDefault('sub_agent_model', value)} />
+                <ModelPicker label="压缩模型" value={globalDefaults.compression_model} providers={providers} defaultText="使用 Sub Agent 模型" onChange={value => updateGlobalDefault('compression_model', value)} />
                 <div className="form-field"><label>User 自动模式</label><select value={globalDefaults.user_auto_mode} onChange={e => updateGlobalDefault('user_auto_mode', e.target.value)}><option value="ask">Ask</option><option value="auto">Auto</option><option value="manual">Manual</option></select></div>
               </div>
               <div className="global-default-grid">
@@ -227,8 +304,25 @@ export default function Settings() {
 
           {settingsTab === 'user' && (
             <div className="provider-form">
-              <h3>默认 User</h3>
-              <p className="form-hint">新会话会复制这套用户名称、称呼和扮演偏好。</p>
+              <h3>User 配置</h3>
+              <p className="form-hint">可以维护多个用户配置；新会话默认复制当前选中的全局用户，也可以在新建或会话内切换。</p>
+              <div className="user-preset-toolbar">
+                <div className="form-field">
+                  <label>当前全局 User</label>
+                  <select value={selectedUserPresetId} onChange={e => handleSelectUserPreset(e.target.value)}>
+                    <option value="">直接编辑全局默认</option>
+                    {userPresets.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
+                  </select>
+                </div>
+                <button type="button" onClick={handleCreateUserPreset}>新建用户配置</button>
+                <button type="button" className="cancel-btn" onClick={handleDeleteUserPreset} disabled={!selectedUserPresetId}>删除当前</button>
+              </div>
+              {selectedUserPresetId && (
+                <div className="form-field">
+                  <label>配置名称</label>
+                  <input value={userPresetTitle} onChange={e => handleUpdateUserPresetTitle(e.target.value)} placeholder="用于下拉选择的名称" />
+                </div>
+              )}
               <div className="global-default-grid">
                 <div className="form-field"><label>名称</label><input value={globalDefaults.user_persona.name} onChange={e => updateGlobalUserPersona('name', e.target.value)} placeholder="默认用户名称" /></div>
                 <div className="form-field"><label>头像 URL</label><input value={globalDefaults.user_persona.avatar} onChange={e => updateGlobalUserPersona('avatar', e.target.value)} placeholder="https://..." /></div>

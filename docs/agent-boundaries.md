@@ -9,6 +9,7 @@
 - [文档中心](docs.md)
 - [架构首页](index.md)
 - [Agent Runtime](agent-runtime.md)
+- [Actor Agent 架构](actor-agent-architecture.md)
 - [动态总控架构](dynamic-master-architecture.md)
 - [长期记忆](long-context-memory.md)
 
@@ -28,11 +29,11 @@
 |---|---|---|---|
 | `parser` | 用户输入、ContextBundle 摘要 | 结构化 `ParsedIntent`（intent/action_type/tone/target_characters） | 不直接生成叙事文本。 |
 | `master` | ContextBundle、ParsedIntent、所有子 Agent 摘要 | `MasterPlan`（调用列表 + 生命周期操作） | 不直接写长期状态。 |
-| `npc` | 自身角色卡、可见场景、自己的记忆、关系状态 | 行动意图、台词草稿、可见反应 | 导演计划、其他 NPC 内心、未知秘密。 |
+| `user` | User Agent 固定上下文、可见场景、用户角色已知信息 | 用户自动代理行为（可选） | NPC 私密设定、未知秘密。 |
+| `npc` | 自身角色卡、可见场景、自己的记忆、关系状态 | 行动意图、台词草稿、可见反应 | 导演计划、其他 Actor 内心、未知秘密。 |
 | `writer` | 本轮 NPC 输出、场景摘要、伏笔 | 最终叙事文本 | 擅自改变事实。 |
 | `state` | 本轮对话、ContextBundle、叙事文本 | `CompressionResult`（scene_summary + events + structured_events + foreshadowing + state_changes） | 不生成叙事文本。 |
 | `director` | 完整概览（预留，由 Master 按需调用） | 执行计划、裁决结果 | — |
-| `user_proxy` | 场景、最近 events（预留） | 用户角色行为 | — |
 
 ---
 

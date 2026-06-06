@@ -30,9 +30,12 @@ export interface SessionConfig {
   compression_model: string;
   render_mode: RenderMode;
   user_persona: UserPersona;
+  user_setting_merge_strategy: UserSettingMergeStrategy;
+  active_preset_id?: string;
 }
 
 export type RenderMode = 'auto' | 'schema' | 'sandbox' | 'text';
+export type UserSettingMergeStrategy = 'user_overrides_worldbook' | 'worldbook_overrides_user';
 
 export interface UserPersona {
   name: string;
@@ -61,6 +64,7 @@ export const DEFAULT_SESSION_CONFIG: SessionConfig = {
   compression_model: '',
   render_mode: 'auto',
   user_persona: { name: '', avatar: '', address: '', background: '', style: '' },
+  user_setting_merge_strategy: 'user_overrides_worldbook',
 };
 
 export interface Message {
@@ -165,5 +169,44 @@ export interface ParsedWorldBookEntry {
   enabled: boolean;
   category: string;
   visibility: string;
+  reason: string;
+}
+
+// --- Presets ---
+
+export interface Preset {
+  id: string;
+  session_id: string | null;
+  name: string;
+  source_format: string;
+  module_count: number;
+  parse_status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PresetDetail {
+  id: string;
+  session_id: string | null;
+  name: string;
+  source_format: string;
+  model_params: Record<string, any>;
+  parse_status: string;
+  modules: PresetModule[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PresetModule {
+  id: string;
+  preset_id: string;
+  identifier: string;
+  name: string;
+  role: string;
+  content: string;
+  target_agents: string[];
+  enabled: boolean;
+  injection_order: number;
+  classification: string;
   reason: string;
 }

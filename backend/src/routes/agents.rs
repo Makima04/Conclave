@@ -17,8 +17,10 @@ struct AgentResponse {
     label: String,
     status: String,
     last_active_turn: i32,
+    context: String,
     context_preview: String,
     config: serde_json::Value,
+    fixed: bool,
 }
 
 fn to_response(agent: &SubAgent) -> AgentResponse {
@@ -36,8 +38,10 @@ fn to_response(agent: &SubAgent) -> AgentResponse {
         label: agent.label.clone(),
         status: agent.status.clone(),
         last_active_turn: agent.last_active_turn,
+        context: agent.context.clone(),
         context_preview: preview,
         config: agent.config.clone(),
+        fixed: agent.agent_type == "user",
     }
 }
 
@@ -67,6 +71,12 @@ pub async fn create_agent_manual(
     Path(session_id): Path<String>,
     Json(body): Json<CreateAgentBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    if body.agent_type == "user" {
+        return Err(AppError::BadRequest(
+            "User Agent is fixed and cannot be created manually".to_string(),
+        ));
+    }
+
     tracing::info!(
         session = %session_id,
         agent_type = %body.agent_type,
@@ -123,6 +133,7 @@ pub async fn cooldown_agent_manual(
     Path((session_id, agent_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     tracing::info!(session = %session_id, agent_id = %agent_id, "Manual cooldown requested");
+    ensure_mutable_lifecycle_agent(&state.pool, &session_id, &agent_id).await?;
     sub_agent::cooldown_agent(&state.pool, &agent_id, "manual", 0).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -132,6 +143,7 @@ pub async fn restore_agent_manual(
     Path((session_id, agent_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     tracing::info!(session = %session_id, agent_id = %agent_id, "Manual restore requested");
+    ensure_session_agent(&state.pool, &session_id, &agent_id).await?;
     sub_agent::restore_agent(&state.pool, &agent_id, 0).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -141,6 +153,7 @@ pub async fn delete_agent_manual(
     Path((session_id, agent_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     tracing::info!(session = %session_id, agent_id = %agent_id, "Manual delete requested");
+    ensure_mutable_lifecycle_agent(&state.pool, &session_id, &agent_id).await?;
     sub_agent::delete_agent(&state.pool, &agent_id).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -159,6 +172,7 @@ pub async fn update_agent(
     Json(body): Json<UpdateAgentBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     tracing::info!(session = %session_id, agent_id = %agent_id, "Agent update requested");
+    ensure_session_agent(&state.pool, &session_id, &agent_id).await?;
     let now = chrono::Utc::now().to_rfc3339();
     let mut updates = Vec::new();
     let mut params: Vec<String> = Vec::new();
@@ -198,4 +212,33 @@ pub async fn update_agent(
     query.execute(&state.pool).await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn ensure_session_agent(
+    pool: &sqlx::SqlitePool,
+    session_id: &str,
+    agent_id: &str,
+) -> Result<String, AppError> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT agent_type FROM sub_agents WHERE id = ? AND session_id = ?",
+    )
+    .bind(agent_id)
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Agent not found".to_string()))
+}
+
+async fn ensure_mutable_lifecycle_agent(
+    pool: &sqlx::SqlitePool,
+    session_id: &str,
+    agent_id: &str,
+) -> Result<(), AppError> {
+    let agent_type = ensure_session_agent(pool, session_id, agent_id).await?;
+    if agent_type == "user" {
+        return Err(AppError::BadRequest(
+            "User Agent is fixed and cannot be deleted or cooled down".to_string(),
+        ));
+    }
+    Ok(())
 }

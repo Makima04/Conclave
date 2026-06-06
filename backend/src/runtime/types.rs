@@ -5,6 +5,12 @@ use std::collections::HashMap;
 pub struct ContextBundle {
     pub task: String,
     pub recent_context: Vec<ContextMessage>,
+    /// Active role agents (NPC/user) that can be used as participant context.
+    #[serde(default)]
+    pub role_contexts: Vec<RoleContext>,
+    /// Knowledge events visible to the current context consumer.
+    #[serde(default)]
+    pub knowledge_events: Vec<KnowledgeEvent>,
     pub structured_state: serde_json::Value,
     pub events: Vec<String>,
     /// Visibility per event (parallel to `events`). "public", "gm_only", "character:<id>", "writer_only"
@@ -16,6 +22,41 @@ pub struct ContextBundle {
     /// World book entries for context injection (from session's world_pack_id)
     #[serde(default)]
     pub world_book_entries: Vec<WorldBookContextEntry>,
+    /// Preset modules for context injection (from session's active_preset_id)
+    #[serde(default)]
+    pub preset_modules: Vec<PresetModuleContext>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleContext {
+    pub agent_type: String,
+    pub label: String,
+    pub character_id: Option<String>,
+    pub context: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct KnowledgeEvent {
+    pub fact: String,
+    pub source_type: String,
+    pub actors: Vec<String>,
+    pub targets: Vec<String>,
+    pub observers: Vec<String>,
+    pub knowers: Vec<String>,
+    pub visibility: String,
+    pub confidence: f32,
+    pub evidence: String,
+    pub turn_number: i32,
+}
+
+/// A preset module ready for context injection into agent prompts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresetModuleContext {
+    pub name: String,
+    pub content: String,
+    pub role: String,
+    pub target_agents: Vec<String>,
+    pub injection_order: i32,
 }
 
 /// A world book entry ready for context injection.

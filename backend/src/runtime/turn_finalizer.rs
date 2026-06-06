@@ -1,10 +1,10 @@
 use crate::error::AppError;
 use crate::memory::state;
-use crate::runtime::compression;
 use crate::runtime::types::{
     AgentTrace, CompressionResult, ContextBundle, StateChangeProposal, SubAgent,
 };
 use crate::runtime::variable_update;
+use crate::runtime::{compression, knowledge};
 use sqlx::Sqlite;
 use sqlx::SqlitePool;
 use sqlx::Transaction;
@@ -174,6 +174,67 @@ pub async fn persist_turn_extras(
                     turn = turn_number,
                     session = session_id,
                     "State proposal failed: {}",
+                    e
+                );
+            }
+        }
+    }
+}
+
+pub async fn persist_turn_knowledge(
+    pool: &SqlitePool,
+    provider: &crate::provider::openai::OpenAiProvider,
+    model: &str,
+    session_id: &str,
+    turn_number: i32,
+    user_input: &str,
+    narrative: &str,
+) {
+    let context =
+        match crate::runtime::context::build_context(pool, session_id, turn_number, 10).await {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                tracing::warn!(
+                    session = session_id,
+                    turn = turn_number,
+                    "Knowledge context build failed: {}",
+                    e
+                );
+                return;
+            }
+        };
+
+    match knowledge::generate_knowledge_events(provider, model, user_input, narrative, &context)
+        .await
+    {
+        Ok(extraction) => {
+            if let Err(e) =
+                knowledge::persist_knowledge_events(pool, session_id, turn_number, &extraction)
+                    .await
+            {
+                tracing::warn!(
+                    session = session_id,
+                    turn = turn_number,
+                    "Knowledge persist failed: {}",
+                    e
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                session = session_id,
+                turn = turn_number,
+                "Knowledge extraction failed, storing writer-only fallback: {}",
+                e
+            );
+            if let Err(e) =
+                knowledge::persist_fallback_writer_only(pool, session_id, turn_number, narrative)
+                    .await
+            {
+                tracing::warn!(
+                    session = session_id,
+                    turn = turn_number,
+                    "Knowledge fallback persist failed: {}",
                     e
                 );
             }

@@ -83,6 +83,7 @@ async fn process_next_job(pool: &SqlitePool) -> Result<bool, AppError> {
                 .await;
 
             tracing::info!(job_id = %job.id, "Background job completed");
+            tracing::info!(job_id = %job.id, session = %job.session_id, turn = job.turn_number, job_type = %job.job_type, "Job completed successfully");
             Ok(true)
         }
         Err(e) => {
@@ -107,9 +108,9 @@ async fn process_next_job(pool: &SqlitePool) -> Result<bool, AppError> {
                         .execute(pool)
                         .await;
 
-                tracing::error!(job_id = %job.id, "Background job failed after max retries: {}", e);
+                tracing::error!(job_id = %job.id, session = %job.session_id, error = %e, "Job failed permanently after max retries");
             } else {
-                tracing::warn!(job_id = %job.id, attempt = job.attempts + 1, "Background job failed, will retry: {}", e);
+                tracing::warn!(job_id = %job.id, session = %job.session_id, error = %e, attempts = job.attempts + 1, "Job failed, will retry");
                 // Set back to pending for retry
                 let _ = sqlx::query("UPDATE sessions SET status = 'compressing' WHERE id = ?")
                     .bind(&job.session_id)
@@ -125,20 +126,23 @@ async fn process_next_job(pool: &SqlitePool) -> Result<bool, AppError> {
 async fn run_compression_job(pool: &SqlitePool, job: &JobRow) -> Result<(), AppError> {
     let payload: CompressionPayload = serde_json::from_str(&job.payload).unwrap_or_default();
 
-    let provider = executor::load_default_provider(pool).await?;
-    let model = if payload.model.is_empty() {
-        crate::runtime::executor::load_provider_model(pool).await?
+    let fallback_model = crate::runtime::executor::load_provider_model(pool).await?;
+    let model_ref = if payload.model.is_empty() {
+        fallback_model.as_str()
     } else {
-        payload.model.clone()
+        payload.model.as_str()
     };
+
+    tracing::info!(session = %job.session_id, turn = job.turn_number, model_ref = model_ref, "Starting compression job");
+    let target = executor::resolve_model_target(pool, &fallback_model, model_ref).await?;
 
     // Build a minimal context from DB for compression
     let context =
         crate::runtime::context::build_context(pool, &job.session_id, job.turn_number, 10).await?;
 
     let result = compression::generate_compression(
-        &provider,
-        &model,
+        &target.provider,
+        &target.model,
         &payload.user_input,
         &payload.narrative,
         &context,
@@ -147,11 +151,23 @@ async fn run_compression_job(pool: &SqlitePool, job: &JobRow) -> Result<(), AppE
     .await?;
 
     compression::persist_compression(pool, &job.session_id, job.turn_number, &result).await?;
+    turn_finalizer::persist_turn_knowledge(
+        pool,
+        &target.provider,
+        &target.model,
+        &job.session_id,
+        job.turn_number,
+        &payload.user_input,
+        &payload.narrative,
+    )
+    .await;
 
     Ok(())
 }
 
 async fn run_recompression_job(pool: &SqlitePool, job: &JobRow) -> Result<(), AppError> {
+    tracing::info!(session = %job.session_id, turn = job.turn_number, "Starting recompression job");
+
     // Clean up existing compression data for this turn
     cleanup_turn_memory(pool, &job.session_id, job.turn_number).await?;
 
@@ -172,6 +188,12 @@ async fn cleanup_turn_memory(
         .await?;
 
     sqlx::query("DELETE FROM structured_events WHERE session_id = ? AND turn_number = ?")
+        .bind(session_id)
+        .bind(turn_number)
+        .execute(pool)
+        .await?;
+
+    sqlx::query("DELETE FROM agent_knowledge_events WHERE session_id = ? AND turn_number = ?")
         .bind(session_id)
         .bind(turn_number)
         .execute(pool)

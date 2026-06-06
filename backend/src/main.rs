@@ -9,7 +9,12 @@ mod trace;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
+use axum::extract::Request;
+use axum::http;
+use axum::middleware::Next;
+use axum::response::Response;
 use axum::routing::{delete, get, post, put};
+use std::net::IpAddr;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -17,6 +22,7 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
 use crate::config::AppConfig;
+use crate::error::AppError;
 use crate::routes::{
     agents, charactercards, health, messages, presets, proposals, providers, sessions, worldbooks,
 };
@@ -31,12 +37,16 @@ async fn main() {
 
     let config = AppConfig::from_env();
     let port = config.port;
+    let bind_host = config.bind_host.clone();
+    if config.api_auth_token.is_empty() && !is_loopback_bind_host(&bind_host) {
+        panic!("API_AUTH_TOKEN is required when BIND_HOST is not a loopback address");
+    }
 
-    tracing::info!("Starting conclave-backend on port {}", port);
+    tracing::info!("Starting conclave-backend on {}:{}", bind_host, port);
 
     let app = create_app(config).await;
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
+    let listener = tokio::net::TcpListener::bind(format!("{}:{}", bind_host, port))
         .await
         .expect("Failed to bind");
 
@@ -64,6 +74,8 @@ async fn create_app(config: AppConfig) -> Router {
         pool.clone(),
         Arc::new(config.clone()),
     ));
+
+    let auth_token = Arc::new(config.api_auth_token.clone());
 
     Router::new()
         .route("/api/health", get(health::health_check))
@@ -218,5 +230,49 @@ async fn create_app(config: AppConfig) -> Router {
             axum::http::header::CONNECTION,
             axum::http::HeaderValue::from_static("keep-alive"),
         ))
+        .layer(axum::middleware::from_fn_with_state(
+            auth_token,
+            require_api_auth,
+        ))
         .with_state(app_state)
+}
+
+async fn require_api_auth(
+    axum::extract::State(token): axum::extract::State<Arc<String>>,
+    req: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    if token.is_empty()
+        || req.uri().path() == "/api/health"
+        || req.method() == http::Method::OPTIONS
+    {
+        return Ok(next.run(req).await);
+    }
+
+    let authorized = req
+        .headers()
+        .get(http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == format!("Bearer {}", token))
+        || req
+            .headers()
+            .get("x-api-key")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value == token.as_str());
+
+    if !authorized {
+        return Err(AppError::Unauthorized(
+            "Missing or invalid API token".to_string(),
+        ));
+    }
+
+    Ok(next.run(req).await)
+}
+
+fn is_loopback_bind_host(host: &str) -> bool {
+    matches!(host, "localhost" | "localhost.localdomain")
+        || host
+            .parse::<IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
 }

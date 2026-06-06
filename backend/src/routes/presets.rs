@@ -16,6 +16,9 @@ pub struct ImportPresetRequest {
     /// Optional session ID to bind the preset to
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Original uploaded file name, used when the preset JSON has no name field.
+    #[serde(default)]
+    pub file_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -91,16 +94,9 @@ pub async fn import_preset(
             AppError::BadRequest("Invalid preset format: missing 'prompts' array".to_string())
         })?;
 
-    // Extract name — try several common fields, fallback to "未命名预设"
-    let name = data
-        .get("name")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .or_else(|| {
-            data.get("preset_name")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        })
+    // Extract name — prefer preset metadata, then uploaded file name.
+    let name = preset_name_from_json(data)
+        .or_else(|| preset_name_from_file(body.file_name.as_deref()))
         .unwrap_or_else(|| "未命名预设".to_string());
 
     // Extract model params
@@ -563,6 +559,37 @@ pub async fn delete_module(
 }
 
 // ── Helpers ──
+
+fn clean_preset_name(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn preset_name_from_json(data: &serde_json::Value) -> Option<String> {
+    data.get("name")
+        .and_then(|v| v.as_str())
+        .and_then(clean_preset_name)
+        .or_else(|| {
+            data.get("preset_name")
+                .and_then(|v| v.as_str())
+                .and_then(clean_preset_name)
+        })
+}
+
+fn preset_name_from_file(file_name: Option<&str>) -> Option<String> {
+    let file_name = file_name?.trim();
+    if file_name.is_empty() {
+        return None;
+    }
+    let stem = file_name
+        .rsplit_once('.')
+        .map_or(file_name, |(stem, _)| stem);
+    clean_preset_name(stem)
+}
 
 /// Build a map from prompt identifier to enabled status from the prompt_order arrays.
 fn build_prompt_order_map(data: &serde_json::Value) -> HashMap<String, bool> {

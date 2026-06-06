@@ -11,6 +11,9 @@ pub enum AppError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 
@@ -33,6 +36,11 @@ impl axum::response::IntoResponse for AppError {
                 msg.clone(),
             ),
             AppError::Conflict(msg) => (axum::http::StatusCode::CONFLICT, "conflict", msg.clone()),
+            AppError::Unauthorized(msg) => (
+                axum::http::StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                msg.clone(),
+            ),
             AppError::Database(e) => (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "database_error",

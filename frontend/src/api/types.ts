@@ -88,7 +88,7 @@ export interface ProviderConfig {
   name: string;
   provider_type: string;
   base_url: string;
-  api_key: string;
+  api_key_set: boolean;
   model: string;
   is_default: number;
   created_at: string;

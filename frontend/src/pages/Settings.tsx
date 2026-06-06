@@ -78,7 +78,7 @@ export default function Settings() {
     setEditingId(p.id);
     setName(p.name);
     setBaseUrl(p.base_url);
-    setApiKey(p.api_key);
+    setApiKey('');
     setModel(p.model);
     setIsDefault(p.is_default === 1);
     setModelList([]);
@@ -107,7 +107,7 @@ export default function Settings() {
     if (!name || !baseUrl || !model) return;
     try {
       if (editingId) {
-        await api.updateProvider(editingId, { name, base_url: baseUrl, api_key: apiKey, model, is_default: isDefault });
+        await api.updateProvider(editingId, { name, base_url: baseUrl, ...(apiKey ? { api_key: apiKey } : {}), model, is_default: isDefault });
       } else {
         await api.createProvider({ name, base_url: baseUrl, api_key: apiKey, model, is_default: isDefault });
       }
@@ -341,7 +341,7 @@ export default function Settings() {
                 <div className="global-default-grid two-col">
                   <div className="form-field"><label>名称</label><input value={name} onChange={e => setName(e.target.value)} placeholder="如：OpenAI、Ollama 本地" /></div>
                   <div className="form-field"><label>Base URL</label><input value={baseUrl} onChange={e => { setBaseUrl(e.target.value); setModelList([]); setFetchError(''); }} placeholder="https://api.openai.com/v1" /></div>
-                  <div className="form-field"><label>API Key</label><input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="sk-...（本地模型可留空）" type="password" /></div>
+                  <div className="form-field"><label>API Key</label><input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={editingId ? '留空则保留已保存 Key' : 'sk-...（本地模型可留空）'} type="password" /></div>
                   <div className="form-field"><label>模型名称</label><div className="model-input-row"><input value={model} onChange={e => setModel(e.target.value)} placeholder="gpt-4o-mini" /><button className="fetch-btn" onClick={handleFetchModels} disabled={!baseUrl || fetchingModels}>{fetchingModels ? '获取中...' : '获取模型列表'}</button></div></div>
                 </div>
                 {fetchError && <p className="fetch-error">{fetchError}</p>}
@@ -362,7 +362,7 @@ export default function Settings() {
                   <div key={p.id} className={`provider-card ${p.is_default ? 'default' : ''}`}>
                     <div className="provider-info" style={{ cursor: p.is_default ? 'default' : 'pointer' }} onClick={() => !p.is_default && handleSetDefault(p.id)}>
                       <h4>{p.name}{p.is_default ? <span className="badge">默认</span> : <span className="badge" style={{ background: 'var(--line)', color: 'var(--muted)' }}>点击设为默认</span>}</h4>
-                      <span className="meta">{p.model} @ {p.base_url}</span>
+                      <span className="meta">{p.model} @ {p.base_url}{p.api_key_set ? ' · Key 已保存' : ''}</span>
                     </div>
                     <div className="provider-actions"><button className="edit-btn" onClick={() => startEdit(p)}>编辑</button><button className="delete-btn" onClick={() => handleDelete(p.id)}>删除</button></div>
                   </div>

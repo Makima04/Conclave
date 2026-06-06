@@ -274,6 +274,15 @@ pub async fn persist_compression_job(
     .await
     {
         tracing::warn!("Failed to persist compression job: {}", e);
+        return;
+    }
+
+    if let Err(e) = sqlx::query("UPDATE sessions SET status = 'compressing' WHERE id = ?")
+        .bind(session_id)
+        .execute(pool)
+        .await
+    {
+        tracing::warn!("Failed to set session compressing after job insert: {}", e);
     }
 }
 

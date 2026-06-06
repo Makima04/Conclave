@@ -38,10 +38,20 @@ pub async fn run(pool: SqlitePool, _config: Arc<AppConfig>) {
 
 /// Process the next pending job. Returns Ok(true) if a job was processed.
 async fn process_next_job(pool: &SqlitePool) -> Result<bool, AppError> {
-    // Claim a pending job atomically
+    let now = chrono::Utc::now().to_rfc3339();
     let job = sqlx::query_as::<_, JobRow>(
-        "SELECT id, session_id, turn_number, job_type, status, payload, error, attempts FROM turn_jobs WHERE status = 'pending' AND attempts < 3 ORDER BY created_at LIMIT 1"
+        "UPDATE turn_jobs
+         SET status = 'running', updated_at = ?
+         WHERE id = (
+             SELECT id FROM turn_jobs
+             WHERE status = 'pending' AND attempts < 3
+             ORDER BY created_at
+             LIMIT 1
+         )
+         AND status = 'pending'
+         RETURNING id, session_id, turn_number, job_type, status, payload, error, attempts",
     )
+    .bind(&now)
     .fetch_optional(pool)
     .await?;
 
@@ -50,10 +60,8 @@ async fn process_next_job(pool: &SqlitePool) -> Result<bool, AppError> {
         None => return Ok(false),
     };
 
-    // Mark as running
-    sqlx::query("UPDATE turn_jobs SET status = 'running', updated_at = ? WHERE id = ?")
-        .bind(chrono::Utc::now().to_rfc3339())
-        .bind(&job.id)
+    let _ = sqlx::query("UPDATE sessions SET status = 'compressing' WHERE id = ?")
+        .bind(&job.session_id)
         .execute(pool)
         .await?;
 

@@ -1904,19 +1904,9 @@ export default function Chat() {
           return;
         }
 
-        // Persist accumulated streamText if turn_end was never received
+        // Only show final assistant content after backend confirmation.
         if (streamTextRef.current) {
-          const fallbackMsg: Message = {
-            id: `assistant-${Date.now()}`,
-            session_id: sessionId!,
-            turn_number: messages.length + 1,
-            role: 'assistant',
-            content: streamTextRef.current,
-            variants: '[]',
-            variant_index: -1,
-            created_at: new Date().toISOString(),
-          };
-          setMessages(prev => [...prev, fallbackMsg]);
+          void loadMessages();
           setStreamText('');
           streamTextRef.current = '';
         }

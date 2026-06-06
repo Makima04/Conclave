@@ -27,6 +27,20 @@ export default function Presets() {
   const [nameInput, setNameInput] = useState('');
   const [expandedModule, setExpandedModule] = useState<string | null>(null);
 
+  const openPresetDetail = (detail: PresetDetail) => {
+    setSelected(detail);
+    setEditingName(false);
+    setNameInput(detail.name);
+    setExpandedModule(null);
+  };
+
+  const closePresetDetail = () => {
+    setSelected(null);
+    setEditingName(false);
+    setNameInput('');
+    setExpandedModule(null);
+  };
+
   const loadPresets = async () => {
     try {
       const res = await api.listPresets();
@@ -47,8 +61,8 @@ export default function Presets() {
     try {
       const text = await file.text();
       const json = JSON.parse(text);
-      const result = await api.importPreset(json);
-      setSelected(result);
+      const result = await api.importPreset(json, undefined, file.name);
+      openPresetDetail(result);
       loadPresets();
     } catch (err: any) {
       alert('导入失败: ' + (err.message || err));
@@ -61,7 +75,7 @@ export default function Presets() {
   const handleSelect = async (id: string) => {
     try {
       const detail = await api.getPreset(id);
-      setSelected(detail);
+      openPresetDetail(detail);
     } catch (e) {
       console.error('Failed to load preset', e);
     }
@@ -71,7 +85,7 @@ export default function Presets() {
     if (e) e.stopPropagation();
     if (!confirm('确定删除此预设？')) return;
     await api.deletePreset(id);
-    if (selected?.id === id) setSelected(null);
+    if (selected?.id === id) closePresetDetail();
     loadPresets();
   };
 
@@ -81,7 +95,7 @@ export default function Presets() {
     try {
       await api.parsePreset(selected.id);
       const detail = await api.getPreset(selected.id);
-      setSelected(detail);
+      openPresetDetail(detail);
       loadPresets();
     } catch (e: any) {
       alert('解析失败: ' + (e.message || e));
@@ -133,7 +147,7 @@ export default function Presets() {
     return (
       <div className="worldbooks">
         <div className="chat-header">
-          <button className="back-btn" onClick={() => setSelected(null)}>&larr; 返回</button>
+          <button className="back-btn" onClick={closePresetDetail}>&larr; 返回</button>
           {editingName ? (
             <div className="rename-inline">
               <input
@@ -143,7 +157,7 @@ export default function Presets() {
                 autoFocus
               />
               <button onClick={handleRename}>保存</button>
-              <button onClick={() => setEditingName(false)}>取消</button>
+              <button onClick={() => { setNameInput(selected.name); setEditingName(false); }}>取消</button>
             </div>
           ) : (
             <h2

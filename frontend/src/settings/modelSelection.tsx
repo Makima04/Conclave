@@ -76,7 +76,7 @@ export function ModelPicker({ label, value, providers, defaultText, onChange }: 
     setFetchingProviderId(provider.id);
     setFetchError('');
     try {
-      const data = await api.fetchModels(provider.base_url, provider.api_key || undefined);
+      const data = await api.fetchModels(provider.base_url, undefined, provider.id);
       setModelsByProvider(prev => ({ ...prev, [provider.id]: uniqueModels(data.models) }));
     } catch (err: any) {
       setFetchError(err?.message || '获取模型列表失败');

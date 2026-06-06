@@ -361,19 +361,29 @@ pub async fn send_message(
 
             if let Err(e) = &finalize_result {
                 tracing::error!(session = %session_id_clone, turn = turn_number, "Turn finalize failed: {}", e);
+                let error = format!("Turn finalize failed: {}", e);
                 let _ = broadcast_tx.send(crate::runtime::sse_types::SseEvent::StreamError {
-                    error: format!("Turn finalize failed: {}", e),
+                    error: error.clone(),
                 });
-                let _ = tx.send(Ok(Event::default().event("stream_error").data(
-                    serde_json::json!({"error": format!("Turn finalize failed: {}", e)})
-                        .to_string(),
-                )));
+                let _ = tx.send(Ok(Event::default()
+                    .event("stream_error")
+                    .data(serde_json::json!({"error": error}).to_string())));
                 // Set failed status — next send_message will allow retry
                 let _ =
                     sqlx::query("UPDATE sessions SET status = 'failed_generation' WHERE id = ?")
                         .bind(&session_id_clone)
                         .execute(&pool)
                         .await;
+                let _ = broadcast_tx
+                    .send(crate::runtime::sse_types::SseEvent::TurnReady { turn_number });
+                active_turns_clone
+                    .lock()
+                    .await
+                    .remove(&session_id_for_active);
+                let _ = tx.send(Ok(Event::default()
+                    .event("turn_ready")
+                    .data(serde_json::json!({"turn_number": turn_number}).to_string())));
+                return;
             } else {
                 tracing::info!(session = %session_id_clone, turn = turn_number, "Turn finalized (assistant persisted, current_turn advanced)");
             }

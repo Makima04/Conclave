@@ -2,10 +2,15 @@ import type { Session, SessionConfig, Message, ProviderConfig, WorldBook, WorldB
 
 const BASE_URL = '/api';
 
+function authHeaders(): HeadersInit {
+  const token = import.meta.env.VITE_API_AUTH_TOKEN || localStorage.getItem('api_auth_token') || '';
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
     ...options,
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...options?.headers },
   });
 
   if (!res.ok) {
@@ -73,6 +78,7 @@ export function sendMessageStream(
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'text/event-stream',
+          ...authHeaders(),
         },
         body: JSON.stringify({ content, stream }),
         signal: controller.signal,
@@ -188,10 +194,10 @@ export async function deleteProvider(id: string): Promise<void> {
   await request(`/providers/${id}`, { method: 'DELETE' });
 }
 
-export async function fetchModels(base_url: string, api_key?: string): Promise<{ models: string[] }> {
+export async function fetchModels(base_url: string, api_key?: string, provider_id?: string): Promise<{ models: string[] }> {
   return request('/providers/fetch-models', {
     method: 'POST',
-    body: JSON.stringify({ base_url, api_key }),
+    body: JSON.stringify(provider_id ? { provider_id } : { base_url, api_key }),
   });
 }
 
@@ -206,7 +212,7 @@ export async function reconnectStream(
   signal?: AbortSignal,
 ): Promise<Response> {
   return fetch(`${BASE_URL}/sessions/${sessionId}/reconnect`, {
-    headers: { 'Accept': 'text/event-stream' },
+    headers: { 'Accept': 'text/event-stream', ...authHeaders() },
     signal,
   });
 }
@@ -374,10 +380,10 @@ export async function parseWorldBook(id: string): Promise<{ status: string; entr
 
 // --- Presets ---
 
-export async function importPreset(data: any, sessionId?: string): Promise<PresetDetail> {
+export async function importPreset(data: any, sessionId?: string, fileName?: string): Promise<PresetDetail> {
   return request('/presets', {
     method: 'POST',
-    body: JSON.stringify({ data, session_id: sessionId || null }),
+    body: JSON.stringify({ data, session_id: sessionId || null, file_name: fileName || null }),
   });
 }
 

@@ -22,7 +22,8 @@ pub async fn record_foreshadowing(
 ) -> Result<String, AppError> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
-    let conditions_json = serde_json::to_string(trigger_conditions).unwrap_or_else(|_| "[]".to_string());
+    let conditions_json =
+        serde_json::to_string(trigger_conditions).unwrap_or_else(|_| "[]".to_string());
 
     sqlx::query(
         "INSERT INTO foreshadowing (id, session_id, content, status, importance, trigger_conditions, planted_at_turn, created_at, updated_at) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?)"
@@ -37,6 +38,13 @@ pub async fn record_foreshadowing(
     .bind(&now)
     .execute(pool)
     .await?;
+
+    tracing::debug!(
+        session = session_id,
+        turn = turn_number,
+        importance = importance,
+        "Foreshadowing item recorded"
+    );
 
     Ok(id)
 }

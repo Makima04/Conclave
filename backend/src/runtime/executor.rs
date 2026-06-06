@@ -2,15 +2,35 @@ use super::context;
 use super::types::{MemoryProposal, StateChangeProposal, TurnResult, WriterDraft};
 use crate::config::AppConfig;
 use crate::error::AppError;
-use crate::memory::state;
 use crate::provider::adapter::ProviderAdapter;
 use crate::provider::openai::OpenAiProvider;
 use crate::provider::types::{ChatMessage, ChatRequest, StreamChunk};
 use crate::routes::sessions::SessionConfig;
+use crate::runtime::turn_finalizer;
+use crate::runtime::variable_update;
 use futures::Stream;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::Arc;
+use tokio::sync::{Mutex, broadcast};
 use tracing::{info, instrument};
+
+use super::sse_types::SseEvent;
+
+/// Shared map of active turn broadcast senders, keyed by session_id.
+/// Allows the reconnect endpoint to subscribe to an in-progress turn's event stream.
+pub type ActiveTurns = Arc<Mutex<HashMap<String, broadcast::Sender<SseEvent>>>>;
+pub type StreamCommitData = Arc<
+    std::sync::Mutex<
+        Option<(
+            Vec<super::types::AgentTrace>,
+            Option<crate::runtime::types::CompressionResult>,
+            Option<turn_finalizer::CompressionJob>,
+            Vec<StateChangeProposal>,
+        )>,
+    >,
+>;
 
 pub struct StreamTurnResult {
     pub stream: Pin<Box<dyn Stream<Item = Result<StreamChunk, AppError>> + Send>>,
@@ -18,6 +38,11 @@ pub struct StreamTurnResult {
     pub session_id: String,
     pub model_config_json: String,
     pub title_source: String,
+    /// Data from multi-agent turn for the route layer to persist after the stream completes.
+    /// None for single-agent streaming.
+    pub commit_data: Option<StreamCommitData>,
+    /// Broadcast sender for SSE reconnect. Created and registered by the caller.
+    pub broadcast_tx: Option<broadcast::Sender<SseEvent>>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -39,7 +64,7 @@ struct ProviderRow {
 
 async fn load_provider(pool: &SqlitePool) -> Result<OpenAiProvider, AppError> {
     let row = sqlx::query_as::<_, ProviderRow>(
-        "SELECT id, base_url, api_key, model FROM provider_configs WHERE is_default = 1 LIMIT 1"
+        "SELECT id, base_url, api_key, model FROM provider_configs WHERE is_default = 1 LIMIT 1",
     )
     .fetch_optional(pool)
     .await?;
@@ -52,17 +77,20 @@ async fn load_provider(pool: &SqlitePool) -> Result<OpenAiProvider, AppError> {
     }
 }
 
-async fn load_provider_model(pool: &SqlitePool) -> Result<String, AppError> {
-    let model: Option<String> = sqlx::query_scalar(
-        "SELECT model FROM provider_configs WHERE is_default = 1 LIMIT 1"
-    )
-    .fetch_optional(pool)
-    .await?;
+pub async fn load_default_provider(pool: &SqlitePool) -> Result<OpenAiProvider, AppError> {
+    load_provider(pool).await
+}
+
+pub async fn load_provider_model(pool: &SqlitePool) -> Result<String, AppError> {
+    let model: Option<String> =
+        sqlx::query_scalar("SELECT model FROM provider_configs WHERE is_default = 1 LIMIT 1")
+            .fetch_optional(pool)
+            .await?;
 
     model.ok_or_else(|| AppError::BadRequest("未配置默认模型。".to_string()))
 }
 
-#[instrument(skip(pool, _app_config))]
+#[instrument(skip(pool, _app_config, user_input), fields(session = session_id))]
 pub async fn execute_turn(
     pool: &SqlitePool,
     _app_config: &AppConfig,
@@ -82,8 +110,6 @@ pub async fn execute_turn(
 
     let session_config: SessionConfig = serde_json::from_str(&session.config).unwrap_or_default();
     let turn_number = session.current_turn + 1;
-    let now = chrono::Utc::now().to_rfc3339();
-    let user_msg_id = uuid::Uuid::new_v4().to_string();
 
     tracing::info!(
         session = session_id,
@@ -92,56 +118,65 @@ pub async fn execute_turn(
         "execute_turn: non-streaming turn start"
     );
 
-    // Save user message
-    sqlx::query(
-        "INSERT INTO messages (id, session_id, turn_number, role, content, created_at) VALUES (?, ?, ?, 'user', ?, ?)"
-    )
-    .bind(&user_msg_id)
-    .bind(session_id)
-    .bind(turn_number)
-    .bind(user_input)
-    .bind(&now)
-    .execute(pool)
-    .await?;
-
-    tracing::debug!(session = session_id, turn = turn_number, msg_id = %user_msg_id, "User message saved");
-
-    // Multi-agent graph execution: dispatch based on session mode
-    if session.mode != "single_agent" {
-        let graph = super::templates::get_template(&session.mode);
-        let narrative_text = super::graph::execute_graph(
-            pool, &provider, &model, session_id, turn_number, &graph, user_input, &session_config,
-        ).await?;
-
-        let now = chrono::Utc::now().to_rfc3339();
-
-        // Save assistant message
-        let assistant_msg_id = uuid::Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO messages (id, session_id, turn_number, role, content, created_at) VALUES (?, ?, ?, 'assistant', ?, ?)"
+    // Multi-agent execution: dispatch to dynamic Master Agent architecture
+    if session.mode == "multi_agent" {
+        let commit = super::graph::execute_multi_agent_turn(
+            pool,
+            &provider,
+            &model,
+            session_id,
+            turn_number,
+            user_input,
+            &session_config,
+            None,
+            true,
         )
-        .bind(&assistant_msg_id)
-        .bind(session_id)
-        .bind(turn_number)
-        .bind(&narrative_text)
-        .bind(&now)
-        .execute(pool)
         .await?;
 
-        // Update session turn counter
-        sqlx::query("UPDATE sessions SET current_turn = ?, updated_at = ? WHERE id = ?")
-            .bind(turn_number)
-            .bind(&now)
-            .bind(session_id)
-            .execute(pool)
-            .await?;
+        // Single transaction: user msg + assistant msg + traces + current_turn
+        let mut tx = pool.begin().await?;
+        turn_finalizer::finalize_turn(
+            &mut tx,
+            session_id,
+            turn_number,
+            user_input,
+            &commit.narrative,
+            &commit.traces,
+        )
+        .await?;
+        tx.commit().await?;
 
-        auto_title(pool, session_id, user_input, &narrative_text, turn_number, &session.title_source).await;
+        // Post-commit extras (non-fatal)
+        turn_finalizer::persist_turn_extras(
+            pool,
+            session_id,
+            turn_number,
+            &commit.compression,
+            &commit.state_proposals,
+        )
+        .await;
+
+        let display = variable_update::extract(&commit.narrative).display_text;
+        let message_content = if display.is_empty() {
+            commit.narrative.clone()
+        } else {
+            display
+        };
+
+        auto_title(
+            pool,
+            session_id,
+            user_input,
+            &message_content,
+            turn_number,
+            &session.title_source,
+        )
+        .await;
 
         return Ok(TurnResult {
-            message_content: narrative_text.clone(),
+            message_content,
             writer_draft: WriterDraft {
-                narrative_text,
+                narrative_text: commit.narrative,
                 memory_candidates: MemoryProposal::default(),
             },
             turn_number,
@@ -150,8 +185,12 @@ pub async fn execute_turn(
 
     // Single-agent execution (existing path)
     let context_bundle = context::build_context(
-        pool, session_id, turn_number, session_config.max_context_turns as usize
-    ).await?;
+        pool,
+        session_id,
+        turn_number,
+        session_config.max_context_turns as usize,
+    )
+    .await?;
 
     tracing::debug!(
         session = session_id,
@@ -173,12 +212,14 @@ pub async fn execute_turn(
     let mut messages = vec![ChatMessage {
         role: "system".to_string(),
         content: system_prompt,
+        reasoning_content: None,
     }];
 
     for msg in &context_bundle.recent_context {
         messages.push(ChatMessage {
             role: msg.role.clone(),
             content: msg.content.clone(),
+            reasoning_content: None,
         });
     }
 
@@ -186,13 +227,18 @@ pub async fn execute_turn(
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: format!("Known events:\n{}", context_bundle.events.join("\n")),
+            reasoning_content: None,
         });
     }
 
     if !context_bundle.foreshadowing.is_empty() {
         messages.push(ChatMessage {
             role: "system".to_string(),
-            content: format!("Open foreshadowing items:\n{}", context_bundle.foreshadowing.join("\n")),
+            content: format!(
+                "Open foreshadowing items:\n{}",
+                context_bundle.foreshadowing.join("\n")
+            ),
+            reasoning_content: None,
         });
     }
 
@@ -200,6 +246,43 @@ pub async fn execute_turn(
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: format!("Scene summary:\n{}", summary),
+            reasoning_content: None,
+        });
+    }
+
+    if !context_bundle
+        .structured_state
+        .as_object()
+        .map_or(true, |o| o.is_empty())
+    {
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: format!(
+                "Current world state:\n{}",
+                serde_json::to_string_pretty(&context_bundle.structured_state).unwrap_or_default()
+            ),
+            reasoning_content: None,
+        });
+    }
+
+    // World book context injection
+    if !context_bundle.world_book_entries.is_empty() {
+        let mut wb_content = String::from("[World Book Reference]\n");
+        let mut entries: Vec<_> = context_bundle.world_book_entries.iter().collect();
+        entries.sort_by_key(|e| -e.priority);
+        for entry in &entries {
+            if !entry.content.is_empty() {
+                if entry.constant {
+                    wb_content.push_str(&format!("[Always Active] {}\n\n", entry.content));
+                } else {
+                    wb_content.push_str(&format!("{}\n\n", entry.content));
+                }
+            }
+        }
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: wb_content,
+            reasoning_content: None,
         });
     }
 
@@ -218,7 +301,7 @@ pub async fn execute_turn(
 
     let start = std::time::Instant::now();
     let response = provider
-        .chat_completion(request)
+        .chat_completion_with_retry(request, 3)
         .await
         .map_err(|e| AppError::Provider(e.to_string()))?;
     let duration_ms = start.elapsed().as_millis() as i32;
@@ -236,41 +319,58 @@ pub async fn execute_turn(
         .map(|c| c.message.content.clone())
         .unwrap_or_default();
 
-    let token_usage = response.usage.as_ref().map(|u| {
-        serde_json::json!({
-            "prompt_tokens": u.prompt_tokens,
-            "completion_tokens": u.completion_tokens,
-            "total_tokens": u.total_tokens
-        })
-    }).unwrap_or_else(|| serde_json::json!({}));
+    // Build a trace for the single-agent LLM call
+    let trace = super::types::AgentTrace {
+        agent_id: "single_agent".to_string(),
+        agent_type: "single_agent".to_string(),
+        prompt_tokens: response
+            .usage
+            .as_ref()
+            .map(|u| u.prompt_tokens)
+            .unwrap_or(0),
+        completion_tokens: response
+            .usage
+            .as_ref()
+            .map(|u| u.completion_tokens)
+            .unwrap_or(0),
+        duration_ms,
+        input_summary: format!("User: {}", truncate_str(user_input, 200)),
+        output_summary: format!("Response: {}", truncate_str(&narrative_text, 200)),
+        model: model_for_trace,
+    };
 
-    // Save assistant message
-    let assistant_msg_id = uuid::Uuid::new_v4().to_string();
-    sqlx::query(
-        "INSERT INTO messages (id, session_id, turn_number, role, content, created_at) VALUES (?, ?, ?, 'assistant', ?, ?)"
+    // Single transaction: user msg + assistant msg + traces + current_turn
+    let mut tx = pool.begin().await?;
+    turn_finalizer::finalize_turn(
+        &mut tx,
+        session_id,
+        turn_number,
+        user_input,
+        &narrative_text,
+        &[trace],
     )
-    .bind(&assistant_msg_id)
-    .bind(session_id)
-    .bind(turn_number)
-    .bind(&narrative_text)
-    .bind(&now)
-    .execute(pool)
     .await?;
+    tx.commit().await?;
 
-    // Update session turn counter
-    sqlx::query("UPDATE sessions SET current_turn = ?, updated_at = ? WHERE id = ?")
-        .bind(turn_number)
-        .bind(&now)
-        .bind(session_id)
-        .execute(pool)
-        .await?;
+    // Auto-title
+    let display = variable_update::extract(&narrative_text).display_text;
+    let message_content = if display.is_empty() {
+        narrative_text.clone()
+    } else {
+        display
+    };
 
-    // Auto-generate title after first turn if not manually set
-    auto_title(pool, session_id, user_input, &narrative_text, turn_number, &session.title_source).await;
+    auto_title(
+        pool,
+        session_id,
+        user_input,
+        &message_content,
+        turn_number,
+        &session.title_source,
+    )
+    .await;
 
-    // Proposal pipeline: apply state changes from MemoryProposal
-    // Currently memory_candidates is always default() (empty); when LLM structured
-    // output extraction is added, state_changes will flow through here automatically.
+    // State proposals (currently always empty — placeholder for future LLM structured output)
     let writer_draft = WriterDraft {
         narrative_text: narrative_text.clone(),
         memory_candidates: MemoryProposal::default(),
@@ -281,61 +381,21 @@ pub async fn execute_turn(
             risk: "low".to_string(),
             changes: writer_draft.memory_candidates.state_changes.clone(),
         };
-        match state::apply_proposal(pool, session_id, &proposal, turn_number).await {
-            Ok(result) => {
-                info!(
-                    turn = turn_number,
-                    session = session_id,
-                    status = %result.status,
-                    version = result.version,
-                    "State proposal applied"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    turn = turn_number,
-                    session = session_id,
-                    "State proposal failed: {}", e
-                );
-            }
-        }
+        turn_finalizer::persist_turn_extras(pool, session_id, turn_number, &None, &[proposal])
+            .await;
     }
 
-    // Record trace
-    let trace_id = uuid::Uuid::new_v4().to_string();
-    let input_summary = format!("User: {}", truncate_str(user_input, 200));
-    let output_summary = format!("Response: {}", truncate_str(&narrative_text, 200));
-    let model_config = serde_json::json!({
-        "model": model_for_trace,
-        "temperature": session_config.temperature,
-        "top_p": session_config.top_p,
-        "max_tokens": session_config.max_tokens,
-        "max_context_turns": session_config.max_context_turns,
-    }).to_string();
-
-    sqlx::query(
-        r#"INSERT INTO traces (id, session_id, turn_number, node_id, node_type, agent_id,
-           input_summary, output_summary, output_type, model_config, token_usage, duration_ms, created_at)
-           VALUES (?, ?, ?, 'npc_writer_1', 'npc', 'single_agent', ?, ?, 'writer_draft', ?, ?, ?, ?)"#
-    )
-    .bind(&trace_id)
-    .bind(session_id)
-    .bind(turn_number)
-    .bind(&input_summary)
-    .bind(&output_summary)
-    .bind(&model_config)
-    .bind(token_usage.to_string())
-    .bind(duration_ms)
-    .bind(&now)
-    .execute(pool)
-    .await?;
-
-    info!(turn = turn_number, session = session_id, duration_ms, "Turn executed");
+    info!(
+        turn = turn_number,
+        session = session_id,
+        duration_ms,
+        "Turn executed"
+    );
 
     Ok(TurnResult {
-        message_content: narrative_text.clone(),
+        message_content: message_content.clone(),
         writer_draft: WriterDraft {
-            narrative_text,
+            narrative_text: message_content,
             memory_candidates: MemoryProposal::default(),
         },
         turn_number,
@@ -370,17 +430,18 @@ async fn generate_title(
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: prompt,
+            reasoning_content: None,
         }],
         temperature: Some(0.3),
         top_p: None,
-        max_tokens: Some(50),
+        max_tokens: Some(10000),
         frequency_penalty: None,
         presence_penalty: None,
         stream: false,
     };
 
     let response = provider
-        .chat_completion(request)
+        .chat_completion_with_retry(request, 3)
         .await
         .map_err(|e| AppError::Provider(e.to_string()))?;
 
@@ -397,32 +458,53 @@ async fn generate_title(
 
 /// Auto-generate and persist a session title after the first turn.
 /// No-op if title_source is not 'auto' or if generation fails.
-pub async fn auto_title(pool: &SqlitePool, session_id: &str, user_input: &str, assistant_reply: &str, turn_number: i32, title_source: &str) {
+pub async fn auto_title(
+    pool: &SqlitePool,
+    session_id: &str,
+    user_input: &str,
+    assistant_reply: &str,
+    turn_number: i32,
+    title_source: &str,
+) {
     if turn_number != 1 || title_source != "auto" {
         return;
     }
     let provider = match load_provider(pool).await {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!(session = session_id, "auto_title: failed to load provider: {}", e);
+            tracing::warn!(
+                session = session_id,
+                "auto_title: failed to load provider: {}",
+                e
+            );
             return;
         }
     };
     let model = match load_provider_model(pool).await {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!(session = session_id, "auto_title: failed to load model: {}", e);
+            tracing::warn!(
+                session = session_id,
+                "auto_title: failed to load model: {}",
+                e
+            );
             return;
         }
     };
     match generate_title(&provider, &model, user_input, assistant_reply).await {
         Ok(title) => {
-            if let Err(e) = sqlx::query("UPDATE sessions SET title = ? WHERE id = ? AND title_source = 'auto'")
-                .bind(&title)
-                .bind(session_id)
-                .execute(pool)
-                .await {
-                tracing::warn!(session = session_id, "auto_title: failed to persist title: {}", e);
+            if let Err(e) =
+                sqlx::query("UPDATE sessions SET title = ? WHERE id = ? AND title_source = 'auto'")
+                    .bind(&title)
+                    .bind(session_id)
+                    .execute(pool)
+                    .await
+            {
+                tracing::warn!(
+                    session = session_id,
+                    "auto_title: failed to persist title: {}",
+                    e
+                );
             }
         }
         Err(e) => {
@@ -431,12 +513,14 @@ pub async fn auto_title(pool: &SqlitePool, session_id: &str, user_input: &str, a
     }
 }
 
-#[instrument(skip(pool, _app_config))]
+#[instrument(skip(pool, _app_config, user_input, active_turns, broadcast_tx), fields(session = session_id))]
 pub async fn execute_turn_stream(
     pool: &SqlitePool,
     _app_config: &AppConfig,
     session_id: &str,
     user_input: &str,
+    active_turns: &ActiveTurns,
+    broadcast_tx: broadcast::Sender<SseEvent>,
 ) -> Result<StreamTurnResult, AppError> {
     let provider = load_provider(pool).await?;
     let model = load_provider_model(pool).await?;
@@ -451,8 +535,6 @@ pub async fn execute_turn_stream(
 
     let session_config: SessionConfig = serde_json::from_str(&session.config).unwrap_or_default();
     let turn_number = session.current_turn + 1;
-    let now = chrono::Utc::now().to_rfc3339();
-    let user_msg_id = uuid::Uuid::new_v4().to_string();
 
     tracing::info!(
         session = session_id,
@@ -461,72 +543,108 @@ pub async fn execute_turn_stream(
         "execute_turn_stream: streaming turn start"
     );
 
-    // Save user message
-    sqlx::query(
-        "INSERT INTO messages (id, session_id, turn_number, role, content, created_at) VALUES (?, ?, ?, 'user', ?, ?)"
-    )
-    .bind(&user_msg_id)
-    .bind(session_id)
-    .bind(turn_number)
-    .bind(user_input)
-    .bind(&now)
-    .execute(pool)
-    .await?;
+    // Multi-agent streaming: run non-streaming, wrap result as single-chunk stream
+    if session.mode == "multi_agent" {
+        let (status_tx, mut status_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::runtime::types::AgentStatusEvent>();
 
-    tracing::debug!(session = session_id, turn = turn_number, msg_id = %user_msg_id, "User message saved");
+        // Spawn task to run the multi-agent turn with status channel
+        let turn_handle = tokio::spawn({
+            let pool = pool.clone();
+            let model = model.to_string();
+            let session_id = session_id.to_string();
+            let user_input = user_input.to_string();
+            let session_config = session_config.clone();
+            async move {
+                let commit = super::graph::execute_multi_agent_turn(
+                    &pool,
+                    &provider,
+                    &model,
+                    &session_id,
+                    turn_number,
+                    &user_input,
+                    &session_config,
+                    Some(status_tx),
+                    false,
+                )
+                .await?;
 
-    // Multi-agent graph execution: run non-streaming, wrap result as single-chunk stream
-    if session.mode != "single_agent" {
-        let graph = super::templates::get_template(&session.mode);
-        let narrative_text = super::graph::execute_graph(
-            pool, &provider, &model, session_id, turn_number, &graph, user_input, &session_config,
-        ).await?;
-
-        let model_config_json = serde_json::json!({"model": model, "mode": &session.mode}).to_string();
-        let title_source = session.title_source.clone();
-        let session_id_clone = session_id.to_string();
-        let narrative_for_stream = narrative_text.clone();
-        let narrative_for_save = narrative_text.clone();
-        let user_input_clone = user_input.to_string();
-        let pool_clone = pool.clone();
-
-        let stream = async_stream::stream! {
-            yield Ok::<_, crate::error::AppError>(StreamChunk {
-                choices: vec![crate::provider::types::StreamChoice {
-                    delta: crate::provider::types::StreamDelta {
-                        role: Some("assistant".to_string()),
-                        content: Some(narrative_for_stream),
-                    },
-                    finish_reason: Some("stop".to_string()),
-                }],
-            });
-        };
-
-        // Save assistant message and update turn in background
-        let pool_bg = pool_clone.clone();
-        tokio::spawn(async move {
-            let now = chrono::Utc::now().to_rfc3339();
-            let msg_id = uuid::Uuid::new_v4().to_string();
-            let _ = sqlx::query(
-                "INSERT INTO messages (id, session_id, turn_number, role, content, created_at) VALUES (?, ?, ?, 'assistant', ?, ?)"
-            )
-            .bind(&msg_id)
-            .bind(&session_id_clone)
-            .bind(turn_number)
-            .bind(&narrative_for_save)
-            .bind(&now)
-            .execute(&pool_bg)
-            .await;
-
-            let _ = sqlx::query("UPDATE sessions SET current_turn = ?, updated_at = ? WHERE id = ?")
-                .bind(turn_number)
-                .bind(&now)
-                .bind(&session_id_clone)
-                .execute(&pool_bg)
-                .await;
-
-            auto_title(&pool_bg, &session_id_clone, &user_input_clone, &narrative_for_save, turn_number, &title_source).await;
+                // Return full commit — route layer handles persistence via turn_finalizer
+                Ok::<_, crate::error::AppError>(commit)
+            }
         });
+
+        let model_config_json =
+            serde_json::json!({"model": model, "mode": "multi_agent"}).to_string();
+
+        // Shared state for commit data extraction after stream completes
+        let commit_data: StreamCommitData = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let commit_data_clone = commit_data.clone();
+        let session_id_for_cleanup = session_id.to_string();
+        let active_turns_cleanup = active_turns.clone();
+        let broadcast_tx_clone = broadcast_tx.clone();
+
+        // Stream that yields status events first, then the final narrative
+        let stream = async_stream::stream! {
+            // Yield status events as they arrive
+            while let Some(status) = status_rx.recv().await {
+                let _ = broadcast_tx_clone.send(SseEvent::AgentStatus {
+                    agent_type: status.agent_type.clone(),
+                    label: status.label.clone(),
+                    status: status.status.clone(),
+                });
+                let chunk = StreamChunk {
+                    choices: vec![crate::provider::types::StreamChoice {
+                        delta: crate::provider::types::StreamDelta {
+                            role: None,
+                            content: None,
+                            agent_status: Some(status),
+                        },
+                        finish_reason: None,
+                    }],
+                };
+                yield Ok::<_, crate::error::AppError>(chunk);
+            }
+
+            // Status channel closed — turn is complete, get the result
+            match turn_handle.await {
+                Ok(Ok(commit)) => {
+                    // Store commit data for route layer to persist
+                    *commit_data_clone.lock().unwrap() =
+                        Some((commit.traces, commit.compression, commit.compression_job, commit.state_proposals));
+                    let _ = broadcast_tx_clone.send(SseEvent::MessageDelta {
+                        content: commit.narrative.clone(),
+                    });
+                    let chunk = StreamChunk {
+                        choices: vec![crate::provider::types::StreamChoice {
+                            delta: crate::provider::types::StreamDelta {
+                                role: Some("assistant".to_string()),
+                                content: Some(commit.narrative),
+                                agent_status: None,
+                            },
+                            finish_reason: Some("stop".to_string()),
+                        }],
+                    };
+                    yield Ok(chunk);
+                }
+                Ok(Err(e)) => {
+                    let _ = broadcast_tx_clone.send(SseEvent::StreamError {
+                        error: e.to_string(),
+                    });
+                    yield Err(e);
+                }
+                Err(e) => {
+                    let msg = format!("Turn task panicked: {}", e);
+                    let _ = broadcast_tx_clone.send(SseEvent::StreamError {
+                        error: msg.clone(),
+                    });
+                    yield Err(crate::error::AppError::Internal(msg));
+                }
+            }
+
+            // Clean up: remove from active turns map
+            active_turns_cleanup.lock().await.remove(&session_id_for_cleanup);
+        };
 
         let pinned = Box::pin(stream);
         return Ok(StreamTurnResult {
@@ -535,14 +653,20 @@ pub async fn execute_turn_stream(
             session_id: session_id.to_string(),
             model_config_json,
             title_source: session.title_source.clone(),
+            commit_data: Some(commit_data),
+            broadcast_tx: Some(broadcast_tx),
         });
     }
 
     // Single-agent streaming path (existing)
     // Build context
     let context_bundle = context::build_context(
-        pool, session_id, turn_number, session_config.max_context_turns as usize
-    ).await?;
+        pool,
+        session_id,
+        turn_number,
+        session_config.max_context_turns as usize,
+    )
+    .await?;
 
     tracing::debug!(
         session = session_id,
@@ -563,12 +687,14 @@ pub async fn execute_turn_stream(
     let mut messages = vec![ChatMessage {
         role: "system".to_string(),
         content: system_prompt,
+        reasoning_content: None,
     }];
 
     for msg in &context_bundle.recent_context {
         messages.push(ChatMessage {
             role: msg.role.clone(),
             content: msg.content.clone(),
+            reasoning_content: None,
         });
     }
 
@@ -576,13 +702,18 @@ pub async fn execute_turn_stream(
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: format!("Known events:\n{}", context_bundle.events.join("\n")),
+            reasoning_content: None,
         });
     }
 
     if !context_bundle.foreshadowing.is_empty() {
         messages.push(ChatMessage {
             role: "system".to_string(),
-            content: format!("Open foreshadowing items:\n{}", context_bundle.foreshadowing.join("\n")),
+            content: format!(
+                "Open foreshadowing items:\n{}",
+                context_bundle.foreshadowing.join("\n")
+            ),
+            reasoning_content: None,
         });
     }
 
@@ -590,6 +721,22 @@ pub async fn execute_turn_stream(
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: format!("Scene summary:\n{}", summary),
+            reasoning_content: None,
+        });
+    }
+
+    if !context_bundle
+        .structured_state
+        .as_object()
+        .map_or(true, |o| o.is_empty())
+    {
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: format!(
+                "Current world state:\n{}",
+                serde_json::to_string_pretty(&context_bundle.structured_state).unwrap_or_default()
+            ),
+            reasoning_content: None,
         });
     }
 
@@ -610,14 +757,19 @@ pub async fn execute_turn_stream(
         "top_p": session_config.top_p,
         "max_tokens": session_config.max_tokens,
         "max_context_turns": session_config.max_context_turns,
-    }).to_string();
+    })
+    .to_string();
 
     let provider_stream = provider
         .chat_completion_stream(request)
         .await
         .map_err(|e| AppError::Provider(e.to_string()))?;
 
-    tracing::debug!(session = session_id, turn = turn_number, "LLM stream connected, forwarding chunks");
+    tracing::debug!(
+        session = session_id,
+        turn = turn_number,
+        "LLM stream connected, forwarding chunks"
+    );
 
     let mapped_stream = async_stream::stream! {
         use futures::StreamExt;
@@ -627,13 +779,8 @@ pub async fn execute_turn_stream(
         }
     };
 
-    // Update session turn counter
-    sqlx::query("UPDATE sessions SET current_turn = ?, updated_at = ? WHERE id = ?")
-        .bind(turn_number)
-        .bind(&now)
-        .bind(session_id)
-        .execute(pool)
-        .await?;
+    // current_turn is advanced by the route layer (messages.rs) via turn_finalizer
+    // after the stream completes and the assistant message is persisted.
 
     Ok(StreamTurnResult {
         stream: Box::pin(mapped_stream),
@@ -641,6 +788,8 @@ pub async fn execute_turn_stream(
         session_id: session_id.to_string(),
         model_config_json,
         title_source: session.title_source,
+        commit_data: None,
+        broadcast_tx: Some(broadcast_tx),
     })
 }
 
@@ -683,11 +832,12 @@ pub async fn regenerate_turn(
     .fetch_optional(pool)
     .await?;
 
-    let user_input = user_input.ok_or_else(|| AppError::NotFound("No user message found for this turn".to_string()))?;
+    let user_input = user_input
+        .ok_or_else(|| AppError::NotFound("No user message found for this turn".to_string()))?;
 
     // Load session config
     let session_config: SessionConfig = sqlx::query_scalar::<_, String>(
-        "SELECT config FROM sessions WHERE id = ? AND deleted_at IS NULL"
+        "SELECT config FROM sessions WHERE id = ? AND deleted_at IS NULL",
     )
     .bind(session_id)
     .fetch_optional(pool)
@@ -697,8 +847,13 @@ pub async fn regenerate_turn(
 
     // Build context (exclude the current assistant message to avoid contamination)
     let context_bundle = context::build_context_for_regenerate(
-        pool, session_id, turn_number, session_config.max_context_turns as usize, &msg_id
-    ).await?;
+        pool,
+        session_id,
+        turn_number,
+        session_config.max_context_turns as usize,
+        &msg_id,
+    )
+    .await?;
 
     let system_prompt = if session_config.system_prompt.is_empty() {
         default_system_prompt()
@@ -709,12 +864,14 @@ pub async fn regenerate_turn(
     let mut messages = vec![ChatMessage {
         role: "system".to_string(),
         content: system_prompt,
+        reasoning_content: None,
     }];
 
     for ctx_msg in &context_bundle.recent_context {
         messages.push(ChatMessage {
             role: ctx_msg.role.clone(),
             content: ctx_msg.content.clone(),
+            reasoning_content: None,
         });
     }
 
@@ -722,13 +879,18 @@ pub async fn regenerate_turn(
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: format!("Known events:\n{}", context_bundle.events.join("\n")),
+            reasoning_content: None,
         });
     }
 
     if !context_bundle.foreshadowing.is_empty() {
         messages.push(ChatMessage {
             role: "system".to_string(),
-            content: format!("Open foreshadowing items:\n{}", context_bundle.foreshadowing.join("\n")),
+            content: format!(
+                "Open foreshadowing items:\n{}",
+                context_bundle.foreshadowing.join("\n")
+            ),
+            reasoning_content: None,
         });
     }
 
@@ -736,6 +898,43 @@ pub async fn regenerate_turn(
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: format!("Scene summary:\n{}", summary),
+            reasoning_content: None,
+        });
+    }
+
+    if !context_bundle
+        .structured_state
+        .as_object()
+        .map_or(true, |o| o.is_empty())
+    {
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: format!(
+                "Current world state:\n{}",
+                serde_json::to_string_pretty(&context_bundle.structured_state).unwrap_or_default()
+            ),
+            reasoning_content: None,
+        });
+    }
+
+    // World book context injection
+    if !context_bundle.world_book_entries.is_empty() {
+        let mut wb_content = String::from("[World Book Reference]\n");
+        let mut entries: Vec<_> = context_bundle.world_book_entries.iter().collect();
+        entries.sort_by_key(|e| -e.priority);
+        for entry in &entries {
+            if !entry.content.is_empty() {
+                if entry.constant {
+                    wb_content.push_str(&format!("[Always Active] {}\n\n", entry.content));
+                } else {
+                    wb_content.push_str(&format!("{}\n\n", entry.content));
+                }
+            }
+        }
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: wb_content,
+            reasoning_content: None,
         });
     }
 
@@ -754,7 +953,7 @@ pub async fn regenerate_turn(
 
     let start = std::time::Instant::now();
     let response = provider
-        .chat_completion(request)
+        .chat_completion_with_retry(request, 3)
         .await
         .map_err(|e| AppError::Provider(e.to_string()))?;
     let duration_ms = start.elapsed().as_millis() as i32;
@@ -765,58 +964,50 @@ pub async fn regenerate_turn(
         .map(|c| c.message.content.clone())
         .unwrap_or_default();
 
-    let token_usage = response.usage.as_ref().map(|u| {
-        serde_json::json!({
-            "prompt_tokens": u.prompt_tokens,
-            "completion_tokens": u.completion_tokens,
-            "total_tokens": u.total_tokens
-        })
-    }).unwrap_or_else(|| serde_json::json!({}));
-
     // Push current content to variants
     let mut variants: Vec<String> = serde_json::from_str(&variants_str).unwrap_or_default();
     variants.push(current_content);
     let variants_json = serde_json::to_string(&variants).unwrap_or_else(|_| "[]".to_string());
 
-    // Update the assistant message
-    let now = chrono::Utc::now().to_rfc3339();
-    sqlx::query("UPDATE messages SET content = ?, variants = ? WHERE id = ?")
-        .bind(&new_content)
-        .bind(&variants_json)
-        .bind(&msg_id)
-        .execute(pool)
-        .await?;
+    // Build trace
+    let trace = super::types::AgentTrace {
+        agent_id: "single_agent".to_string(),
+        agent_type: "single_agent".to_string(),
+        prompt_tokens: response
+            .usage
+            .as_ref()
+            .map(|u| u.prompt_tokens)
+            .unwrap_or(0),
+        completion_tokens: response
+            .usage
+            .as_ref()
+            .map(|u| u.completion_tokens)
+            .unwrap_or(0),
+        duration_ms,
+        input_summary: format!("Regenerate: {}", truncate_str(&user_input, 200)),
+        output_summary: format!("Response: {}", truncate_str(&new_content, 200)),
+        model: model_for_trace,
+    };
 
-    // Record trace
-    let trace_id = uuid::Uuid::new_v4().to_string();
-    let input_summary = format!("Regenerate: {}", truncate_str(&user_input, 200));
-    let output_summary = format!("Response: {}", truncate_str(&new_content, 200));
-    let model_config = serde_json::json!({
-        "model": model_for_trace,
-        "temperature": session_config.temperature,
-        "top_p": session_config.top_p,
-        "max_tokens": session_config.max_tokens,
-        "max_context_turns": session_config.max_context_turns,
-    }).to_string();
-
-    sqlx::query(
-        r#"INSERT INTO traces (id, session_id, turn_number, node_id, node_type, agent_id,
-           input_summary, output_summary, output_type, model_config, token_usage, duration_ms, created_at)
-           VALUES (?, ?, ?, 'npc_writer_1', 'npc', 'single_agent', ?, ?, 'writer_draft', ?, ?, ?, ?)"#
+    // Single transaction: update message + insert trace
+    let mut tx = pool.begin().await?;
+    turn_finalizer::finalize_regenerate(
+        &mut tx,
+        session_id,
+        turn_number,
+        &msg_id,
+        &new_content,
+        &variants_json,
+        &trace,
     )
-    .bind(&trace_id)
-    .bind(session_id)
-    .bind(turn_number)
-    .bind(&input_summary)
-    .bind(&output_summary)
-    .bind(&model_config)
-    .bind(token_usage.to_string())
-    .bind(duration_ms)
-    .bind(&now)
-    .execute(pool)
     .await?;
+    tx.commit().await?;
 
-    info!(turn = turn_number, session = session_id, "Message regenerated");
+    info!(
+        turn = turn_number,
+        session = session_id,
+        "Message regenerated"
+    );
 
     Ok((new_content, variants_json, turn_number))
 }

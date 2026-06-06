@@ -283,12 +283,12 @@
       <a href="agent-boundaries.html">Agent 边界</a>
       <a href="#definition">Runtime 定义</a>
       <a href="#modes">运行模式</a>
-      <a href="#graph-levels">图分级</a>
-      <a href="#nodes">节点与边</a>
+      <a href="#graph-mgmt">Agent Graph 管理</a>
+      <a href="#agent-types">Agent 类型</a>
       <a href="#turn">每轮流程</a>
       <a href="#outputs">输出协议</a>
       <a href="#commit">状态提交</a>
-      <a href="#advanced">自由图边界</a>
+      <a href="#limits">运行限制</a>
       <a href="#tests">验收测试</a>
     </div>
   </nav>
@@ -327,60 +327,29 @@
           <tr>
             <th>模式</th>
             <th>用途</th>
-            <th>默认图</th>
+            <th>实现方式</th>
           </tr>
         </thead>
         <tbody>
           <tr>
             <td><code>single_agent</code></td>
-            <td>类 SillyTavern 单角色会话。</td>
-            <td>UserInput -> Npc/Writer -> Memory</td>
+            <td>类 SillyTavern 单角色会话。单次 LLM 调用，ContextBundle 提供结构化上下文。</td>
+            <td>ContextBundle &rarr; 单 Agent &rarr; Writer 输出</td>
           </tr>
           <tr>
-            <td><code>strict_director</code></td>
-            <td>超真实模式，用户不能直接口胡世界事实。</td>
-            <td>Director -> WorldJudge -> NPCs -> Writer -> Memory</td>
-          </tr>
-          <tr>
-            <td><code>collaborative_director</code></td>
-            <td>用户可提出剧情方向，导演负责合理化。</td>
-            <td>Director -> Router -> NPCs/Writer -> Consistency -> Memory</td>
-          </tr>
-          <tr>
-            <td><code>free_writing</code></td>
-            <td>小说创作模式，用户叙事权更高。</td>
-            <td>Writer -> Consistency -> Memory</td>
-          </tr>
-          <tr>
-            <td><code>multi_npc_scene</code></td>
-            <td>多 NPC 场景，按可见性、动机和关系召唤角色。</td>
-            <td>Director -> Router -> NPC parallel -> Writer -> Memory</td>
-          </tr>
-          <tr>
-            <td><code>advanced_graph</code></td>
-            <td>高级创作者提供自定义 Agent Graph Pack。</td>
-            <td>由图包定义，但受 Runtime 安全限制。</td>
+            <td><code>multi_agent</code></td>
+            <td>动态总控多 Agent 架构。Parser &rarr; Master &rarr; 子 Agent &rarr; Writer &rarr; 压缩。</td>
+            <td>4 层流水线，详见 <a href="dynamic-master-architecture.html">动态总控架构</a></td>
           </tr>
         </tbody>
       </table>
     </section>
 
-    <section id="graph-levels" class="band">
-      <h2>图分级与责任边界</h2>
-      <div class="grid three">
-        <div class="card tint">
-          <h3>官方模板图</h3>
-          <p>平台维护，默认推荐。平台负责稳定性、基础质量和安全边界。</p>
-        </div>
-        <div class="card blue">
-          <h3>自动生成图</h3>
-          <p>由角色卡和世界书生成。平台负责基础稳定，创作者负责内容质量。</p>
-        </div>
-        <div class="card warn">
-          <h3>高级自由图</h3>
-          <p>高级创作者制作，其他用户可导入。平台负责安全边界，不负责第三方图包剧情质量。</p>
-        </div>
-      </div>
+    <section id="graph-mgmt" class="band">
+      <h2>Agent Graph 管理</h2>
+      <p>旧架构使用固定模板图（<code>strict_director</code>、<code>collaborative_director</code> 等预定义图），已废弃。新架构采用动态总控（Dynamic Master）方案，由 Master Agent 每轮动态决定调用哪些子 Agent。详见 <a href="dynamic-master-architecture.html">动态总控架构</a>。</p>
+      <h3>Agent Graph Pack（预留）</h3>
+      <p>未来支持高级创作者制作自定义 Agent Graph Pack，其他用户可导入使用。平台负责 schema 校验、权限校验、沙箱、成本限制和 trace，不负责第三方图包的剧情质量和 Prompt 质量。</p>
       <table class="matrix">
         <thead>
           <tr>
@@ -391,138 +360,110 @@
         </thead>
         <tbody>
           <tr>
-            <td><code>OfficialGraphTemplate</code></td>
+            <td>内置 Dynamic Master</td>
             <td>质量、安全、成本上限、稳定性。</td>
-            <td>用户自改后的效果。</td>
+            <td>&mdash;</td>
           </tr>
           <tr>
-            <td><code>GeneratedGraph</code></td>
-            <td>生成规则、基础校验、安全限制。</td>
-            <td>角色卡和世界书原始质量。</td>
-          </tr>
-          <tr>
-            <td><code>CommunityGraphPack</code></td>
+            <td><code>CommunityGraphPack</code>（预留）</td>
             <td>schema 校验、权限校验、沙箱、trace。</td>
             <td>剧情质量、Prompt 质量、成本经济性、是否好玩。</td>
           </tr>
           <tr>
-            <td><code>UnverifiedGraphPack</code></td>
+            <td><code>UnverifiedGraphPack</code>（预留）</td>
             <td>强限制运行、禁止高危权限、显示风险提示。</td>
             <td>第三方图包稳定性和输出质量。</td>
-          </tr>
-          <tr>
-            <td><code>TrustedGraphPack</code></td>
-            <td>仍负责安全边界和权限限制。</td>
-            <td>创作者设计导致的叙事问题。</td>
           </tr>
         </tbody>
       </table>
       <p class="decision"><strong>责任边界：</strong>质量风险由图包创作者和使用者承担，安全边界由平台承担。</p>
     </section>
 
-    <section id="nodes" class="band">
-      <h2>节点与边</h2>
-      <div class="grid two">
-        <div class="card">
-          <h3>V1 节点类型</h3>
-          <ul>
-            <li><code>DirectorNode</code>：规划、权限、召唤、裁决。</li>
-            <li><code>RouterNode</code>：条件分支和模式路由。</li>
-            <li><code>WorldJudgeNode</code>：世界规则和事实裁决。</li>
-            <li><code>NpcNode</code>：NPC 意图、台词、行为反应。</li>
-            <li><code>WriterNode</code>：最终叙事合成。</li>
-            <li><code>MemoryNode</code>：摘要、事件和状态候选变更。</li>
-            <li><code>ConsistencyNode</code>：OOC、冲突和伏笔检查。</li>
-            <li><code>ArtifactNode</code>：UI artifact 状态和 patch。</li>
-            <li><code>ToolNode</code>：受限工具调用。</li>
-          </ul>
-        </div>
-        <div class="card">
-          <h3>边类型</h3>
-          <ul>
-            <li><code>sequence</code>：顺序执行。</li>
-            <li><code>condition</code>：按结构化条件分支。</li>
-            <li><code>handoff</code>：受控 Agent 交接。</li>
-            <li><code>parallel</code>：并行执行多个节点。</li>
-            <li><code>merge</code>：合并多个节点结果。</li>
-            <li><code>fallback</code>：失败后的备用路径。</li>
-          </ul>
-        </div>
-      </div>
-      <p class="decision"><strong>后续扩展：</strong>V2/V3 可加入 <code>PluginNode</code>、<code>CustomPromptNode</code>、<code>ParallelGroupNode</code>、<code>HumanApprovalNode</code>。</p>
+    <section id="agent-types" class="band">
+      <h2>Agent 类型与职责</h2>
+      <h3>动态总控架构中的 Agent</h3>
+      <p><code>multi_agent</code> 模式下，Agent 由 Master 动态管理，不再使用固定节点图。各 Agent 职责：</p>
+      <ul>
+        <li><code>Parser</code>：解析用户意图，输出结构化 <code>ParsedIntent</code>。</li>
+        <li><code>Master</code>：总控调度，基于上下文和意图生成 <code>MasterPlan</code>。</li>
+        <li><code>npc</code>：NPC 角色执行，拥有独立上下文和 LLM 调用。</li>
+        <li><code>Writer</code>：最终叙事合成，输出用户可见文本。</li>
+        <li><code>Director</code>：叙事节奏排列（可选，由 Master 按需调用）。</li>
+        <li><code>State</code>（Compression Agent）：后处理压缩，生成 scene_summary + events + foreshadowing + state_changes。</li>
+        <li><code>user_proxy</code>：用户角色代理，自动生成用户角色行为（可选）。</li>
+      </ul>
+      <h3>single_agent 模式</h3>
+      <p>单 Agent 模式下，一次 LLM 调用完成所有工作：输入 &rarr; ContextBundle &rarr; LLM &rarr; 输出。</p>
     </section>
 
     <section id="turn" class="band">
       <h2>每轮执行流程</h2>
+      <h3>multi_agent 模式（4 层流水线）</h3>
       <div class="flow">
-        <div class="step"><small>01</small><strong>UserInput</strong><span>用户输入、创作指令或角色行动。</span></div>
-        <div class="step"><small>02</small><strong>Load State</strong><span>读取会话、世界、角色、记忆和图配置。</span></div>
-        <div class="step"><small>03</small><strong>Select Graph</strong><span>按世界模式选择官方图、生成图或高级图。</span></div>
-        <div class="step"><small>04</small><strong>Plan</strong><span>Director / Router 生成本轮执行计划。</span></div>
-        <div class="step"><small>05</small><strong>Execute</strong><span>Runtime 裁剪上下文并执行节点。</span></div>
-        <div class="step"><small>06</small><strong>Validate</strong><span>校验输出、权限、冲突和风险。</span></div>
-        <div class="step"><small>07</small><strong>Commit</strong><span>输出给用户，提交状态，保存 trace。</span></div>
+        <div class="step"><small>01</small><strong>Build ContextBundle</strong><span>从 DB 加载结构化状态、事件、伏笔和摘要。</span></div>
+        <div class="step"><small>02</small><strong>Auto-cooldown</strong><span>检查并冷却不活跃的子 Agent。</span></div>
+        <div class="step"><small>03</small><strong>Layer 1: Parser</strong><span>（可选）解析用户意图，输出 ParsedIntent。</span></div>
+        <div class="step"><small>04</small><strong>Layer 2: Master</strong><span>基于上下文 + 意图 + 子 Agent 摘要，生成 MasterPlan。</span></div>
+        <div class="step"><small>05</small><strong>Lifecycle</strong><span>执行 Master 计划中的生命周期操作。</span></div>
+        <div class="step"><small>06</small><strong>Layer 3: Sub-Agents</strong><span>按计划调用子 Agent，每个有独立上下文和 LLM 调用。</span></div>
+        <div class="step"><small>07</small><strong>Fallback Writer</strong><span>若无 Writer 被调用，自动调用默认 Writer。</span></div>
+      </div>
+      <div class="flow" style="margin-top: 10px;">
+        <div class="step"><small>08</small><strong>Extract Narrative</strong><span>从 Writer 输出提取最终叙事文本。</span></div>
+        <div class="step"><small>09</small><strong>Layer 4: Compression</strong><span>压缩 Agent 分析输出，生成 scene_summary + events + foreshadowing + state_changes。</span></div>
+        <div class="step"><small>10</small><strong>Record Traces</strong><span>记录每个 Agent 的执行 trace。</span></div>
+      </div>
+      <h3 style="margin-top: 24px;">single_agent 模式</h3>
+      <div class="flow">
+        <div class="step"><small>01</small><strong>UserInput</strong><span>用户输入。</span></div>
+        <div class="step"><small>02</small><strong>Load Context</strong><span>从 DB 加载 ContextBundle。</span></div>
+        <div class="step"><small>03</small><strong>LLM Call</strong><span>单次 LLM 调用。</span></div>
+        <div class="step"><small>04</small><strong>Save &amp; Record</strong><span>保存消息，记录 trace。</span></div>
       </div>
     </section>
 
     <section id="outputs" class="band">
-      <h2>节点输出协议</h2>
-      <p>节点输出必须结构化。自然语言可以作为字段值，但不能作为唯一结果。</p>
+      <h2>结构化输出协议</h2>
+      <p>Agent 输出必须结构化。自然语言可以作为字段值，但不能作为唯一结果。</p>
       <table class="matrix">
         <thead>
           <tr>
             <th>输出类型</th>
-            <th>来源节点</th>
+            <th>来源 Agent</th>
             <th>用途</th>
           </tr>
         </thead>
         <tbody>
           <tr>
-            <td><code>PlanResult</code></td>
-            <td>Director / Router</td>
-            <td>本轮调用哪些节点、是否检索、是否审查、是否需要用户确认。</td>
+            <td><code>ParsedIntent</code></td>
+            <td>Parser</td>
+            <td>用户意图、动作类型、目标角色、压缩输入、语气。</td>
           </tr>
           <tr>
-            <td><code>JudgeResult</code></td>
-            <td>WorldJudge</td>
-            <td>用户行为或剧情事实是否成立，以及后果。</td>
+            <td><code>MasterPlan</code></td>
+            <td>Master</td>
+            <td>本轮调用列表 (<code>AgentCall[]</code>)、生命周期操作 (<code>LifecycleAction[]</code>)、是否激活 User Agent。</td>
           </tr>
           <tr>
-            <td><code>NpcIntent</code></td>
-            <td>NpcNode</td>
-            <td>NPC 的行动意图、台词草稿和可见反应。</td>
+            <td><code>AgentOutput</code></td>
+            <td>子 Agent</td>
+            <td>Agent 的结构化输出，写入 Turn State。</td>
           </tr>
           <tr>
-            <td><code>WriterDraft</code></td>
-            <td>WriterNode</td>
-            <td>用户可见叙事文本。</td>
-          </tr>
-          <tr>
-            <td><code>MemoryProposal</code></td>
-            <td>MemoryNode</td>
-            <td>摘要、事件、伏笔和状态候选变更。</td>
-          </tr>
-          <tr>
-            <td><code>StateChangeProposal</code></td>
-            <td>Memory / Tool / Plugin</td>
-            <td>候选状态变更，必须经过 Runtime 提交。</td>
-          </tr>
-          <tr>
-            <td><code>ArtifactPatch</code></td>
-            <td>ArtifactNode</td>
-            <td>UI artifact 的 props、state diff 或 patch。</td>
+            <td><code>CompressionResult</code></td>
+            <td>State (Compression)</td>
+            <td>scene_summary、events、structured_events、foreshadowing、state_changes。</td>
           </tr>
         </tbody>
       </table>
       <pre><code>{
-  "type": "plan_result",
-  "mode": "strict_director",
-  "nodes": ["world_judge", "npc_archivist", "writer", "memory"],
-  "retrieval": {
-    "events": ["silver_key", "old_archive"],
-    "foreshadowing": ["blood_moon_key"]
-  },
-  "requires_consistency_check": true
+  "type": "master_plan",
+  "calls": [
+    {"agent_id": "npc_archivist", "task": "回应玩家关于银钥匙的询问", "inject_from": []},
+    {"agent_id": "writer_1", "task": "根据以上互动，创作叙事文本", "inject_from": ["npc_archivist"]}
+  ],
+  "lifecycle": [],
+  "user_auto": false
 }</code></pre>
     </section>
 
@@ -557,18 +498,16 @@
       </table>
     </section>
 
-    <section id="advanced" class="band">
-      <h2>高级自由图限制</h2>
-      <p>自由图可以开放给高级创作者，并允许其他用户导入使用。但 Runtime 必须限制循环、并发、成本、工具和写入权限。</p>
+    <section id="limits" class="band">
+      <h2>运行限制</h2>
+      <h3>多 Agent 限制</h3>
       <div class="grid two">
         <div class="card tint">
-          <h3>V1 建议限制</h3>
           <ul>
-            <li><code>max_loop_count</code>：2-3。</li>
-            <li><code>max_total_nodes_per_turn</code>：12。</li>
-            <li><code>max_parallel_nodes</code>：3。</li>
+            <li><code>max_active_agents</code>：8（用户可配置）。</li>
+            <li><code>cooldown_turns</code>：10 轮不活跃自动冷却（用户可配置）。</li>
             <li><code>max_turn_runtime_ms</code>：按模型和部署配置。</li>
-            <li><code>max_token_budget_per_turn</code>：由用户或世界书设置。</li>
+            <li><code>max_token_budget_per_turn</code>：由用户或会话配置。</li>
           </ul>
         </div>
         <div class="card warn">
@@ -582,7 +521,6 @@
           </ul>
         </div>
       </div>
-      <p class="decision"><strong>导入提示：</strong>高级 Agent Graph Pack 由创作者自行设计。平台会进行基础安全校验和运行时限制，但不保证第三方图包的叙事质量、角色一致性、成本效率或稳定性。</p>
     </section>
 
     <section id="tests" class="band">
@@ -596,32 +534,36 @@
         </thead>
         <tbody>
           <tr>
-            <td>严格导演模式下用户口胡世界事实</td>
-            <td>Runtime 调用 WorldJudge，拒绝或合理化，不能直接写入事实。</td>
+            <td>multi_agent 模式 4 层流水线</td>
+            <td>Parser &rarr; Master &rarr; Sub-agents &rarr; Writer &rarr; Compression 按序执行，每层有 trace。</td>
           </tr>
           <tr>
-            <td>多 NPC 场景</td>
-            <td>Runtime 只召唤相关且可见的 NPC，并给每个 NPC 独立 ContextBundle。</td>
+            <td>Master 动态调度</td>
+            <td>Master 根据用户输入自主决定调用哪些 NPC，无需预定义图。</td>
           </tr>
           <tr>
-            <td>自由图出现循环</td>
-            <td>超过 max_loop_count 后停止并走 fallback。</td>
+            <td>子 Agent 上下文隔离</td>
+            <td>NPC 的 ContextBundle 不包含其他 NPC 内心或导演计划。</td>
           </tr>
           <tr>
-            <td>插件节点请求隐藏设定</td>
-            <td>未授权时拒绝，并记录 trace。</td>
+            <td>Agent 生命周期管理</td>
+            <td>连续 N 轮不活跃的 Agent 自动冷却，被调用时自动恢复。</td>
           </tr>
           <tr>
-            <td>MemoryNode 提出高风险状态变更</td>
-            <td>不能自动提交，必须 Director 审核并保留证据链。</td>
+            <td>压缩 Agent 去重</td>
+            <td>相同事件在 3 轮内不会重复写入 structured_events 表。</td>
+          </tr>
+          <tr>
+            <td>single_agent 模式回退</td>
+            <td>session.mode == "single_agent" 时走单 Agent 路径，行为不变。</td>
           </tr>
           <tr>
             <td>节点输出 JSON 无法解析</td>
             <td>Runtime 触发修复、重试或 fallback，不能把错误结构写入状态。</td>
           </tr>
           <tr>
-            <td>社区图包成本过高</td>
-            <td>Runtime 按预算中止，并提示用户这是第三方图包质量/成本风险。</td>
+            <td>压缩 Agent state_changes</td>
+            <td>高风险状态变更走 proposal + commit，不自动提交。</td>
           </tr>
         </tbody>
       </table>

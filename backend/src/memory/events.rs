@@ -40,6 +40,14 @@ pub async fn record_event(
     .execute(pool)
     .await?;
 
+    tracing::debug!(
+        session = session_id,
+        turn = turn_number,
+        event_type = event_type,
+        importance = importance,
+        "Memory event recorded"
+    );
+
     Ok(id)
 }
 

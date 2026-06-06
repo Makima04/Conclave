@@ -8,6 +8,9 @@ pub enum AppError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 
@@ -21,8 +24,15 @@ pub enum AppError {
 impl axum::response::IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         let (status, code, message) = match &self {
-            AppError::NotFound(msg) => (axum::http::StatusCode::NOT_FOUND, "not_found", msg.clone()),
-            AppError::BadRequest(msg) => (axum::http::StatusCode::BAD_REQUEST, "bad_request", msg.clone()),
+            AppError::NotFound(msg) => {
+                (axum::http::StatusCode::NOT_FOUND, "not_found", msg.clone())
+            }
+            AppError::BadRequest(msg) => (
+                axum::http::StatusCode::BAD_REQUEST,
+                "bad_request",
+                msg.clone(),
+            ),
+            AppError::Conflict(msg) => (axum::http::StatusCode::CONFLICT, "conflict", msg.clone()),
             AppError::Database(e) => (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "database_error",

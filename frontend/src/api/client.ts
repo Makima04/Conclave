@@ -1,4 +1,4 @@
-import type { Session, SessionConfig, Message, ProviderConfig } from './types';
+import type { Session, SessionConfig, Message, ProviderConfig, WorldBook, WorldBookDetail, WorldBookEntry, CharacterCard, ParsedWorldBookEntry } from './types';
 
 const BASE_URL = '/api';
 
@@ -17,10 +17,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 // Sessions
-export async function createSession(title?: string, mode?: string): Promise<Session> {
+export async function createSession(title?: string, mode?: string, worldPackId?: string, config?: SessionConfig): Promise<Session> {
   return request('/sessions', {
     method: 'POST',
-    body: JSON.stringify({ title, mode }),
+    body: JSON.stringify({ title, mode, world_pack_id: worldPackId || null, config }),
   });
 }
 
@@ -46,6 +46,13 @@ export async function updateSession(id: string, data: { title?: string; config?:
 // Messages
 export async function listMessages(sessionId: string): Promise<{ items: Message[] }> {
   return request(`/sessions/${sessionId}/messages`);
+}
+
+export async function applyOpeningMessage(sessionId: string, content: string): Promise<Message> {
+  return request(`/sessions/${sessionId}/opening`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  });
 }
 
 // SSE streaming for sending messages
@@ -193,6 +200,17 @@ export async function getTrace(sessionId: string, turn: number): Promise<{ items
   return request(`/sessions/${sessionId}/trace/${turn}`);
 }
 
+// SSE reconnect for recovery: returns the fetch Response (200 = active stream, 404 = no active turn)
+export async function reconnectStream(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  return fetch(`${BASE_URL}/sessions/${sessionId}/reconnect`, {
+    headers: { 'Accept': 'text/event-stream' },
+    signal,
+  });
+}
+
 // Regenerate
 export async function regenerateMessage(sessionId: string, messageId: string): Promise<{ id: string; content: string; variants: string; turn_number: number }> {
   return request(`/sessions/${sessionId}/messages/${messageId}/regenerate`, {
@@ -221,4 +239,133 @@ export async function deleteMessage(sessionId: string, messageId: string): Promi
   await request(`/sessions/${sessionId}/messages/${messageId}`, {
     method: 'DELETE',
   });
+}
+
+// --- Sub-Agents ---
+
+export interface SubAgent {
+  id: string;
+  session_id: string;
+  agent_type: string;
+  character_id: string | null;
+  label: string;
+  status: string;
+  last_active_turn: number;
+  context_preview: string;
+  config: Record<string, any>;
+}
+
+export async function listAgents(sessionId: string): Promise<{ items: SubAgent[] }> {
+  return request(`/sessions/${sessionId}/agents`);
+}
+
+export async function createAgent(sessionId: string, data: { agent_type: string; label?: string; character_id?: string; context?: string; system_prompt?: string; model?: string }): Promise<{ id: string }> {
+  return request(`/sessions/${sessionId}/agents`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateAgent(sessionId: string, agentId: string, data: { label?: string; system_prompt?: string; context?: string; config?: Record<string, any> }): Promise<void> {
+  await request(`/sessions/${sessionId}/agents/${agentId}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function cooldownAgent(sessionId: string, agentId: string): Promise<void> {
+  await request(`/sessions/${sessionId}/agents/${agentId}/cooldown`, { method: 'POST' });
+}
+
+export async function restoreAgent(sessionId: string, agentId: string): Promise<void> {
+  await request(`/sessions/${sessionId}/agents/${agentId}/restore`, { method: 'POST' });
+}
+
+export async function deleteAgent(sessionId: string, agentId: string): Promise<void> {
+  await request(`/sessions/${sessionId}/agents/${agentId}`, { method: 'DELETE' });
+}
+
+// --- World Books ---
+
+export async function listWorldBooks(): Promise<{ items: WorldBook[] }> {
+  return request('/worldbooks');
+}
+
+export async function getWorldBook(id: string): Promise<WorldBookDetail> {
+  return request(`/worldbooks/${id}`);
+}
+
+export async function importWorldBook(data: any): Promise<WorldBookDetail> {
+  return request('/worldbooks', {
+    method: 'POST',
+    body: JSON.stringify({ data }),
+  });
+}
+
+export async function updateWorldBook(id: string, data: { name?: string; description?: string }): Promise<any> {
+  return request(`/worldbooks/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteWorldBook(id: string): Promise<void> {
+  await request(`/worldbooks/${id}`, { method: 'DELETE' });
+}
+
+export async function exportWorldBook(id: string): Promise<any> {
+  return request(`/worldbooks/${id}/export`);
+}
+
+export async function updateWorldBookEntry(
+  bookId: string,
+  entryId: string,
+  data: {
+    keys?: string[];
+    content?: string;
+    comment?: string;
+    constant?: boolean;
+    priority?: number;
+    enabled?: boolean;
+    position?: string;
+    selective?: boolean;
+    secondary_keys?: string[];
+    selective_logic?: number;
+  }
+): Promise<any> {
+  return request(`/worldbooks/${bookId}/entries/${entryId}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteWorldBookEntry(bookId: string, entryId: string): Promise<void> {
+  await request(`/worldbooks/${bookId}/entries/${entryId}`, { method: 'DELETE' });
+}
+
+// --- Character Cards ---
+
+export async function listCharacterCards(): Promise<{ items: { id: string; name: string; creator: string; created_at: string }[] }> {
+  return request('/charactercards');
+}
+
+export async function getCharacterCard(id: string): Promise<CharacterCard> {
+  return request(`/charactercards/${id}`);
+}
+
+export async function getWorldBookCharacterCard(worldBookId: string): Promise<CharacterCard> {
+  return request(`/worldbooks/${worldBookId}/character-card`);
+}
+
+export async function updateCharacterCard(id: string, data: Partial<CharacterCard>): Promise<any> {
+  return request(`/charactercards/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
+// --- World Book Parsing ---
+
+export async function parseWorldBook(id: string): Promise<{ status: string; entries: ParsedWorldBookEntry[] }> {
+  return request(`/worldbooks/${id}/parse`, { method: 'POST' });
 }

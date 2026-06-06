@@ -23,6 +23,13 @@ pub async fn save_summary(
     .execute(pool)
     .await?;
 
+    tracing::debug!(
+        session = session_id,
+        turn = turn_number,
+        summary_type = summary_type,
+        "Turn summary saved"
+    );
+
     Ok(id)
 }
 

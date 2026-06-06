@@ -116,10 +116,6 @@
   <header>
     <div class="wrap hero">
       <h1>数据库与 API 规范</h1>
-      <p class="lead">定义平台核心数据模型和 HTTP API 契约。后端、前端、Runtime 和记忆系统共享同一套 schema，避免各模块自造临时结构。</p>
-      <div class="tags">
-        <span>SQLite</span><span>API Contract</span><span>SSE</span><span>Data Model</span><span>Schema</span><span>Trace</span>
-      </div>
     </div>
   </header>
 
@@ -136,28 +132,46 @@
   </nav>
 
   <main class="wrap">
-    <section class="band">
-      <h2>目标</h2>
-      <ul>
-        <li>为会话、消息、状态、记忆、trace 和 artifact 提供统一数据模型。</li>
-        <li>定义后端 HTTP API 的路径、请求和响应格式，作为前后端和 Runtime 的共同契约。</li>
-        <li>确保数据模型能承载八层记忆、proposal + commit、多 Agent trace 和 artifact 版本管理。</li>
-        <li>V1 使用 SQLite，schema 设计兼容未来迁移到 PostgreSQL。</li>
-      </ul>
-    </section>
-
-    <section id="models" class="band">
-      <h2>数据模型</h2>
-      <h3>设计原则</h3>
-      <ul>
-        <li>所有表使用 UUID 作为主键，避免分布式部署时冲突。</li>
-        <li>时间戳统一使用 ISO 8601 UTC 字符串（<code>TEXT</code>），前端按用户时区展示。</li>
-        <li>结构化状态和复杂嵌套数据使用 JSON 字段（SQLite 的 <code>TEXT</code> 存储 JSON），应用层做 schema 校验。</li>
-        <li>变更历史和 trace 不做物理删除，通过 <code>deleted_at</code> 或状态字段软删除。</li>
-      </ul>
-
-      <h3>ER 关系概览</h3>
-      <pre><code>sessions ──&lt; messages
+<h1 id="数据库与-api-规范">数据库与 API 规范</h1>
+<blockquote>
+<p>定义平台核心数据模型和 HTTP API 契约。后端、前端、Runtime
+和记忆系统共享同一套 schema，避免各模块自造临时结构。</p>
+</blockquote>
+<p><code>SQLite</code> · <code>API Contract</code> · <code>SSE</code> ·
+<code>Data Model</code> · <code>Schema</code> · <code>Trace</code></p>
+<hr />
+<ul>
+<li><a href="docs.md">文档中心</a></li>
+<li><a href="index.md">架构首页</a></li>
+<li><a href="long-context-memory.md">长期记忆</a></li>
+<li><a href="agent-runtime.md">Agent Runtime</a></li>
+<li><a href="agent-boundaries.md">Agent 边界</a></li>
+<li><a href="tech-selection.md">技术选型</a></li>
+</ul>
+<hr />
+<h2 id="目标">目标</h2>
+<ul>
+<li>为会话、消息、状态、记忆、trace 和 artifact 提供统一数据模型。</li>
+<li>定义后端 HTTP API 的路径、请求和响应格式，作为前后端和 Runtime
+的共同契约。</li>
+<li>确保数据模型能承载八层记忆、proposal + commit、多 Agent trace 和
+artifact 版本管理。</li>
+<li>V1 使用 SQLite，schema 设计兼容未来迁移到 PostgreSQL。</li>
+</ul>
+<hr />
+<h2 id="数据模型">数据模型</h2>
+<h3 id="设计原则">设计原则</h3>
+<ul>
+<li>所有表使用 UUID 作为主键，避免分布式部署时冲突。</li>
+<li>时间戳统一使用 ISO 8601 UTC
+字符串（<code>TEXT</code>），前端按用户时区展示。</li>
+<li>结构化状态和复杂嵌套数据使用 JSON 字段（SQLite 的 <code>TEXT</code>
+存储 JSON），应用层做 schema 校验。</li>
+<li>变更历史和 trace 不做物理删除，通过 <code>deleted_at</code>
+或状态字段软删除。</li>
+</ul>
+<h3 id="er-关系概览">ER 关系概览</h3>
+<pre class="text"><code>sessions ──&lt; messages
 sessions ──&lt; state_snapshots
 sessions ──&lt; memory_events
 sessions ──&lt; foreshadowing
@@ -165,131 +179,252 @@ sessions ──&lt; character_states
 sessions ──&lt; traces
 sessions ──&lt; artifacts
 sessions ──&lt; turn_summaries
+sessions ──&lt; sub_agents
+sessions ──&lt; structured_events
 content_packs (独立，被 sessions 引用)</code></pre>
-    </section>
-
-    <section class="band">
-      <h2>sessions — 会话</h2>
-      <p>一个会话对应一次持续的 RP 或写作活动，绑定角色、世界和 Agent 图。</p>
-      <pre><code>CREATE TABLE sessions (
+<hr />
+<h3 id="sessions-会话">sessions — 会话</h3>
+<p>一个会话对应一次持续的 RP 或写作活动，绑定角色、世界和 Agent 图。</p>
+<pre class="sql"><code>CREATE TABLE sessions (
   id              TEXT PRIMARY KEY,
-  title           TEXT NOT NULL DEFAULT '',
-  mode            TEXT NOT NULL DEFAULT 'single_agent',
+  title           TEXT NOT NULL DEFAULT &#39;&#39;,
+  mode            TEXT NOT NULL DEFAULT &#39;single_agent&#39;,
   character_pack_id TEXT,
   world_pack_id     TEXT,
   graph_pack_id     TEXT,
-  config          TEXT NOT NULL DEFAULT '{}',
+  config          TEXT NOT NULL DEFAULT &#39;{}&#39;,
   current_turn    INTEGER NOT NULL DEFAULT 0,
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL,
   deleted_at      TEXT
 );</code></pre>
-      <table class="matrix">
-        <thead><tr><th>字段</th><th>说明</th></tr></thead>
-        <tbody>
-          <tr><td><code>mode</code></td><td>运行模式：<code>single_agent</code>、<code>strict_director</code>、<code>collaborative_director</code>、<code>free_writing</code>、<code>multi_npc_scene</code>、<code>advanced_graph</code>。</td></tr>
-          <tr><td><code>character_pack_id</code></td><td>引用 <code>content_packs.id</code>，当前绑定的角色包。</td></tr>
-          <tr><td><code>world_pack_id</code></td><td>引用 <code>content_packs.id</code>，当前绑定的世界包。</td></tr>
-          <tr><td><code>graph_pack_id</code></td><td>引用 <code>content_packs.id</code>，高级模式下的自定义 Agent Graph 包。</td></tr>
-          <tr><td><code>config</code></td><td>会话级配置 JSON：模型选择、温度、token 预算、导演强度等。</td></tr>
-          <tr><td><code>current_turn</code></td><td>当前轮次号，每轮递增，用于消息、事件和 trace 关联。</td></tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section class="band">
-      <h2>messages — 消息</h2>
-      <p>每条消息对应一轮对话中的一个角色发言或系统事件。</p>
-      <pre><code>CREATE TABLE messages (
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mode</code></td>
+<td>运行模式：<code>single_agent</code>（单 Agent
+会话）、<code>multi_agent</code>（动态总控多 Agent 4 层流水线）。</td>
+</tr>
+<tr>
+<td><code>character_pack_id</code></td>
+<td>引用 <code>content_packs.id</code>，当前绑定的角色包。</td>
+</tr>
+<tr>
+<td><code>world_pack_id</code></td>
+<td>引用 <code>content_packs.id</code>，当前绑定的世界包。</td>
+</tr>
+<tr>
+<td><code>graph_pack_id</code></td>
+<td>引用 <code>content_packs.id</code>，高级模式下的自定义 Agent Graph
+包。</td>
+</tr>
+<tr>
+<td><code>config</code></td>
+<td>会话级配置
+JSON：<code>master_model</code>、<code>sub_agent_model</code>、<code>compression_model</code>、<code>cooldown_turns</code>（默认
+10）、<code>user_auto_mode</code>（默认
+“ask”）、<code>max_active_agents</code>（默认
+8）、<code>parser_enabled</code>（默认 true）。</td>
+</tr>
+<tr>
+<td><code>current_turn</code></td>
+<td>当前轮次号，每轮递增，用于消息、事件和 trace 关联。</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3 id="messages-消息">messages — 消息</h3>
+<p>每条消息对应一轮对话中的一个角色发言或系统事件。</p>
+<pre class="sql"><code>CREATE TABLE messages (
   id            TEXT PRIMARY KEY,
   session_id    TEXT NOT NULL REFERENCES sessions(id),
   turn_number   INTEGER NOT NULL,
   role          TEXT NOT NULL,
-  content       TEXT NOT NULL DEFAULT '',
-  artifact_refs TEXT NOT NULL DEFAULT '[]',
-  metadata      TEXT NOT NULL DEFAULT '{}',
+  content       TEXT NOT NULL DEFAULT &#39;&#39;,
+  artifact_refs TEXT NOT NULL DEFAULT &#39;[]&#39;,
+  metadata      TEXT NOT NULL DEFAULT &#39;{}&#39;,
   created_at    TEXT NOT NULL
 );
 
 CREATE INDEX idx_messages_session_turn ON messages(session_id, turn_number);</code></pre>
-      <table class="matrix">
-        <thead><tr><th>字段</th><th>说明</th></tr></thead>
-        <tbody>
-          <tr><td><code>role</code></td><td><code>user</code>、<code>assistant</code>、<code>npc:&lt;character_id&gt;</code>、<code>director</code>、<code>system</code>。</td></tr>
-          <tr><td><code>artifact_refs</code></td><td>JSON 数组，引用本轮涉及的 artifact id 和版本。</td></tr>
-          <tr><td><code>metadata</code></td><td>JSON 对象，包含 LLM 模型名、token 用量、渲染提示等。</td></tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section class="band">
-      <h2>state_snapshots — 结构化状态快照</h2>
-      <p>结构化状态是长期一致性的主账本。每次提交生成新版本，保留历史。</p>
-      <pre><code>CREATE TABLE state_snapshots (
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>role</code></td>
+<td><code>user</code>、<code>assistant</code>、<code>npc:&lt;character_id&gt;</code>、<code>director</code>、<code>system</code>。</td>
+</tr>
+<tr>
+<td><code>artifact_refs</code></td>
+<td>JSON 数组，引用本轮涉及的 artifact id
+和版本：<code>[{"artifact_id":"...","version":3}]</code>。</td>
+</tr>
+<tr>
+<td><code>metadata</code></td>
+<td>JSON 对象，包含 LLM 模型名、token 用量、渲染提示等。</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3 id="state_snapshots-结构化状态快照">state_snapshots —
+结构化状态快照</h3>
+<p>结构化状态是长期一致性的主账本。每次提交生成新版本，保留历史。</p>
+<pre class="sql"><code>CREATE TABLE state_snapshots (
   id            TEXT PRIMARY KEY,
   session_id    TEXT NOT NULL REFERENCES sessions(id),
   version       INTEGER NOT NULL,
   state_json    TEXT NOT NULL,
-  risk_level    TEXT NOT NULL DEFAULT 'low',
-  committed_by  TEXT NOT NULL DEFAULT 'runtime',
+  risk_level    TEXT NOT NULL DEFAULT &#39;low&#39;,
+  committed_by  TEXT NOT NULL DEFAULT &#39;runtime&#39;,
   proposal_id   TEXT,
   created_at    TEXT NOT NULL
 );
 
 CREATE INDEX idx_state_session_version ON state_snapshots(session_id, version);</code></pre>
-      <table class="matrix">
-        <thead><tr><th>字段</th><th>说明</th></tr></thead>
-        <tbody>
-          <tr><td><code>state_json</code></td><td>完整结构化状态 JSON，包含 <code>world_state</code>、<code>characters</code>、<code>items</code>、<code>relationships</code>、<code>tasks</code> 等。</td></tr>
-          <tr><td><code>risk_level</code></td><td><code>low</code>、<code>medium</code>、<code>high</code>。参照 <a href="agent-runtime.html">Agent Runtime</a>。</td></tr>
-          <tr><td><code>committed_by</code></td><td>提交者：<code>runtime</code>（自动）、<code>director</code>（导演审核后）、<code>user</code>（用户确认后）。</td></tr>
-          <tr><td><code>proposal_id</code></td><td>关联触发本次提交的 proposal trace id。</td></tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section class="band">
-      <h2>memory_events — 事件账本</h2>
-      <p>关键事件按时间线入账，记录发生了什么、谁参与、影响了哪些状态。</p>
-      <pre><code>CREATE TABLE memory_events (
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>state_json</code></td>
+<td>完整结构化状态 JSON，包含
+<code>world_state</code>、<code>characters</code>、<code>items</code>、<code>relationships</code>、<code>tasks</code>
+等。</td>
+</tr>
+<tr>
+<td><code>risk_level</code></td>
+<td><code>low</code>、<code>medium</code>、<code>high</code>。参照 <a
+href="agent-runtime.md">Agent Runtime — 状态提交与风险等级</a>。</td>
+</tr>
+<tr>
+<td><code>committed_by</code></td>
+<td>提交者：<code>runtime</code>（自动）、<code>director</code>（导演审核后）、<code>user</code>（用户确认后）。</td>
+</tr>
+<tr>
+<td><code>proposal_id</code></td>
+<td>关联触发本次提交的 proposal trace id。</td>
+</tr>
+</tbody>
+</table>
+<h4 id="state_json-结构草案">state_json 结构草案</h4>
+<pre class="json"><code>{
+  &quot;world_state&quot;: {
+    &quot;current_time&quot;: &quot;第三纪元·血月前夜&quot;,
+    &quot;current_location&quot;: &quot;旧档案馆&quot;,
+    &quot;global_flags&quot;: {}
+  },
+  &quot;characters&quot;: {
+    &quot;player&quot;: {
+      &quot;location&quot;: &quot;旧档案馆&quot;,
+      &quot;status&quot;: &quot;alive&quot;,
+      &quot;inventory&quot;: [&quot;silver_key&quot;, &quot;old_journal&quot;],
+      &quot;relationships&quot;: {},
+      &quot;known_info&quot;: [&quot;blood_moon_rumor&quot;]
+    },
+    &quot;archivist&quot;: {
+      &quot;location&quot;: &quot;旧档案馆&quot;,
+      &quot;status&quot;: &quot;alive&quot;,
+      &quot;inventory&quot;: [],
+      &quot;relationships&quot;: { &quot;player&quot;: { &quot;trust&quot;: 0.42 } },
+      &quot;known_info&quot;: [&quot;archive_secret&quot;],
+      &quot;hidden_info&quot;: [&quot;blood_moon_key_location&quot;]
+    }
+  },
+  &quot;active_quests&quot;: [],
+  &quot;global_flags&quot;: {}
+}</code></pre>
+<hr />
+<h3 id="memory_events-事件账本">memory_events — 事件账本</h3>
+<p>关键事件按时间线入账，记录发生了什么、谁参与、影响了哪些状态。</p>
+<pre class="sql"><code>CREATE TABLE memory_events (
   id                  TEXT PRIMARY KEY,
   session_id          TEXT NOT NULL REFERENCES sessions(id),
   turn_number         INTEGER NOT NULL,
   event_type          TEXT NOT NULL,
   content             TEXT NOT NULL,
-  characters_involved TEXT NOT NULL DEFAULT '[]',
+  characters_involved TEXT NOT NULL DEFAULT &#39;[]&#39;,
   location            TEXT,
-  importance          TEXT NOT NULL DEFAULT 'normal',
+  importance          TEXT NOT NULL DEFAULT &#39;normal&#39;,
   is_public           INTEGER NOT NULL DEFAULT 1,
-  related_state_keys  TEXT NOT NULL DEFAULT '[]',
+  related_state_keys  TEXT NOT NULL DEFAULT &#39;[]&#39;,
   created_at          TEXT NOT NULL
 );
 
 CREATE INDEX idx_events_session_turn ON memory_events(session_id, turn_number);
 CREATE INDEX idx_events_session_type ON memory_events(session_id, event_type);</code></pre>
-      <table class="matrix">
-        <thead><tr><th>字段</th><th>说明</th></tr></thead>
-        <tbody>
-          <tr><td><code>event_type</code></td><td><code>action</code>、<code>dialogue</code>、<code>discovery</code>、<code>combat</code>、<code>state_change</code>、<code>world_event</code>、<code>system</code>。</td></tr>
-          <tr><td><code>characters_involved</code></td><td>JSON 数组：<code>["player", "archivist"]</code>。</td></tr>
-          <tr><td><code>importance</code></td><td><code>trivial</code>、<code>normal</code>、<code>important</code>、<code>critical</code>。影响检索优先级和摘要保留。</td></tr>
-          <tr><td><code>is_public</code></td><td>1 = 公开事件，0 = 隐藏事件。</td></tr>
-          <tr><td><code>related_state_keys</code></td><td>JSON 数组，影响的结构化状态路径。</td></tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section class="band">
-      <h2>foreshadowing — 伏笔登记表</h2>
-      <p>管理伏笔、谜团、承诺、隐藏秘密和未来回收点。</p>
-      <pre><code>CREATE TABLE foreshadowing (
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>event_type</code></td>
+<td><code>action</code>、<code>dialogue</code>、<code>discovery</code>、<code>combat</code>、<code>state_change</code>、<code>world_event</code>、<code>system</code>。</td>
+</tr>
+<tr>
+<td><code>characters_involved</code></td>
+<td>JSON 数组：<code>["player", "archivist"]</code>。</td>
+</tr>
+<tr>
+<td><code>importance</code></td>
+<td><code>trivial</code>、<code>normal</code>、<code>important</code>、<code>critical</code>。影响检索优先级和摘要保留。</td>
+</tr>
+<tr>
+<td><code>is_public</code></td>
+<td>1 = 公开事件，0 = 隐藏事件（如秘密对话、暗中行动）。</td>
+</tr>
+<tr>
+<td><code>related_state_keys</code></td>
+<td>JSON
+数组，本次事件影响的结构化状态路径：<code>["characters.player.inventory", "characters.archivist.relationships.player.trust"]</code>。</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3 id="foreshadowing-伏笔登记表">foreshadowing — 伏笔登记表</h3>
+<p>管理伏笔、谜团、承诺、隐藏秘密和未来回收点。</p>
+<pre class="sql"><code>CREATE TABLE foreshadowing (
   id                TEXT PRIMARY KEY,
   session_id        TEXT NOT NULL REFERENCES sessions(id),
   content           TEXT NOT NULL,
-  status            TEXT NOT NULL DEFAULT 'open',
-  importance        TEXT NOT NULL DEFAULT 'normal',
-  related_characters TEXT NOT NULL DEFAULT '[]',
-  trigger_conditions TEXT NOT NULL DEFAULT '[]',
+  status            TEXT NOT NULL DEFAULT &#39;open&#39;,
+  importance        TEXT NOT NULL DEFAULT &#39;normal&#39;,
+  related_characters TEXT NOT NULL DEFAULT &#39;[]&#39;,
+  trigger_conditions TEXT NOT NULL DEFAULT &#39;[]&#39;,
   resolution_plan   TEXT,
   planted_at_turn   INTEGER NOT NULL,
   last_hint_turn    INTEGER,
@@ -299,58 +434,114 @@ CREATE INDEX idx_events_session_type ON memory_events(session_id, event_type);</
 );
 
 CREATE INDEX idx_foreshadow_session_status ON foreshadowing(session_id, status);</code></pre>
-      <table class="matrix">
-        <thead><tr><th>字段</th><th>说明</th></tr></thead>
-        <tbody>
-          <tr><td><code>status</code></td><td><code>open</code>、<code>hinted</code>、<code>triggered</code>、<code>resolved</code>、<code>abandoned</code>。</td></tr>
-          <tr><td><code>importance</code></td><td><code>low</code>、<code>normal</code>、<code>high</code>、<code>critical</code>。</td></tr>
-          <tr><td><code>trigger_conditions</code></td><td>JSON 数组，触发回收的条件描述。</td></tr>
-          <tr><td><code>resolution_plan</code></td><td>创作者或导演的回收计划，可为空。</td></tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section class="band">
-      <h2>character_states — 角色人格状态</h2>
-      <p>维护每个角色的人格核心、可演化状态和成长轨迹。参照 <a href="long-context-memory.html">长期记忆</a>。</p>
-      <pre><code>CREATE TABLE character_states (
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>status</code></td>
+<td><code>open</code>、<code>hinted</code>、<code>triggered</code>、<code>resolved</code>、<code>abandoned</code>。</td>
+</tr>
+<tr>
+<td><code>importance</code></td>
+<td><code>low</code>、<code>normal</code>、<code>high</code>、<code>critical</code>。</td>
+</tr>
+<tr>
+<td><code>trigger_conditions</code></td>
+<td>JSON
+数组，触发回收的条件描述：<code>["player_visits_old_archive", "blood_moon_event_near"]</code>。</td>
+</tr>
+<tr>
+<td><code>resolution_plan</code></td>
+<td>创作者或导演的回收计划，可为空。</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3 id="character_states-角色人格状态">character_states —
+角色人格状态</h3>
+<p>维护每个角色的人格核心、可演化状态和成长轨迹。</p>
+<pre class="sql"><code>CREATE TABLE character_states (
   id                TEXT PRIMARY KEY,
   session_id        TEXT NOT NULL REFERENCES sessions(id),
   character_id      TEXT NOT NULL,
-  personality_core  TEXT NOT NULL DEFAULT '{}',
-  personality_state TEXT NOT NULL DEFAULT '{}',
-  growth_arc        TEXT NOT NULL DEFAULT '{}',
-  relationships     TEXT NOT NULL DEFAULT '{}',
+  personality_core  TEXT NOT NULL DEFAULT &#39;{}&#39;,
+  personality_state TEXT NOT NULL DEFAULT &#39;{}&#39;,
+  growth_arc        TEXT NOT NULL DEFAULT &#39;{}&#39;,
+  relationships     TEXT NOT NULL DEFAULT &#39;{}&#39;,
   updated_at        TEXT NOT NULL,
   UNIQUE(session_id, character_id)
 );</code></pre>
-      <table class="matrix">
-        <thead><tr><th>字段</th><th>JSON 结构</th><th>说明</th></tr></thead>
-        <tbody>
-          <tr><td><code>personality_core</code></td><td><code>PersonalityCore</code></td><td>稳定人格：价值观、核心恐惧、长期欲望、知识边界、OOC 红线。</td></tr>
-          <tr><td><code>personality_state</code></td><td><code>PersonalityState</code></td><td>可演化状态：当前情绪、短期信念、行为倾向。</td></tr>
-          <tr><td><code>growth_arc</code></td><td><code>GrowthArc</code></td><td>成长方向、阶段、触发事件、允许变化范围、证据链。</td></tr>
-          <tr><td><code>relationships</code></td><td><code>RelationshipMap</code></td><td>与其他角色的关系状态：信任、好感、恐惧、敌意等数值和历史。</td></tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section class="band">
-      <h2>traces — 执行追踪</h2>
-      <p>每次 Runtime 执行路径的完整记录。参照 <a href="agent-runtime.html">Agent Runtime</a>。</p>
-      <pre><code>CREATE TABLE traces (
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>字段</th>
+<th>JSON 结构</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>personality_core</code></td>
+<td><code>PersonalityCore</code></td>
+<td>稳定人格：价值观、核心恐惧、长期欲望、知识边界、OOC 红线。参照 <a
+href="long-context-memory.md">长期记忆 — 角色成长</a>。</td>
+</tr>
+<tr>
+<td><code>personality_state</code></td>
+<td><code>PersonalityState</code></td>
+<td>可演化状态：当前情绪、短期信念、行为倾向、信任、警惕。</td>
+</tr>
+<tr>
+<td><code>growth_arc</code></td>
+<td><code>GrowthArc</code></td>
+<td>成长方向、阶段、触发事件、允许变化范围、证据链。</td>
+</tr>
+<tr>
+<td><code>relationships</code></td>
+<td><code>RelationshipMap</code></td>
+<td>与其他角色的关系状态：信任、好感、恐惧、敌意等数值和历史。</td>
+</tr>
+</tbody>
+</table>
+<h4 id="personality_core-示例">personality_core 示例</h4>
+<pre class="json"><code>{
+  &quot;values&quot;: [&quot;knowledge_preservation&quot;, &quot;loyalty_to_institution&quot;],
+  &quot;fears&quot;: [&quot;loss_of_memory&quot;, &quot;being_forgotten&quot;],
+  &quot;desires&quot;: [&quot;uncover_blood_moon_truth&quot;],
+  &quot;knowledge_boundary&quot;: [&quot;archive_layout&quot;, &quot;ancient_scripts&quot;, &quot;blood_moon_partial&quot;],
+  &quot;ooc_redlines&quot;: [&quot;sudden_betrayal_without_cause&quot;, &quot;casual_violence&quot;]
+}</code></pre>
+<hr />
+<h3 id="traces-执行追踪">traces — 执行追踪</h3>
+<p>每次 Runtime 执行路径的完整记录。参照 <a
+href="agent-runtime.md">Agent Runtime — Trace</a>。</p>
+<pre class="sql"><code>CREATE TABLE traces (
   id              TEXT PRIMARY KEY,
   session_id      TEXT NOT NULL REFERENCES sessions(id),
   turn_number     INTEGER NOT NULL,
   node_id         TEXT NOT NULL,
   node_type       TEXT NOT NULL,
   agent_id        TEXT,
-  input_summary   TEXT NOT NULL DEFAULT '',
-  output_summary  TEXT NOT NULL DEFAULT '',
+  input_summary   TEXT NOT NULL DEFAULT &#39;&#39;,
+  output_summary  TEXT NOT NULL DEFAULT &#39;&#39;,
   output_type     TEXT,
   context_bundle  TEXT,
-  model_config    TEXT NOT NULL DEFAULT '{}',
-  token_usage     TEXT NOT NULL DEFAULT '{}',
+  model_config    TEXT NOT NULL DEFAULT &#39;{}&#39;,
+  token_usage     TEXT NOT NULL DEFAULT &#39;{}&#39;,
   duration_ms     INTEGER,
   risk_level      TEXT,
   error           TEXT,
@@ -359,16 +550,62 @@ CREATE INDEX idx_foreshadow_session_status ON foreshadowing(session_id, status);
 
 CREATE INDEX idx_traces_session_turn ON traces(session_id, turn_number);
 CREATE INDEX idx_traces_session_node ON traces(session_id, node_type);</code></pre>
-    </section>
-
-    <section class="band">
-      <h2>artifacts — Artifact 存储</h2>
-      <p>Artifact 的内容和版本管理。参照 <a href="artifact-renderer.html">Artifact Renderer</a>。</p>
-      <pre><code>CREATE TABLE artifacts (
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>node_id</code></td>
+<td>图中节点实例 id，同一轮可有多个同类节点。</td>
+</tr>
+<tr>
+<td><code>node_type</code></td>
+<td><code>director</code>、<code>world_judge</code>、<code>npc</code>、<code>writer</code>、<code>memory</code>、<code>consistency</code>、<code>artifact</code>、<code>tool</code>。</td>
+</tr>
+<tr>
+<td><code>agent_id</code></td>
+<td>具体 Agent 标识，如 <code>npc_archivist</code>。</td>
+</tr>
+<tr>
+<td><code>output_type</code></td>
+<td>结构化输出类型：<code>plan_result</code>、<code>judge_result</code>、<code>npc_intent</code>、<code>writer_draft</code>、<code>memory_proposal</code>、<code>state_change_proposal</code>、<code>artifact_patch</code>。</td>
+</tr>
+<tr>
+<td><code>context_bundle</code></td>
+<td>该节点收到的 <code>ContextBundle</code>
+JSON，用于回溯信息可见性。</td>
+</tr>
+<tr>
+<td><code>model_config</code></td>
+<td>JSON：<code>{"model":"...","temperature":0.7,"max_tokens":2048}</code>。</td>
+</tr>
+<tr>
+<td><code>token_usage</code></td>
+<td>JSON：<code>{"prompt_tokens":1200,"completion_tokens":800}</code>。</td>
+</tr>
+<tr>
+<td><code>risk_level</code></td>
+<td>该节点输出的风险等级，用于 proposal + commit 决策。</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3 id="artifacts-artifact-存储">artifacts — Artifact 存储</h3>
+<p>Artifact 的内容和版本管理。参照 <a
+href="artifact-renderer.md">Artifact Renderer</a>（待补）。</p>
+<pre class="sql"><code>CREATE TABLE artifacts (
   id              TEXT PRIMARY KEY,
   session_id      TEXT NOT NULL REFERENCES sessions(id),
   artifact_type   TEXT NOT NULL,
-  schema_version  TEXT NOT NULL DEFAULT '1',
+  schema_version  TEXT NOT NULL DEFAULT &#39;1&#39;,
   content_hash    TEXT NOT NULL,
   payload         TEXT NOT NULL,
   parent_version  INTEGER,
@@ -378,12 +615,40 @@ CREATE INDEX idx_traces_session_node ON traces(session_id, node_type);</code></p
 
 CREATE INDEX idx_artifacts_session ON artifacts(session_id);
 CREATE UNIQUE INDEX idx_artifacts_id_version ON artifacts(id, content_hash);</code></pre>
-    </section>
-
-    <section class="band">
-      <h2>turn_summaries — 轮次摘要</h2>
-      <p>每轮结束后生成的摘要，用于 Scene Summary 和 Chapter Summary 层。</p>
-      <pre><code>CREATE TABLE turn_summaries (
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>artifact_type</code></td>
+<td><code>data_ui</code>、<code>themed_component</code>、<code>custom_html</code>。对应三层渲染模型。</td>
+</tr>
+<tr>
+<td><code>payload</code></td>
+<td>Artifact 内容 JSON，根据 <code>artifact_type</code> 结构不同。</td>
+</tr>
+<tr>
+<td><code>parent_version</code></td>
+<td>增量更新时指向父版本，首版为 NULL。</td>
+</tr>
+<tr>
+<td><code>patch_type</code></td>
+<td><code>full</code>（全量）、<code>state_diff</code>、<code>json_patch</code>、<code>props</code>。</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3 id="turn_summaries-轮次摘要">turn_summaries — 轮次摘要</h3>
+<p>每轮结束后生成的摘要，用于 Scene Summary 和 Chapter Summary 层。</p>
+<pre class="sql"><code>CREATE TABLE turn_summaries (
   id              TEXT PRIMARY KEY,
   session_id      TEXT NOT NULL REFERENCES sessions(id),
   turn_number     INTEGER NOT NULL,
@@ -393,166 +658,668 @@ CREATE UNIQUE INDEX idx_artifacts_id_version ON artifacts(id, content_hash);</co
 );
 
 CREATE INDEX idx_summaries_session_type ON turn_summaries(session_id, summary_type);</code></pre>
-      <table class="matrix">
-        <thead><tr><th>字段</th><th>说明</th></tr></thead>
-        <tbody>
-          <tr><td><code>summary_type</code></td><td><code>scene</code>（场景摘要）、<code>chapter</code>（章节摘要）、<code>turn</code>（单轮摘要）。</td></tr>
-        </tbody>
-      </table>
-    </section>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>summary_type</code></td>
+<td><code>scene</code>（场景摘要）、<code>chapter</code>（章节摘要）、<code>turn</code>（单轮摘要）。</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3 id="sub_agents-子-agent-管理">sub_agents — 子 Agent 管理</h3>
+<p>动态总控架构中每个会话的子 Agent 注册表。由 Master Agent
+管理生命周期，用户也可手动操作。</p>
+<pre class="sql"><code>CREATE TABLE sub_agents (
+  id              TEXT PRIMARY KEY,
+  session_id      TEXT NOT NULL REFERENCES sessions(id),
+  agent_type      TEXT NOT NULL,
+  character_id    TEXT,
+  label           TEXT NOT NULL DEFAULT &#39;&#39;,
+  system_prompt   TEXT NOT NULL DEFAULT &#39;&#39;,
+  context         TEXT NOT NULL DEFAULT &#39;&#39;,
+  status          TEXT NOT NULL DEFAULT &#39;active&#39;,
+  last_active_turn INTEGER NOT NULL DEFAULT 0,
+  cooldown_reason TEXT,
+  config          TEXT NOT NULL DEFAULT &#39;{}&#39;,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
 
-    <section class="band">
-      <h2>content_packs — 已导入内容包</h2>
-      <p>记录导入平台的内容包。详细规范参见 <a href="content-packages.html">内容包规范</a>。</p>
-      <pre><code>CREATE TABLE content_packs (
+CREATE INDEX idx_sub_agents_session ON sub_agents(session_id);
+CREATE INDEX idx_sub_agents_session_status ON sub_agents(session_id, status);</code></pre>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent_type</code></td>
+<td>Agent
+类型：<code>master</code>、<code>parser</code>、<code>npc</code>、<code>writer</code>、<code>director</code>、<code>state</code>、<code>user_proxy</code>。</td>
+</tr>
+<tr>
+<td><code>character_id</code></td>
+<td>关联的角色 ID，NPC 类型使用。</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td><code>active</code>、<code>cooldown</code>、<code>retired</code>、<code>dead</code>。</td>
+</tr>
+<tr>
+<td><code>last_active_turn</code></td>
+<td>最后一次被 Master 调用的轮次号。</td>
+</tr>
+<tr>
+<td><code>cooldown_reason</code></td>
+<td>进入冷却的原因描述。</td>
+</tr>
+<tr>
+<td><code>config</code></td>
+<td>JSON
+配置：<code>max_context_turns</code>、<code>max_tokens</code>、<code>temperature</code>、<code>recall_mode</code>、<code>max_recall_events</code>。</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3 id="structured_events-结构化事件检索记忆">structured_events —
+结构化事件（检索记忆）</h3>
+<p>由压缩 Agent 每轮生成的结构化事件记录，用于上下文召回系统。</p>
+<pre class="sql"><code>CREATE TABLE structured_events (
+  id              TEXT PRIMARY KEY,
+  session_id      TEXT NOT NULL REFERENCES sessions(id),
+  turn_number     INTEGER NOT NULL,
+  characters      TEXT NOT NULL DEFAULT &#39;[]&#39;,
+  location        TEXT,
+  action          TEXT NOT NULL DEFAULT &#39;&#39;,
+  scene_type      TEXT NOT NULL DEFAULT &#39;other&#39;,
+  importance      INTEGER NOT NULL DEFAULT 3,
+  raw_text        TEXT NOT NULL,
+  content_hash    TEXT NOT NULL,
+  embedding       BLOB,
+  created_at      TEXT NOT NULL
+);
+
+CREATE INDEX idx_structured_events_session_turn ON structured_events(session_id, turn_number);
+CREATE INDEX idx_structured_events_session_location ON structured_events(session_id, location);
+CREATE INDEX idx_structured_events_session_scene ON structured_events(session_id, scene_type);
+CREATE INDEX idx_structured_events_hash ON structured_events(session_id, content_hash);</code></pre>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>characters</code></td>
+<td>JSON 数组，涉及的角色名：<code>["player", "archivist"]</code>。</td>
+</tr>
+<tr>
+<td><code>location</code></td>
+<td>事件发生地点。</td>
+</tr>
+<tr>
+<td><code>action</code></td>
+<td>发生了什么（动词短语）。</td>
+</tr>
+<tr>
+<td><code>scene_type</code></td>
+<td><code>encounter</code>、<code>dialogue</code>、<code>combat</code>、<code>travel</code>、<code>info</code>、<code>other</code>。</td>
+</tr>
+<tr>
+<td><code>importance</code></td>
+<td>重要性 1-5 级，5 最高。影响检索排序。</td>
+</tr>
+<tr>
+<td><code>content_hash</code></td>
+<td>规范化文本的哈希，用于精确去重。</td>
+</tr>
+<tr>
+<td><code>embedding</code></td>
+<td>可选，f32 小端向量，预留向量检索。</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3 id="content_packs-已导入内容包">content_packs — 已导入内容包</h3>
+<p>记录导入平台的角色包、世界包、Agent Graph
+包和插件包。详细内容包规范参见 <a
+href="content-packages.md">内容包规范</a>（待补）。</p>
+<pre class="sql"><code>CREATE TABLE content_packs (
   id              TEXT PRIMARY KEY,
   pack_type       TEXT NOT NULL,
   name            TEXT NOT NULL,
   version         TEXT NOT NULL,
-  author          TEXT NOT NULL DEFAULT '',
-  description     TEXT NOT NULL DEFAULT '',
+  author          TEXT NOT NULL DEFAULT &#39;&#39;,
+  description     TEXT NOT NULL DEFAULT &#39;&#39;,
   manifest_json   TEXT NOT NULL,
   storage_path    TEXT NOT NULL,
   imported_at     TEXT NOT NULL
 );
 
 CREATE INDEX idx_packs_type ON content_packs(pack_type);</code></pre>
-    </section>
-
-    <section id="api" class="band">
-      <h2>API 规范</h2>
-      <h3>通用约定</h3>
-      <ul>
-        <li>基础路径：<code>/api</code></li>
-        <li>请求和响应统一 JSON（SSE 流式端点除外）</li>
-        <li>时间字段使用 ISO 8601 UTC</li>
-        <li>ID 字段使用 UUID v4</li>
-        <li>分页使用 <code>?cursor=&lt;id&gt;&amp;limit=&lt;n&gt;</code> 游标分页</li>
-      </ul>
-
-      <h3>统一错误响应</h3>
-      <pre><code>{
-  "error": {
-    "code": "session_not_found",
-    "message": "会话不存在",
-    "details": {}
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pack_type</code></td>
+<td><code>character</code>、<code>world</code>、<code>graph</code>、<code>plugin</code>。</td>
+</tr>
+<tr>
+<td><code>manifest_json</code></td>
+<td>完整 manifest 内容，用于快速查询和兼容性检查。</td>
+</tr>
+<tr>
+<td><code>storage_path</code></td>
+<td>包文件在本地文件系统或对象存储中的路径。</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="api-规范">API 规范</h2>
+<h3 id="通用约定">通用约定</h3>
+<ul>
+<li>基础路径：<code>/api</code></li>
+<li>请求和响应统一 JSON（SSE 流式端点除外）</li>
+<li>时间字段使用 ISO 8601 UTC</li>
+<li>ID 字段使用 UUID v4</li>
+<li>分页使用 <code>?cursor=&lt;id&gt;&amp;limit=&lt;n&gt;</code>
+游标分页，避免 offset 在长列表下的性能问题</li>
+</ul>
+<h3 id="统一错误响应">统一错误响应</h3>
+<pre class="json"><code>{
+  &quot;error&quot;: {
+    &quot;code&quot;: &quot;session_not_found&quot;,
+    &quot;message&quot;: &quot;会话不存在&quot;,
+    &quot;details&quot;: {}
   }
 }</code></pre>
-      <table class="matrix">
-        <thead><tr><th>HTTP 状态码</th><th>场景</th></tr></thead>
-        <tbody>
-          <tr><td>400</td><td>请求参数校验失败、schema 不匹配。</td></tr>
-          <tr><td>404</td><td>资源不存在。</td></tr>
-          <tr><td>409</td><td>状态冲突，如并发写入同一状态。</td></tr>
-          <tr><td>422</td><td>结构化输出无法解析。</td></tr>
-          <tr><td>500</td><td>内部错误。</td></tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section class="band">
-      <h2>API 端点概览</h2>
-      <div class="grid two">
-        <div class="card tint">
-          <h3>会话</h3>
-          <ul>
-            <li><code>POST /api/sessions</code> — 创建会话</li>
-            <li><code>GET /api/sessions</code> — 会话列表</li>
-            <li><code>GET /api/sessions/:id</code> — 单个会话</li>
-            <li><code>PATCH /api/sessions/:id</code> — 更新会话</li>
-            <li><code>DELETE /api/sessions/:id</code> — 删除会话</li>
-          </ul>
-        </div>
-        <div class="card blue">
-          <h3>消息</h3>
-          <ul>
-            <li><code>POST /api/sessions/:id/messages</code> — 发送消息</li>
-            <li><code>GET /api/sessions/:id/messages</code> — 消息列表</li>
-            <li><code>GET /api/sessions/:id/messages/:id</code> — 单条消息</li>
-          </ul>
-        </div>
-        <div class="card">
-          <h3>流式输出</h3>
-          <ul>
-            <li><code>GET /api/sessions/:id/stream</code> — SSE 事件流</li>
-          </ul>
-          <p>事件类型：<code>turn_start</code>、<code>node_enter</code>、<code>node_output</code>、<code>state_proposal</code>、<code>state_commit</code>、<code>artifact_update</code>、<code>message_delta</code>、<code>turn_end</code>、<code>error</code></p>
-        </div>
-        <div class="card warn">
-          <h3>状态与记忆</h3>
-          <ul>
-            <li><code>GET /api/sessions/:id/state</code> — 当前状态</li>
-            <li><code>GET /api/sessions/:id/state/history</code> — 状态历史</li>
-            <li><code>GET /api/sessions/:id/memory/events</code> — 事件账本</li>
-            <li><code>GET /api/sessions/:id/memory/foreshadowing</code> — 伏笔</li>
-            <li><code>GET /api/sessions/:id/memory/characters/:cid</code> — 角色状态</li>
-            <li><code>GET /api/sessions/:id/memory/summaries</code> — 摘要</li>
-          </ul>
-        </div>
-        <div class="card tint">
-          <h3>Trace</h3>
-          <ul>
-            <li><code>GET /api/sessions/:id/trace/:turn</code> — 轮次 trace</li>
-            <li><code>GET /api/sessions/:id/trace/detail/:tid</code> — 单条 trace</li>
-            <li><code>GET /api/sessions/:id/trace/stats</code> — 统计</li>
-          </ul>
-        </div>
-        <div class="card blue">
-          <h3>内容包与 Artifact</h3>
-          <ul>
-            <li><code>GET /api/packs</code> — 包列表</li>
-            <li><code>POST /api/packs/import</code> — 导入</li>
-            <li><code>GET /api/packs/:id/export</code> — 导出</li>
-            <li><code>GET /api/artifacts/:id</code> — Artifact</li>
-            <li><code>GET /api/artifacts/:id/versions</code> — 版本历史</li>
-            <li><code>POST /api/artifacts/:id/patch</code> — 应用 Patch</li>
-          </ul>
-        </div>
-      </div>
-    </section>
-
-    <section id="migration" class="band">
-      <h2>数据迁移策略</h2>
-      <ul>
-        <li>V1 使用 SQLite，<code>sqlx</code> 的 migrate 工具管理 schema 版本。</li>
-        <li>迁移文件放在 <code>backend/migrations/</code> 目录，命名格式：<code>&lt;timestamp&gt;_&lt;description&gt;.sql</code>。</li>
-        <li>每次迁移必须可逆（提供 <code>down.sql</code>），除非是不可逆的数据清理。</li>
-        <li>迁移前自动备份数据库文件。</li>
-      </ul>
-    </section>
-
-    <section id="risks" class="band">
-      <h2>风险</h2>
-      <table class="matrix">
-        <thead><tr><th>风险</th><th>影响</th><th>缓解措施</th></tr></thead>
-        <tbody>
-          <tr><td>JSON 字段缺乏数据库级约束</td><td>应用层 bug 可能写入格式错误的状态、事件或 trace。</td><td>所有 JSON 字段在应用层使用 schema 校验（<code>serde</code> + <code>jsonschema</code>），写入前验证。</td></tr>
-          <tr><td>SQLite 并发写入限制</td><td>多个 Runtime 实例同时写入可能冲突。</td><td>V1 单实例部署，使用 WAL 模式；后续多人版切换 PostgreSQL。</td></tr>
-          <tr><td>trace 和事件表无限增长</td><td>长会话百万轮后查询变慢。</td><td>按 session 分表查询，旧 trace 可归档到独立文件，保留索引。</td></tr>
-          <tr><td>状态快照全量存储</td><td>每轮都存完整状态 JSON，存储膨胀。</td><td>存储压缩（gzip），或定期合并旧快照只保留里程碑版本。</td></tr>
-          <tr><td>游标分页在删除场景下失效</td><td>软删除后游标可能指向已删除记录。</td><td>查询时跳过 <code>deleted_at</code> 非空记录，游标使用不可变字段。</td></tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section id="tests" class="band">
-      <h2>验收测试</h2>
-      <table class="matrix">
-        <thead><tr><th>测试场景</th><th>通过标准</th></tr></thead>
-        <tbody>
-          <tr><td>创建会话并发送消息</td><td>会话和消息正确写入数据库，<code>current_turn</code> 递增。</td></tr>
-          <tr><td>SSE 流式输出完整轮次</td><td>客户端按序收到 <code>turn_start</code> → <code>node_enter</code> → <code>node_output</code> → <code>state_commit</code> → <code>turn_end</code>。</td></tr>
-          <tr><td>状态 proposal + commit</td><td><code>low</code> 风险自动提交，<code>medium</code> 需 Director 审核，<code>high</code> 需证据链。</td></tr>
-          <tr><td>事件账本查询</td><td>按类型、重要性和角色过滤正确返回，长会话 500+ 轮后查询延迟可接受。</td></tr>
-          <tr><td>伏笔登记与回收</td><td>伏笔可从 <code>open</code> 经 <code>hinted</code>、<code>triggered</code> 变为 <code>resolved</code>。</td></tr>
-          <tr><td>角色人格状态隔离</td><td>查询 NPC 角色状态时，不包含其他角色的隐藏信息。</td></tr>
-          <tr><td>Trace 完整性</td><td>每轮每个节点都有 trace 记录，<code>context_bundle</code> 反映实际注入的信息范围。</td></tr>
-          <tr><td>Artifact 版本管理</td><td>首次创建为 <code>full</code>，后续增量更新，版本号递增，可回溯历史版本。</td></tr>
-          <tr><td>内容包导入导出</td><td>导入 ZIP 校验通过后写入；导出 ZIP 可重新导入且内容一致。</td></tr>
-          <tr><td>错误响应格式</td><td>所有错误端点返回统一 JSON 格式。</td></tr>
-        </tbody>
-      </table>
-    </section>
+<table>
+<thead>
+<tr>
+<th>HTTP 状态码</th>
+<th>场景</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>400</td>
+<td>请求参数校验失败、schema 不匹配。</td>
+</tr>
+<tr>
+<td>404</td>
+<td>资源不存在。</td>
+</tr>
+<tr>
+<td>409</td>
+<td>状态冲突，如并发写入同一状态。</td>
+</tr>
+<tr>
+<td>422</td>
+<td>结构化输出无法解析，如 LLM 返回的 JSON 不符合 schema。</td>
+</tr>
+<tr>
+<td>500</td>
+<td>内部错误。</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3 id="会话">会话</h3>
+<h4 id="创建会话">创建会话</h4>
+<pre class="text"><code>POST /api/sessions</code></pre>
+<pre class="json"><code>{
+  &quot;title&quot;: &quot;旧档案馆之夜&quot;,
+  &quot;mode&quot;: &quot;multi_agent&quot;,
+  &quot;character_pack_id&quot;: &quot;char_archivist_v1&quot;,
+  &quot;world_pack_id&quot;: &quot;world_blood_moon&quot;,
+  &quot;config&quot;: {
+    &quot;master_model&quot;: &quot;gpt-4o&quot;,
+    &quot;sub_agent_model&quot;: &quot;gpt-4o-mini&quot;,
+    &quot;compression_model&quot;: &quot;gpt-4o-mini&quot;,
+    &quot;cooldown_turns&quot;: 10,
+    &quot;max_active_agents&quot;: 8,
+    &quot;parser_enabled&quot;: true
+  }
+}</code></pre>
+<p>响应 <code>201</code>：</p>
+<pre class="json"><code>{
+  &quot;id&quot;: &quot;sess_abc123&quot;,
+  &quot;title&quot;: &quot;旧档案馆之夜&quot;,
+  &quot;mode&quot;: &quot;multi_agent&quot;,
+  &quot;character_pack_id&quot;: &quot;char_archivist_v1&quot;,
+  &quot;world_pack_id&quot;: &quot;world_blood_moon&quot;,
+  &quot;graph_pack_id&quot;: null,
+  &quot;config&quot;: {
+    &quot;master_model&quot;: &quot;gpt-4o&quot;,
+    &quot;sub_agent_model&quot;: &quot;gpt-4o-mini&quot;,
+    &quot;compression_model&quot;: &quot;gpt-4o-mini&quot;,
+    &quot;cooldown_turns&quot;: 10,
+    &quot;max_active_agents&quot;: 8,
+    &quot;parser_enabled&quot;: true
+  },
+  &quot;current_turn&quot;: 0,
+  &quot;created_at&quot;: &quot;2026-06-04T12:00:00Z&quot;,
+  &quot;updated_at&quot;: &quot;2026-06-04T12:00:00Z&quot;
+}</code></pre>
+<h4 id="获取会话列表">获取会话列表</h4>
+<pre class="text"><code>GET /api/sessions?cursor=&lt;id&gt;&amp;limit=20</code></pre>
+<p>响应 <code>200</code>：</p>
+<pre class="json"><code>{
+  &quot;items&quot;: [ /* session objects */ ],
+  &quot;next_cursor&quot;: &quot;sess_def456&quot;
+}</code></pre>
+<h4 id="获取单个会话">获取单个会话</h4>
+<pre class="text"><code>GET /api/sessions/:id</code></pre>
+<h4 id="更新会话">更新会话</h4>
+<pre class="text"><code>PATCH /api/sessions/:id</code></pre>
+<h4 id="删除会话">删除会话</h4>
+<pre class="text"><code>DELETE /api/sessions/:id</code></pre>
+<p>软删除，设置 <code>deleted_at</code>。</p>
+<hr />
+<h3 id="消息">消息</h3>
+<h4 id="发送消息触发-runtime">发送消息（触发 Runtime）</h4>
+<pre class="text"><code>POST /api/sessions/:id/messages</code></pre>
+<pre class="json"><code>{
+  &quot;content&quot;: &quot;我推开档案馆的木门，手里紧握银钥匙。&quot;,
+  &quot;role&quot;: &quot;user&quot;
+}</code></pre>
+<p>响应 <code>201</code>，返回用户消息对象。同时在后台触发一轮 Runtime
+执行，通过 SSE 推送结果。</p>
+<h4 id="获取消息列表">获取消息列表</h4>
+<pre class="text"><code>GET /api/sessions/:id/messages?cursor=&lt;id&gt;&amp;limit=50</code></pre>
+<h4 id="获取单条消息">获取单条消息</h4>
+<pre class="text"><code>GET /api/sessions/:id/messages/:message_id</code></pre>
+<h4 id="编辑消息">编辑消息</h4>
+<pre class="text"><code>PUT /api/sessions/:id/messages/:message_id</code></pre>
+<pre class="json"><code>{
+  &quot;content&quot;: &quot;修改后的消息内容&quot;
+}</code></pre>
+<h4 id="删除消息">删除消息</h4>
+<pre class="text"><code>DELETE /api/sessions/:id/messages/:message_id</code></pre>
+<h4 id="重新生成回复">重新生成回复</h4>
+<pre class="text"><code>POST /api/sessions/:id/messages/:message_id/regenerate</code></pre>
+<p>将当前回复内容推入 <code>variants</code> 数组，重新调用 LLM
+生成新回复。</p>
+<h4 id="切换变体">切换变体</h4>
+<pre class="text"><code>POST /api/sessions/:id/messages/:message_id/switch_variant</code></pre>
+<pre class="json"><code>{
+  &quot;variant_index&quot;: 0
+}</code></pre>
+<hr />
+<h3 id="agent-管理">Agent 管理</h3>
+<p>多 Agent 会话的子 Agent 生命周期管理端点。</p>
+<h4 id="获取-agent-列表">获取 Agent 列表</h4>
+<pre class="text"><code>GET /api/sessions/:id/agents</code></pre>
+<p>响应 <code>200</code>：</p>
+<pre class="json"><code>[
+  {
+    &quot;id&quot;: &quot;agent_abc&quot;,
+    &quot;session_id&quot;: &quot;sess_abc123&quot;,
+    &quot;agent_type&quot;: &quot;npc&quot;,
+    &quot;character_id&quot;: &quot;archivist&quot;,
+    &quot;label&quot;: &quot;档案管理员&quot;,
+    &quot;system_prompt&quot;: &quot;...&quot;,
+    &quot;context&quot;: &quot;...&quot;,
+    &quot;status&quot;: &quot;active&quot;,
+    &quot;last_active_turn&quot;: 42,
+    &quot;config&quot;: { &quot;max_context_turns&quot;: 10, &quot;temperature&quot;: 0.7 },
+    &quot;created_at&quot;: &quot;2026-06-05T12:00:00Z&quot;,
+    &quot;updated_at&quot;: &quot;2026-06-05T12:00:00Z&quot;
+  }
+]</code></pre>
+<h4 id="创建-agent">创建 Agent</h4>
+<pre class="text"><code>POST /api/sessions/:id/agents</code></pre>
+<pre class="json"><code>{
+  &quot;agent_type&quot;: &quot;npc&quot;,
+  &quot;character_id&quot;: &quot;merchant&quot;,
+  &quot;label&quot;: &quot;酒馆老板&quot;,
+  &quot;system_prompt&quot;: &quot;你是酒馆老板，热情好客...&quot;
+}</code></pre>
+<h4 id="更新-agent">更新 Agent</h4>
+<pre class="text"><code>PUT /api/sessions/:id/agents/:agent_id</code></pre>
+<pre class="json"><code>{
+  &quot;label&quot;: &quot;酒馆老板·老王&quot;,
+  &quot;system_prompt&quot;: &quot;更新后的 system prompt&quot;,
+  &quot;context&quot;: &quot;额外上下文&quot;,
+  &quot;config&quot;: { &quot;temperature&quot;: 0.8 }
+}</code></pre>
+<h4 id="冷却-agent">冷却 Agent</h4>
+<pre class="text"><code>POST /api/sessions/:id/agents/:agent_id/cooldown</code></pre>
+<h4 id="恢复-agent">恢复 Agent</h4>
+<pre class="text"><code>POST /api/sessions/:id/agents/:agent_id/restore</code></pre>
+<h4 id="删除-agent">删除 Agent</h4>
+<pre class="text"><code>DELETE /api/sessions/:id/agents/:agent_id</code></pre>
+<hr />
+<h3 id="流式输出">流式输出</h3>
+<h4 id="sse-事件流">SSE 事件流</h4>
+<pre class="text"><code>GET /api/sessions/:id/stream</code></pre>
+<p>客户端发送消息后，通过 SSE 接收本轮 Runtime 的完整执行过程。</p>
+<p><strong>SSE 事件类型：</strong></p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>事件</th>
+<th>数据</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>turn_start</code></td>
+<td><code>{"turn_number": 42}</code></td>
+<td>新轮次开始。</td>
+</tr>
+<tr>
+<td><code>node_enter</code></td>
+<td><code>{"node_id":"...","node_type":"director","agent_id":"director"}</code></td>
+<td>节点开始执行。</td>
+</tr>
+<tr>
+<td><code>node_output</code></td>
+<td><code>{"node_id":"...","output_type":"npc_intent","content":"..."}</code></td>
+<td>节点输出，可流式增量推送。</td>
+</tr>
+<tr>
+<td><code>agent_status</code></td>
+<td><code>{"agent":"parser","status":"working"}</code></td>
+<td>多 Agent 流水线实时进度：parser/master/writer/compression
+等阶段状态。</td>
+</tr>
+<tr>
+<td><code>state_proposal</code></td>
+<td><code>{"proposal_id":"...","risk":"medium","changes":[...]}</code></td>
+<td>状态变更提案。</td>
+</tr>
+<tr>
+<td><code>state_commit</code></td>
+<td><code>{"proposal_id":"...","version":15,"committed_by":"director"}</code></td>
+<td>状态已提交。</td>
+</tr>
+<tr>
+<td><code>artifact_update</code></td>
+<td><code>{"artifact_id":"...","version":4,"patch_type":"state_diff"}</code></td>
+<td>Artifact 更新。</td>
+</tr>
+<tr>
+<td><code>message_delta</code></td>
+<td><code>{"content":"推开门的瞬间..."}</code></td>
+<td>最终用户可见文本的增量部分。</td>
+</tr>
+<tr>
+<td><code>turn_end</code></td>
+<td><code>{"turn_number":42,"token_usage":{...}}</code></td>
+<td>轮次结束。</td>
+</tr>
+<tr>
+<td><code>error</code></td>
+<td><code>{"code":"...","message":"..."}</code></td>
+<td>错误。</td>
+</tr>
+</tbody>
+</table>
+<p><strong>连接说明：</strong></p>
+<ul>
+<li>客户端在发送消息前建立 SSE 连接，或在 POST 消息的响应中通过
+<code>200</code> + <code>Transfer-Encoding: chunked</code>
+流式返回。</li>
+<li>单次连接只服务一轮对话。轮次结束后连接关闭。</li>
+<li>断线后客户端可通过 <code>GET /api/sessions/:id/messages</code>
+拉取已完成的完整消息。</li>
+</ul>
+<hr />
+<h3 id="结构化状态">结构化状态</h3>
+<h4 id="获取当前状态">获取当前状态</h4>
+<pre class="text"><code>GET /api/sessions/:id/state</code></pre>
+<p>返回最新版本的 <code>state_snapshots.state_json</code>。</p>
+<h4 id="获取状态历史">获取状态历史</h4>
+<pre class="text"><code>GET /api/sessions/:id/state/history?cursor=&lt;version&gt;&amp;limit=20</code></pre>
+<p>返回状态版本列表，每个版本包含
+<code>version</code>、<code>risk_level</code>、<code>committed_by</code>、<code>created_at</code>
+和变更摘要。</p>
+<h4 id="获取指定版本">获取指定版本</h4>
+<pre class="text"><code>GET /api/sessions/:id/state/versions/:version</code></pre>
+<hr />
+<h3 id="记忆">记忆</h3>
+<h4 id="事件账本">事件账本</h4>
+<pre class="text"><code>GET /api/sessions/:id/memory/events?cursor=&lt;id&gt;&amp;limit=50&amp;type=discovery&amp;importance=critical</code></pre>
+<p>支持按
+<code>type</code>、<code>importance</code>、<code>characters_involved</code>
+过滤。</p>
+<h4 id="伏笔登记表">伏笔登记表</h4>
+<pre class="text"><code>GET /api/sessions/:id/memory/foreshadowing?status=open&amp;importance=high</code></pre>
+<h4 id="角色状态">角色状态</h4>
+<pre class="text"><code>GET /api/sessions/:id/memory/characters/:character_id</code></pre>
+<p>返回 <code>character_states</code> 行，包含
+<code>personality_core</code>、<code>personality_state</code>、<code>growth_arc</code>
+和 <code>relationships</code>。</p>
+<h4 id="轮次摘要">轮次摘要</h4>
+<pre class="text"><code>GET /api/sessions/:id/memory/summaries?type=scene&amp;limit=10</code></pre>
+<h4 id="结构化事件检索记忆">结构化事件（检索记忆）</h4>
+<pre class="text"><code>GET /api/sessions/:id/memory/structured-events?scene_type=dialogue&amp;location=archive&amp;limit=20</code></pre>
+<p>支持按
+<code>scene_type</code>、<code>location</code>、<code>characters</code>、<code>importance</code>
+过滤。用于调试和查看压缩 Agent 生成的结构化事件。</p>
+<hr />
+<h3 id="trace">Trace</h3>
+<h4 id="获取轮次-trace-列表">获取轮次 trace 列表</h4>
+<pre class="text"><code>GET /api/sessions/:id/trace/:turn_number</code></pre>
+<p>返回该轮所有节点的 trace 记录，按执行顺序排列。</p>
+<h4 id="获取单条-trace">获取单条 trace</h4>
+<pre class="text"><code>GET /api/sessions/:id/trace/detail/:trace_id</code></pre>
+<p>返回完整 trace，包含
+<code>context_bundle</code>、<code>model_config</code>、<code>token_usage</code>。</p>
+<h4 id="获取-trace-统计">获取 trace 统计</h4>
+<pre class="text"><code>GET /api/sessions/:id/trace/stats</code></pre>
+<p>返回聚合统计：总轮次、总 token、平均每轮
+token、总运行时间、错误率。</p>
+<hr />
+<h3 id="内容包">内容包</h3>
+<h4 id="获取已导入包列表">获取已导入包列表</h4>
+<pre class="text"><code>GET /api/packs?type=character</code></pre>
+<h4 id="获取单个包详情">获取单个包详情</h4>
+<pre class="text"><code>GET /api/packs/:id</code></pre>
+<h4 id="导入包">导入包</h4>
+<pre class="text"><code>POST /api/packs/import
+Content-Type: multipart/form-data</code></pre>
+<p>接收 ZIP 文件，执行 manifest 校验 → schema 校验 → 权限声明 →
+资源完整性检查。</p>
+<p>响应 <code>201</code>，返回导入报告：</p>
+<pre class="json"><code>{
+  &quot;pack_id&quot;: &quot;char_archivist_v1&quot;,
+  &quot;warnings&quot;: [],
+  &quot;errors&quot;: []
+}</code></pre>
+<h4 id="导出包">导出包</h4>
+<pre class="text"><code>GET /api/packs/:id/export</code></pre>
+<p>返回 ZIP 文件流。</p>
+<h4 id="删除包">删除包</h4>
+<pre class="text"><code>DELETE /api/packs/:id</code></pre>
+<p>检查是否有会话引用该包，有引用时拒绝删除并返回关联会话列表。</p>
+<hr />
+<h3 id="provider">Provider</h3>
+<h4 id="获取可用模型列表">获取可用模型列表</h4>
+<pre class="text"><code>GET /api/providers/fetch-models?base_url=https://api.openai.com/v1&amp;api_key=sk-xxx</code></pre>
+<p>调用 OpenAI 兼容的 <code>/models</code> 端点，返回可用模型 ID
+列表。</p>
+<p>响应 <code>200</code>：</p>
+<pre class="json"><code>{
+  &quot;models&quot;: [&quot;gpt-4o&quot;, &quot;gpt-4o-mini&quot;, &quot;gpt-3.5-turbo&quot;]
+}</code></pre>
+<hr />
+<h3 id="artifacts">Artifacts</h3>
+<h4 id="获取-artifact">获取 Artifact</h4>
+<pre class="text"><code>GET /api/artifacts/:id</code></pre>
+<p>返回最新版本。</p>
+<h4 id="获取指定版本-1">获取指定版本</h4>
+<pre class="text"><code>GET /api/artifacts/:id/versions/:version</code></pre>
+<h4 id="获取版本历史">获取版本历史</h4>
+<pre class="text"><code>GET /api/artifacts/:id/versions?limit=20</code></pre>
+<h4 id="应用-patch">应用 Patch</h4>
+<pre class="text"><code>POST /api/artifacts/:id/patch</code></pre>
+<pre class="json"><code>{
+  &quot;patch_type&quot;: &quot;state_diff&quot;,
+  &quot;parent_version&quot;: 3,
+  &quot;payload&quot;: { &quot;items&quot;: { &quot;add&quot;: [{ &quot;id&quot;: &quot;blood_moon_shard&quot;, &quot;name&quot;: &quot;血月碎片&quot; }] } }
+}</code></pre>
+<p>响应 <code>201</code>，返回新版本号。</p>
+<hr />
+<h2 id="数据迁移策略">数据迁移策略</h2>
+<ul>
+<li>V1 使用 SQLite，<code>sqlx</code> 的 migrate 工具管理 schema
+版本。</li>
+<li>迁移文件放在 <code>backend/migrations/</code>
+目录，命名格式：<code>&lt;timestamp&gt;_&lt;description&gt;.sql</code>。</li>
+<li>每次迁移必须可逆（提供
+<code>down.sql</code>），除非是不可逆的数据清理。</li>
+<li>迁移前自动备份数据库文件。</li>
+</ul>
+<hr />
+<h2 id="风险">风险</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>风险</th>
+<th>影响</th>
+<th>缓解措施</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>JSON 字段缺乏数据库级约束</td>
+<td>应用层 bug 可能写入格式错误的状态、事件或 trace。</td>
+<td>所有 JSON 字段在应用层使用 schema 校验（<code>serde</code> +
+<code>jsonschema</code>），写入前验证。</td>
+</tr>
+<tr>
+<td>SQLite 并发写入限制</td>
+<td>多个 Runtime 实例同时写入可能冲突。</td>
+<td>V1 单实例部署，使用 WAL 模式；后续多人版切换 PostgreSQL。</td>
+</tr>
+<tr>
+<td>trace 和事件表无限增长</td>
+<td>长会话百万轮后查询变慢。</td>
+<td>按 session 分表查询，旧 trace 可归档到独立文件，保留索引。</td>
+</tr>
+<tr>
+<td>状态快照全量存储</td>
+<td>每轮都存完整状态 JSON，存储膨胀。</td>
+<td>存储压缩（gzip），或定期合并旧快照只保留里程碑版本。</td>
+</tr>
+<tr>
+<td>游标分页在删除场景下失效</td>
+<td>软删除后游标可能指向已删除记录。</td>
+<td>查询时跳过 <code>deleted_at</code> 非空记录，游标使用不可变字段（id
++ created_at）。</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="验收测试">验收测试</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>测试场景</th>
+<th>通过标准</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>创建会话并发送消息</td>
+<td>会话和消息正确写入数据库，<code>current_turn</code> 递增。</td>
+</tr>
+<tr>
+<td>SSE 流式输出完整轮次</td>
+<td>客户端按序收到 <code>turn_start</code> → <code>node_enter</code> →
+<code>node_output</code> → <code>state_commit</code> →
+<code>turn_end</code>。</td>
+</tr>
+<tr>
+<td>状态 proposal + commit</td>
+<td><code>low</code> 风险自动提交，<code>medium</code> 需 Director
+审核，<code>high</code> 需证据链，<code>state_snapshots.version</code>
+递增。</td>
+</tr>
+<tr>
+<td>事件账本查询</td>
+<td>按类型、重要性和角色过滤正确返回，长会话 500+
+轮后查询延迟可接受。</td>
+</tr>
+<tr>
+<td>伏笔登记与回收</td>
+<td>伏笔可从 <code>open</code> 经
+<code>hinted</code>、<code>triggered</code> 变为
+<code>resolved</code>，每个状态变更记录对应 turn。</td>
+</tr>
+<tr>
+<td>角色人格状态隔离</td>
+<td>查询 NPC 角色状态时，<code>personality_core</code>
+包含知识边界，不包含其他角色的隐藏信息。</td>
+</tr>
+<tr>
+<td>Trace 完整性</td>
+<td>每轮每个节点都有 trace 记录，<code>context_bundle</code>
+反映实际注入的信息范围。</td>
+</tr>
+<tr>
+<td>Artifact 版本管理</td>
+<td>首次创建为 <code>full</code>，后续 <code>state_diff</code>
+增量更新，版本号递增，可回溯历史版本。</td>
+</tr>
+<tr>
+<td>内容包导入导出</td>
+<td>导入 ZIP 校验通过后写入 <code>content_packs</code> 和文件系统；导出
+ZIP 可重新导入且内容一致。</td>
+</tr>
+<tr>
+<td>错误响应格式</td>
+<td>所有错误端点返回统一 JSON 格式，包含
+<code>code</code>、<code>message</code>、<code>details</code>。</td>
+</tr>
+</tbody>
+</table>
   </main>
 </body>
 </html>

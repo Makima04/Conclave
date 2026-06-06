@@ -67,6 +67,35 @@
 7. **Character Profile Memory / 角色人格记忆** — 角色核心人格、语气、价值观、欲望、恐惧、禁忌、关系变化和 OOC 红线。
 8. **Retrieval Memory / 检索记忆** — 关键词检索和向量检索，用于召回旧细节。召回后必须由记忆 Agent 或导演过滤，避免无关旧事污染当前轮。
 
+### 检索记忆实现（structured_events + recall）
+
+第 8 层检索记忆基于 `structured_events` 表和 `recall.rs` 模块实现。
+
+**structured_events 表**：由压缩 Agent 每轮自动生成的结构化事件记录，包含：
+
+- `characters`：涉及的角色（JSON 数组）
+- `location`：事件发生地点
+- `action`：发生的事情（动词短语）
+- `scene_type`：场景类型（encounter / dialogue / combat / travel / info / other）
+- `importance`：重要性 1-5 级
+- `content_hash`：规范化文本哈希，用于精确去重
+- `embedding`：预留向量字段（nullable BLOB）
+
+**召回流程（recall.rs）**：
+
+1. 从用户输入提取关键词
+2. 对 `structured_events` 执行 LIKE 查询
+3. 合并关键词匹配结果与最近事件
+4. 按重要性降序、轮次降序排列
+5. 返回 `RecalledContext`，注入子 Agent 的 ContextBundle
+
+**去重机制（双层）**：
+
+- **精确去重**：`content_hash` 唯一索引，相同文本不会重复写入
+- **语义去重**：3 轮窗口内，相同 `scene_type` 和重叠 `characters` 的事件会被合并
+
+**向量检索**：预留 `embedding` 字段和 embedding 模式入口，当前实现回退到关键词模式。
+
 ---
 
 ## 角色成长与不 OOC 的边界
@@ -116,12 +145,21 @@
 
 每一轮生成都应该经历记忆准备、权限裁决、上下文装配、生成、审查和入账。
 
-1. **输入解析** — 识别用户是在行动、对话、设定修改还是创作指令。
-2. **检索计划** — 导演判断需要查角色、世界、伏笔、事件还是状态。
-3. **记忆召回** — 从摘要、状态、事件账本、伏笔表和检索库取相关信息。
-4. **上下文装配** — 按 Agent 权限过滤，只给每个角色可见信息。
-5. **生成与审查** — NPC / 写手输出后，检查事实冲突、OOC、伏笔机会。
-6. **记忆入账** — 更新状态、事件、伏笔、摘要、trace 和 artifact。
+1. **输入解析** — Parser Agent 识别用户意图、动作类型、目标角色，输出结构化 ParsedIntent。
+2. **上下文加载** — Runtime 从 messages 表加载最近 N 轮对话（`recent_context`，用于保持对话自然衔接），同时从 state_snapshots、turn_summaries、memory_events、foreshadowing 表加载压缩状态（用于长期推理）。这就是双轨上下文的核心。
+3. **调度决策** — Master Agent 基于 ContextBundle + ParsedIntent 生成执行计划。
+4. **子 Agent 执行** — 按 Agent 类型注入不同上下文切片（NPC 拿 scene + events + foreshadowing + recalled_structured_events，Writer 拿 scene + foreshadowing）。每个子 Agent 通过 `recall.rs` 从 `structured_events` 表召回与当前输入相关的结构化事件。
+5. **叙事合成** — Writer 输出最终叙事文本，存入 messages 表（仅供前端展示）。
+6. **状态压缩** — 压缩 Agent 分析 Writer 输出 + 当前上下文，生成 scene_summary + events + foreshadowing + state_changes，持久化到各自表。下一轮推理读取这些压缩状态，而非原始对话。
+
+### 双轨上下文
+
+核心原则：**展示给用户的上下文（messages 表）和模型推理用的上下文（压缩状态）是分离的。**
+
+- messages 表存储用户输入 + Writer 润色输出，仅供前端回显和用户查看
+- 子 Agent 推理时读取的是 ContextBundle，包含 scene_summary、events、foreshadowing、structured_state
+- 每轮结束后由独立压缩 Agent 生成新的压缩状态，实现"工作记忆 + 长期记忆"双系统
+- Writer 的修饰性文字不会回流到推理上下文，避免上下文膨胀和信息噪声
 
 ---
 
@@ -157,29 +195,22 @@
 
 ## 多 Agent 在记忆系统中的分工
 
-### Director Agent
+### Master Agent
 
-- 决定本轮需要召回哪些记忆层。
-- 判断用户输入是否能改变世界事实。
-- 决定是否触发伏笔、回收线索或召唤 NPC。
+- 基于 ContextBundle（recent_context + scene_summary + events + foreshadowing + structured_state）和 Parser 输出生成调度计划。
+- 管理子 Agent 生命周期（创建、冷却、退休、删除）。
 
-### Memory Agent
+### 子 Agent（NPC / Writer / Director）
 
-- 从本轮对话抽取事实、状态变化和事件。
-- 更新摘要、事件账本、伏笔表和角色状态。
-- 给导演提供可检索的记忆索引。
+- 每个子 Agent 通过 `recall.rs` 从 `structured_events` 表召回相关事件。
+- 上下文按 Agent 类型隔离：NPC 拿 scene + events + foreshadowing，Writer 拿 scene + foreshadowing，Director 拿完整概览。
 
-### Character Consistency Agent
+### Compression Agent（State Agent）
 
-- 检查 NPC 输出是否违反人格、知识边界或关系状态。
-- 发现 OOC 时要求重写或给出修复建议。
-- 不参与每轮输出，关键剧情或高风险轮次触发。
-
-### Foreshadowing Agent
-
-- 登记新伏笔和隐藏线索。
-- 提醒导演当前场景是否适合暗示或回收。
-- 避免重要伏笔长期无人处理。
+- 每轮后处理，分析 Writer 输出 + 当前上下文。
+- 生成 `CompressionResult`：scene_summary、events、structured_events、foreshadowing、state_changes。
+- 持久化到 `turn_summaries`、`memory_events`、`structured_events`、`foreshadowing` 表。
+- state_changes 通过 proposal 系统提交。
 
 ---
 

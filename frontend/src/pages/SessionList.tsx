@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as api from '../api/client';
-import type { Session } from '../api/types';
+import type { Session, WorldBook } from '../api/types';
+import { loadGlobalSessionDefaults } from '../settings/sessionDefaults';
 
 export default function SessionList() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -10,10 +11,16 @@ export default function SessionList() {
   const [loading, setLoading] = useState(true);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [worldBooks, setWorldBooks] = useState<WorldBook[]>([]);
+  const [selectedWorldBookId, setSelectedWorldBookId] = useState('');
+  const [filterWorldBookId, setFilterWorldBookId] = useState<string>('');
   const navigate = useNavigate();
 
   useEffect(() => {
     loadSessions();
+    api.listWorldBooks().then(d => setWorldBooks(d.items)).catch(() => {});
+    const interval = setInterval(loadSessions, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   async function loadSessions() {
@@ -29,8 +36,9 @@ export default function SessionList() {
 
   async function handleCreate() {
     try {
-      const session = await api.createSession(title || undefined, mode);
+      const session = await api.createSession(title || undefined, mode, selectedWorldBookId || undefined, loadGlobalSessionDefaults());
       setTitle('');
+      setSelectedWorldBookId('');
       navigate(`/chat/${session.id}`);
     } catch (err) {
       console.error('Failed to create session:', err);
@@ -59,14 +67,30 @@ export default function SessionList() {
     }
   }
 
+  function handleWorldBookSelect(worldBookId: string) {
+    setSelectedWorldBookId(worldBookId);
+    setFilterWorldBookId(worldBookId || 'none');
+  }
+
+  function handleWorldBookFilter(worldBookId: string) {
+    setFilterWorldBookId(worldBookId);
+    setSelectedWorldBookId(worldBookId === 'none' ? '' : worldBookId);
+  }
+
   if (loading) return <div className="loading">加载中...</div>;
+
+  const filteredSessions = filterWorldBookId === ''
+    ? sessions
+    : filterWorldBookId === 'none'
+      ? sessions.filter(s => !s.world_pack_id)
+      : sessions.filter(s => s.world_pack_id === filterWorldBookId);
 
   return (
     <div className="session-list">
-      <h1>Conclave</h1>
-      <p className="subtitle">多 Agent RP / 写作平台</p>
+      <h1>小祥舞台</h1>
 
       <div className="top-actions">
+        <button className="settings-btn" onClick={() => navigate('/worldbooks')}>世界书</button>
         <button className="settings-btn" onClick={() => navigate('/settings')}>设置</button>
       </div>
 
@@ -80,18 +104,45 @@ export default function SessionList() {
         />
         <select value={mode} onChange={e => setMode(e.target.value)}>
           <option value="single_agent">单 Agent</option>
-          <option value="strict_director">严格导演</option>
-          <option value="collaborative_director">协作导演</option>
-          <option value="multi_npc_scene">多 NPC 场景</option>
+          <option value="multi_agent">多 Agent (动态总控)</option>
         </select>
+        {worldBooks.length > 0 && (
+          <select value={selectedWorldBookId} onChange={e => handleWorldBookSelect(e.target.value)}>
+            <option value="">不选择世界书</option>
+            {worldBooks.map(wb => (
+              <option key={wb.id} value={wb.id}>{wb.name} ({wb.entry_count}条)</option>
+            ))}
+          </select>
+        )}
         <button onClick={handleCreate}>新建会话</button>
       </div>
 
+      {/* World Book filter tabs */}
+      {worldBooks.length > 0 && (
+        <div className="filter-tabs">
+          <button
+            className={`filter-tab ${filterWorldBookId === '' ? 'active' : ''}`}
+            onClick={() => handleWorldBookFilter('')}
+          >全部</button>
+          {worldBooks.map(wb => (
+            <button
+              key={wb.id}
+              className={`filter-tab ${filterWorldBookId === wb.id ? 'active' : ''}`}
+              onClick={() => handleWorldBookFilter(wb.id)}
+            >{wb.name}</button>
+          ))}
+          <button
+            className={`filter-tab ${filterWorldBookId === 'none' ? 'active' : ''}`}
+            onClick={() => handleWorldBookFilter('none')}
+          >无世界书</button>
+        </div>
+      )}
+
       <div className="sessions">
-        {sessions.length === 0 ? (
+        {filteredSessions.length === 0 ? (
           <p className="empty">暂无会话，点击上方按钮创建。</p>
         ) : (
-          sessions.map(session => (
+          filteredSessions.map(session => (
             <div
               key={session.id}
               className="session-card"
@@ -109,10 +160,17 @@ export default function SessionList() {
                     autoFocus
                   />
                 ) : (
-                  <h3>{session.title || '未命名会话'}</h3>
+                  <h3>
+                    {session.title || '未命名会话'}
+                    {session.status === 'processing' && <span className="processing-spinner" title="正在生成中" />}
+                  </h3>
                 )}
                 <span className="meta">
                   第 {session.current_turn} 轮 · {session.mode}
+                  {session.world_pack_id && (() => {
+                    const wb = worldBooks.find(w => w.id === session.world_pack_id);
+                    return wb ? ` · ${wb.name}` : '';
+                  })()}
                 </span>
               </div>
               <div className="session-actions">

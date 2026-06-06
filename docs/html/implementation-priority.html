@@ -213,6 +213,11 @@
       line-height: 1.5;
     }
 
+    .done {
+      background: var(--soft);
+      border-color: #c7e1de;
+    }
+
     @media (max-width: 900px) {
       .grid.two,
       .grid.three {
@@ -321,10 +326,21 @@
           </tr>
         </tbody>
       </table>
+      <div class="card done" style="margin-top: 16px;">
+        <p><strong>P0 已完成。</strong> 五个规范文档已创建：<a href="database-api.html">数据库与 API</a>、<a href="content-packages.html">内容包</a>、<a href="artifact-renderer.html">Artifact Renderer</a>、<a href="testing.html">测试与评测</a>、<a href="docs-sync.html">文档同步</a>。对应 HTML 版本和索引已同步更新。</p>
+      </div>
+      <p><strong>P0 完成标准：</strong></p>
+      <ul>
+        <li><code>docs/</code> 中有核心规范文档入口。</li>
+        <li>关键结构对象有明确命名和边界。</li>
+        <li><code>AGENT.md</code> 明确要求项目进度、Markdown 和 HTML 文档同步。</li>
+        <li>文档中心能看到已完成文档、待补文档和推荐阅读顺序。</li>
+      </ul>
     </section>
 
     <section id="p1" class="band">
       <h2>P1：最小可运行 MVP</h2>
+      <p>P1 目标是做出一个可自托管、能聊天、能流式输出、能记录 trace、能保存基础记忆的最小系统。</p>
       <div class="grid three">
         <div class="card">
           <span class="status">后端骨架</span>
@@ -343,36 +359,85 @@
         </div>
       </div>
       <p><strong>基础记忆：</strong>Recent Context、Scene Summary、Structured State、Event Ledger、Foreshadowing Registry。</p>
+      <p><strong>P1 完成标准：</strong></p>
+      <ul>
+        <li>用户能创建会话并发送消息。</li>
+        <li>输出支持流式展示。</li>
+        <li>每轮有可查看 trace。</li>
+        <li>基础状态、事件和伏笔能写入并在后续轮次召回。</li>
+      </ul>
+      <div class="card done" style="margin-top: 16px;">
+        <p><strong>P1 骨架已完成（2026-06-04）。</strong> 后端 Rust + axum + SQLite 骨架、前端 React + Vite 骨架、Single Agent Runtime、OpenAI 兼容 Provider Adapter、5 层记忆系统和 API 端点已实现。可运行 <code>cargo run</code>（后端）和 <code>npm run dev</code>（前端）启动。</p>
+      </div>
     </section>
 
     <section id="p2" class="band">
       <h2>P2：平台核心差异化</h2>
+      <p>P2 开始体现本项目不是普通聊天 UI，而是受控多 Agent RP / 写作 Runtime。</p>
       <div class="grid two">
         <div class="card tint">
-          <h3>官方模板图</h3>
-          <ol>
-            <li><code>single_agent</code></li>
-            <li><code>collaborative_director</code></li>
-            <li><code>strict_director</code></li>
-          </ol>
+          <h3>动态总控多 Agent 架构</h3>
+          <p>已废弃旧固定模板图方案，实现 Dynamic Master 架构：</p>
+          <ul>
+            <li><strong>4 层流水线</strong>：Parser &rarr; Master &rarr; Sub-agents &rarr; Writer &rarr; Compression</li>
+            <li><strong>Parser Agent</strong>：用户输入 &rarr; 结构化 <code>ParsedIntent</code></li>
+            <li><strong>Master Agent</strong>：基于上下文 + 意图 + 子 Agent 摘要，动态生成 <code>MasterPlan</code></li>
+            <li><strong>子 Agent 执行</strong>：独立 LLM 调用、上下文隔离、输出写入 Turn State</li>
+            <li><strong>Compression Agent</strong>：后处理压缩，生成 scene_summary + events + structured_events + foreshadowing + state_changes</li>
+          </ul>
         </div>
         <div class="card">
+          <h3>Agent 生命周期管理</h3>
+          <ul>
+            <li>Master 动态创建、冷却、退休、删除子 Agent</li>
+            <li>连续 N 轮不活跃自动冷却（用户可配置，默认 10）</li>
+            <li>用户可通过 Agent 管理面板手动干预</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>结构化事件召回</h3>
+          <ul>
+            <li><code>structured_events</code> 表存储压缩 Agent 生成的结构化事件</li>
+            <li><code>recall.rs</code> 实现关键词召回（预留向量召回）</li>
+            <li>双层去重：精确哈希 + 3 轮窗口语义去重</li>
+          </ul>
+        </div>
+        <div class="card blue">
           <h3>Proposal + Commit</h3>
           <p>Memory、Tool、Plugin、Agent 都只能提出候选变更。Runtime 负责校验 schema、权限、风险等级和冲突，再提交到主状态。</p>
         </div>
         <div class="card">
           <h3>ContextBundle 权限隔离</h3>
+          <p>每个 Agent 只拿自己有权读取的信息：</p>
           <ul>
-            <li>NPC 不能读取导演计划。</li>
-            <li>NPC 不能读取未知隐藏秘密。</li>
-            <li>Writer 不能擅自发明未裁决事实。</li>
-            <li>Plugin 只能读取 manifest 授权范围内的数据。</li>
+            <li>NPC 拿 scene + events + foreshadowing + recalled_structured_events</li>
+            <li>Writer 拿 scene + foreshadowing + 本轮 Agent 输出</li>
+            <li>Director 拿完整概览</li>
+            <li>User Proxy 拿 scene + 最近 events</li>
+            <li>NPC 不能读取导演计划或其他 NPC 内心</li>
           </ul>
         </div>
-        <div class="card warn">
-          <h3>Consistency 检查</h3>
-          <p>先实现世界事实、时间线、角色 OOC、关系跳变、能力膨胀和伏笔状态的结构化检查，再引入 LLM 审查。</p>
+        <div class="card">
+          <h3>消息管理</h3>
+          <ul>
+            <li>消息编辑、删除、重新生成</li>
+            <li>变体（variants）系统：重新生成时保留历史版本</li>
+            <li>自动标题生成（首轮后 LLM 生成会话标题）</li>
+          </ul>
         </div>
+      </div>
+      <p style="margin-top: 20px;"><strong>P2 完成标准：</strong></p>
+      <ul>
+        <li>multi_agent 模式下 4 层流水线完整运行。</li>
+        <li>Master 能根据用户输入动态调度子 Agent。</li>
+        <li>子 Agent 上下文隔离正确（NPC 不含导演计划）。</li>
+        <li>压缩 Agent 每轮生成结构化状态并持久化。</li>
+        <li>结构化事件可被正确召回。</li>
+        <li>trace 能解释本轮为什么召唤某个 Agent、采用哪些记忆。</li>
+        <li>用户可通过 Agent 管理面板查看和操作所有 Agent。</li>
+      </ul>
+      <div class="card done" style="margin-top: 16px;">
+        <p><strong>P2 核心功能已实现（2026-06-05）。</strong> 动态总控架构（Parser &rarr; Master &rarr; Sub-agents &rarr; Writer &rarr; Compression）、Agent 生命周期管理、结构化事件召回、上下文隔离、消息管理和 Agent 管理 UI 已完成。Consistency 检查（OOC 检测、世界事实冲突等）留待 P3。</p>
       </div>
     </section>
 
@@ -381,17 +446,23 @@
       <div class="grid three">
         <div class="card">
           <h3>Agent Graph 编辑</h3>
-          <p>使用 React Flow 做图编辑，支持节点、边、条件、模型、预算和权限配置。</p>
+          <p>使用 React Flow 做图编辑，支持节点、边、条件、模型、预算和权限配置。导入图包必须经过 schema 校验和安全限制。</p>
         </div>
         <div class="card tint">
           <h3>Artifact Renderer</h3>
-          <p>聊天消息只引用 <code>artifact_id</code> 和 <code>version</code>，高级 UI 才允许 iframe sandbox 自定义代码。</p>
+          <p>聊天消息只引用 <code>artifact_id</code> 和 <code>version</code>，高级 UI 才允许 iframe sandbox 自定义代码。离屏 artifact 卸载或转静态快照。</p>
         </div>
         <div class="card">
           <h3>SillyTavern 迁移</h3>
-          <p>支持导入角色卡、世界书和预设，把历史上下文迁移为摘要、事件账本和结构化状态候选。</p>
+          <p>支持导入角色卡、世界书和预设，把历史上下文迁移为摘要、事件账本和结构化状态候选。对无法可靠迁移的隐藏设定和旧记忆显示风险提示。</p>
         </div>
       </div>
+      <p style="margin-top: 20px;"><strong>P3 完成标准：</strong></p>
+      <ul>
+        <li>高级用户能编辑和导入受限 Agent Graph Pack。</li>
+        <li>Artifact 不污染主页面，也不会随长会话无限增加 DOM。</li>
+        <li>SillyTavern 内容能进入平台内容包模型。</li>
+      </ul>
     </section>
 
     <section id="p4" class="band">
@@ -412,30 +483,37 @@
           <p>支持 <code>TrustedGraphPack</code> / <code>UnverifiedGraphPack</code> 分级、版本兼容声明、风险提示、导入报告、示例包和测试夹具。</p>
         </div>
       </div>
+      <p style="margin-top: 20px;"><strong>P4 完成标准：</strong></p>
+      <ul>
+        <li>插件不能默认读取隐藏世界书、网络、本地文件或长期状态。</li>
+        <li>插件只能提交候选变更，不能直接改主账本。</li>
+        <li>第三方图包质量风险和平台安全责任边界清晰展示。</li>
+      </ul>
     </section>
 
     <section id="sequence" class="band">
       <h2>推荐落地顺序</h2>
-      <pre>1. docs/ 数据库与 API 规范
-2. docs/ 内容包规范
-3. docs/ Artifact Renderer 规范
-4. schemas/ 核心 JSON schema 草案
-5. backend/ axum + SQLite 最小服务
-6. frontend/ React + Vite 最小界面
-7. provider adapter + 流式输出
-8. single_agent Runtime
-9. Recent Context + Scene Summary + Structured State
-10. Event Ledger + Foreshadowing Registry
-11. trace 查看与回放
-12. Character Pack / World Pack 导入
-13. Director / WorldJudge / Writer 官方模板图
-14. ContextBundle 权限隔离
-15. proposal + commit 风险提交
-16. Consistency 检查
-17. Artifact Renderer
-18. Agent Graph 编辑器
-19. SillyTavern 迁移
-20. 插件系统</pre>
+      <pre>&#10003; 1. docs/ 数据库与 API 规范
+&#10003; 2. docs/ 内容包规范
+&#10003; 3. docs/ Artifact Renderer 规范
+&#10003; 4. schemas/ 核心 JSON schema 草案
+&#10003; 5. backend/ axum + SQLite 最小服务
+&#10003; 6. frontend/ React + Vite 最小界面
+&#10003; 7. provider adapter + 流式输出
+&#10003; 8. single_agent Runtime
+&#10003; 9. Recent Context + Scene Summary + Structured State
+&#10003; 10. Event Ledger + Foreshadowing Registry
+&#10003; 11. trace 查看与回放
+  12. Character Pack / World Pack 导入
+&#10003; 13. Dynamic Master 多 Agent 架构（替代旧 Director/WorldJudge/Writer 模板图）
+&#10003; 14. ContextBundle 权限隔离（按 Agent 类型注入不同上下文）
+&#10003; 15. proposal + commit 风险提交
+&#10003; 16. 结构化事件召回（structured_events + recall.rs）
+  17. Consistency 检查（OOC、冲突检测）
+  18. Artifact Renderer
+  19. Agent Graph 编辑器
+  20. SillyTavern 迁移
+  21. 插件系统</pre>
     </section>
 
     <section id="not-now" class="band">

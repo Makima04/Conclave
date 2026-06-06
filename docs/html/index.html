@@ -372,6 +372,7 @@
       <a href="tech-selection.html">技术选型</a>
       <a href="long-context-memory.html">长期记忆</a>
       <a href="agent-runtime.html">Agent Runtime</a>
+      <a href="dynamic-master-architecture.html">动态总控架构</a>
       <a href="agent-boundaries.html">Agent 边界</a>
       <a href="implementation-priority.html">实现优先级</a>
       <a href="database-api.html">数据库与 API</a>
@@ -393,7 +394,7 @@
     <section id="decision" class="band">
       <h2>框架结论</h2>
       <p>平台核心不建议直接绑定 LangGraph、AutoGen、CrewAI、OpenAI Agents SDK 或 DSPy。更稳的做法是自研 <strong>RP Agent Runtime</strong>，外部框架作为参考、适配器或局部能力。</p>
-      <p><strong>新增文档：</strong><a href="tech-selection.html">技术选型文档</a> 已单独整理，重点讨论 Rust 后端、React 前端和 Artifact Renderer。<a href="long-context-memory.html">长期记忆与叙事一致性架构</a> 专门处理百万字级长文本、人物不 OOC、细节和伏笔不丢的问题。<a href="agent-runtime.html">Agent Runtime 规范</a> 定义多 Agent 每轮如何执行。<a href="agent-boundaries.html">Agent 边界与权限架构</a> 负责定义每个 Agent 能看什么、能做什么、能写什么。<a href="implementation-priority.html">项目实现优先级</a> 负责把当前架构拆成 P0-P4 的落地顺序。</p>
+      <p><strong>新增文档：</strong><a href="tech-selection.html">技术选型文档</a> 已单独整理，重点讨论 Rust 后端、React 前端和 Artifact Renderer。<a href="long-context-memory.html">长期记忆与叙事一致性架构</a> 专门处理百万字级长文本、人物不 OOC、细节和伏笔不丢的问题。<a href="agent-runtime.html">Agent Runtime 规范</a> 定义多 Agent 每轮如何执行。<a href="dynamic-master-architecture.html">动态总控架构</a> 定义 multi_agent 模式的 4 层流水线、Agent 生命周期和双轨上下文。<a href="agent-boundaries.html">Agent 边界与权限架构</a> 负责定义每个 Agent 能看什么、能做什么、能写什么。<a href="implementation-priority.html">项目实现优先级</a> 负责把当前架构拆成 P0-P4 的落地顺序。</p>
       <div class="grid three">
         <div class="card tint">
           <h3>自研核心</h3>

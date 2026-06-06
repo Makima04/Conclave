@@ -1,5 +1,5 @@
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -59,6 +59,8 @@ pub async fn fetch_models(
     let url = format!("{}/models", body.base_url.trim_end_matches('/'));
     let api_key = body.api_key.unwrap_or_default();
 
+    tracing::info!(url = %url, "Fetching available models");
+
     let client = reqwest::Client::new();
     let mut req = client.get(&url);
     if !api_key.is_empty() {
@@ -81,10 +83,14 @@ pub async fn fetch_models(
         .await
         .map_err(|e| AppError::Provider(format!("读取响应失败: {}", e)))?;
 
-    let models: ModelsResponse = serde_json::from_str(&body_text)
-        .map_err(|e| AppError::Provider(format!("解析模型列表失败: {} - 原始响应: {}", e, &body_text[..body_text.len().min(200)])))?;
+    let models: ModelsResponse = serde_json::from_str(&body_text).map_err(|e| {
+        let preview: String = body_text.chars().take(200).collect();
+        AppError::Provider(format!("解析模型列表失败: {} - 原始响应: {}", e, preview))
+    })?;
 
     let ids: Vec<String> = models.data.into_iter().map(|m| m.id).collect();
+
+    tracing::info!(url = %url, model_count = ids.len(), "Models fetched successfully");
 
     Ok(Json(serde_json::json!({ "models": ids })))
 }
@@ -120,10 +126,15 @@ pub async fn create_provider(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateProvider>,
 ) -> Result<Json<ProviderConfig>, AppError> {
+    tracing::info!(name = %body.name, base_url = %body.base_url, model = %body.model, "Creating provider");
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let api_key = body.api_key.unwrap_or_default();
-    let is_default = if body.is_default.unwrap_or(false) { 1 } else { 0 };
+    let is_default = if body.is_default.unwrap_or(false) {
+        1
+    } else {
+        0
+    };
 
     // If setting as default, unset other defaults
     if is_default == 1 {
@@ -161,6 +172,7 @@ pub async fn update_provider(
     Path(id): Path<String>,
     Json(body): Json<UpdateProvider>,
 ) -> Result<Json<ProviderConfig>, AppError> {
+    tracing::info!(provider_id = %id, "Updating provider");
     let now = chrono::Utc::now().to_rfc3339();
 
     // Check exists
@@ -176,7 +188,10 @@ pub async fn update_provider(
     let base_url = body.base_url.unwrap_or(existing.base_url);
     let api_key = body.api_key.unwrap_or(existing.api_key);
     let model = body.model.unwrap_or(existing.model);
-    let is_default = body.is_default.map(|d| if d { 1 } else { 0 }).unwrap_or(existing.is_default);
+    let is_default = body
+        .is_default
+        .map(|d| if d { 1 } else { 0 })
+        .unwrap_or(existing.is_default);
 
     if is_default == 1 {
         sqlx::query("UPDATE provider_configs SET is_default = 0 WHERE id != ?")
@@ -212,6 +227,7 @@ pub async fn delete_provider(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    tracing::info!(provider_id = %id, "Deleting provider");
     let result = sqlx::query("DELETE FROM provider_configs WHERE id = ?")
         .bind(&id)
         .execute(&state.pool)

@@ -244,7 +244,12 @@
         <div class="card">
           <span class="status">核心</span>
           <h3><a href="agent-runtime.html">Agent Runtime 规范</a></h3>
-          <p>定义运行模式、图分级、节点/边、每轮执行、输出协议、状态提交、自由图限制和验收测试。</p>
+          <p>定义运行模式（single_agent / multi_agent）、Agent 类型、每轮执行流程、输出协议、状态提交和运行限制。</p>
+        </div>
+        <div class="card">
+          <span class="status">核心</span>
+          <h3><a href="dynamic-master-architecture.html">动态总控架构</a></h3>
+          <p>定义 multi_agent 模式的 4 层流水线（Parser → Master → Sub-agents → Writer → Compression）、Agent 生命周期管理、Turn State、上下文注入策略和双轨上下文架构。</p>
         </div>
         <div class="card">
           <span class="status">核心</span>
@@ -313,7 +318,12 @@
           <tr>
             <td>3</td>
             <td><a href="agent-runtime.html">Agent Runtime 规范</a></td>
-            <td>先明确多 Agent 每轮如何执行、图如何分级、状态如何提交。</td>
+            <td>先明确多 Agent 每轮如何执行、Agent 类型、状态如何提交。</td>
+          </tr>
+          <tr>
+            <td>3.5</td>
+            <td><a href="dynamic-master-architecture.html">动态总控架构</a></td>
+            <td>深入理解 multi_agent 模式的 4 层流水线和 Agent 生命周期。</td>
           </tr>
           <tr>
             <td>4</td>

@@ -17,3 +17,6 @@ frontend/dist/
 # IDE
 .vscode/
 .idea/
+
+# CodeGraph index
+.codegraph/

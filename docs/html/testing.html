@@ -58,10 +58,6 @@
   <header>
     <div class="wrap hero">
       <h1>测试与评测规范</h1>
-      <p class="lead">定义平台核心风险的回归测试方案、测试分类、测试场景、测试工具和性能基准。确保长会话一致性、Agent 权限隔离、状态提交安全、Artifact 隔离和成本控制能被持续验证。</p>
-      <div class="tags">
-        <span>Testing</span><span>Regression</span><span>OOC Detection</span><span>Foreshadowing</span><span>Permission Boundary</span><span>Performance</span>
-      </div>
     </div>
   </header>
 
@@ -80,230 +76,832 @@
   </nav>
 
   <main class="wrap">
-    <section class="band">
-      <h2>目标</h2>
-      <ul>
-        <li>平台每个核心风险域都有可自动回归的测试场景。</li>
-        <li>测试不依赖真实 LLM API，使用 Mock Provider 回放预设响应。</li>
-        <li>长会话测试可自动模拟 100-1000 轮对话。</li>
-        <li>每个验收测试能明确判定通过或失败，不依赖主观评估。</li>
-        <li>性能基准有具体数值目标。</li>
-      </ul>
-    </section>
-
-    <section id="categories" class="band">
-      <h2>测试分类</h2>
-      <div class="grid two">
-        <div class="card tint">
-          <span class="status">单元测试</span>
-          <h3>纯逻辑验证</h3>
-          <p>数据模型、schema 校验、state diff 合并、patch 应用、权限检查。不涉及 LLM 调用或网络。</p>
-          <p><strong>工具：</strong>Rust <code>#[test]</code>，前端 Vitest。</p>
-        </div>
-        <div class="card blue">
-          <span class="status">集成测试</span>
-          <h3>API 到数据库完整链路</h3>
-          <p>使用真实 SQLite 内存数据库，Mock LLM Provider。覆盖 API 端点、SSE 流式输出、内容包导入。</p>
-          <p><strong>工具：</strong>Rust <code>axum::test</code> + <code>sqlx</code> 内存模式。</p>
-        </div>
-        <div class="card">
-          <span class="status">场景测试</span>
-          <h3>端到端用户场景</h3>
-          <p>使用 Mock LLM Provider 回放多轮预设响应，覆盖八大风险域。</p>
-        </div>
-        <div class="card warn">
-          <span class="status">性能基准</span>
-          <h3>延迟和资源占用</h3>
-          <p>关键路径的延迟、内存和渲染性能。CI 中每次 PR 运行。</p>
-          <p><strong>工具：</strong>Rust <code>criterion</code>，前端 Lighthouse。</p>
-        </div>
-      </div>
-    </section>
-
-    <section id="domains" class="band">
-      <h2>八大风险域测试场景</h2>
-
-      <h3>域 1：长会话回归</h3>
-      <table class="matrix">
-        <thead><tr><th>测试</th><th>通过标准</th></tr></thead>
-        <tbody>
-          <tr><td>100 轮后召回第 10 轮事件</td><td>从事件账本或结构化状态正确召回。</td></tr>
-          <tr><td>500 轮后伏笔仍可检索</td><td>伏笔状态仍为 <code>open</code> 或 <code>hinted</code>，被正确召回。</td></tr>
-          <tr><td>1000 轮后状态一致性</td><td>结构化状态与事件账本一致，无丢失或矛盾。</td></tr>
-          <tr><td>摘要不累积错误</td><td>后续摘要不引入与原始事件矛盾的事实。</td></tr>
-          <tr><td>长会话内存占用</td><td>1000 轮后单会话内存增量不超过 200MB。</td></tr>
-        </tbody>
-      </table>
-
-      <h3>域 2：OOC 检测</h3>
-      <table class="matrix">
-        <thead><tr><th>测试</th><th>通过标准</th></tr></thead>
-        <tbody>
-          <tr><td>角色不泄露未知秘密</td><td>NPC 输出不包含 <code>knowledge_boundary</code> 外的秘密。</td></tr>
-          <tr><td>关系不跳变</td><td>信任值变化不超过合理幅度，有触发事件支撑。</td></tr>
-          <tr><td>能力不膨胀</td><td>WorldJudge 拒绝未设定能力。</td></tr>
-          <tr><td>人格核心不被冲淡</td><td>200 轮后 <code>personality_core</code> 未被修改。</td></tr>
-          <tr><td>成长有据可循</td><td><code>growth_arc</code> 有阶段推进记录和事件引用。</td></tr>
-        </tbody>
-      </table>
-
-      <h3>域 3：伏笔回收</h3>
-      <table class="matrix">
-        <thead><tr><th>测试</th><th>通过标准</th></tr></thead>
-        <tbody>
-          <tr><td>伏笔种下后可检索</td><td>出现在 <code>foreshadowing</code> 表，状态为 <code>open</code>。</td></tr>
-          <tr><td>伏笔在合适场景被提醒</td><td>Director PlanResult 包含伏笔引用。</td></tr>
-          <tr><td>伏笔回收后状态更新</td><td>状态变为 <code>resolved</code>。</td></tr>
-          <tr><td>伏笔长期未回收有提示</td><td>100 轮未处理时向 Director 发出提醒。</td></tr>
-          <tr><td>多伏笔不混淆</td><td>只有匹配条件的伏笔被召回。</td></tr>
-        </tbody>
-      </table>
-
-      <h3>域 4：Agent 越权</h3>
-      <table class="matrix">
-        <thead><tr><th>测试</th><th>通过标准</th></tr></thead>
-        <tbody>
-          <tr><td>NPC 无法读取导演计划</td><td>ContextBundle 不含 <code>director_plan</code>。</td></tr>
-          <tr><td>NPC 无法读取未知秘密</td><td>ContextBundle 不含未被告知的秘密。</td></tr>
-          <tr><td>Writer 无法发明事实</td><td>Consistency Agent 检测到冲突。</td></tr>
-          <tr><td>插件无法读取隐藏世界书</td><td>无 <code>read_hidden_lore</code> 权限时 ContextBundle 不含隐藏内容。</td></tr>
-          <tr><td>插件无法越权写入</td><td>无 <code>write_memory</code> 权限时 proposal 被拒绝。</td></tr>
-          <tr><td>handoff 不传递完整推理</td><td>Runtime 拦截，只传递结构化结果。</td></tr>
-        </tbody>
-      </table>
-
-      <h3>域 5：循环与成本</h3>
-      <table class="matrix">
-        <thead><tr><th>测试</th><th>通过标准</th></tr></thead>
-        <tbody>
-          <tr><td>超过 max_loop_count</td><td>循环被阻止，走 fallback。</td></tr>
-          <tr><td>总节点数超过限制</td><td>后续节点被阻止。</td></tr>
-          <tr><td>Token 预算超限</td><td>中止后续节点执行。</td></tr>
-          <tr><td>运行时间超限</td><td>中止执行，记录 trace。</td></tr>
-          <tr><td>并发节点数超限</td><td>只同时执行限制数量的节点。</td></tr>
-        </tbody>
-      </table>
-
-      <h3>域 6：Artifact 隔离</h3>
-      <table class="matrix">
-        <thead><tr><th>测试</th><th>通过标准</th></tr></thead>
-        <tbody>
-          <tr><td>iframe 无法访问主 DOM</td><td><code>window.parent.document</code> 抛出安全错误。</td></tr>
-          <tr><td>iframe 无法访问存储</td><td><code>localStorage.setItem</code> 被阻止。</td></tr>
-          <tr><td>iframe 无法发起网络请求</td><td><code>fetch</code> 被 CSP 阻止。</td></tr>
-          <tr><td>DOM 节点超限</td><td>超过 1000 节点时截断渲染。</td></tr>
-          <tr><td>离屏卸载与恢复</td><td>iframe 被卸载，恢复后状态一致。</td></tr>
-          <tr><td>最大活跃数</td><td>超过 5 个时自动转为快照。</td></tr>
-        </tbody>
-      </table>
-
-      <h3>域 7：状态提交安全</h3>
-      <table class="matrix">
-        <thead><tr><th>测试</th><th>通过标准</th></tr></thead>
-        <tbody>
-          <tr><td>low 风险自动提交</td><td><code>committed_by = "runtime"</code>。</td></tr>
-          <tr><td>medium 风险需 Director 审核</td><td><code>committed_by = "director"</code>。</td></tr>
-          <tr><td>high 风险需证据链</td><td>必须附带 <code>ChangeJustification</code>。</td></tr>
-          <tr><td>高风险不自动提交</td><td>proposal 被拒绝或挂起。</td></tr>
-          <tr><td>状态版本递增</td><td><code>version</code> 每次递增，不跳号不重复。</td></tr>
-        </tbody>
-      </table>
-
-      <h3>域 8：流式输出</h3>
-      <table class="matrix">
-        <thead><tr><th>测试</th><th>通过标准</th></tr></thead>
-        <tbody>
-          <tr><td>完整轮次事件序列</td><td>按序收到 <code>turn_start</code> → ... → <code>turn_end</code>。</td></tr>
-          <tr><td>流式文本增量推送</td><td>增量拼接后等于最终消息内容。</td></tr>
-          <tr><td>连接中断恢复</td><td>可通过 <code>GET /messages</code> 拉取已完成消息。</td></tr>
-          <tr><td>大消息分块</td><td>分多个事件推送，无丢失或乱序。</td></tr>
-          <tr><td>并发会话隔离</td><td>各自 SSE 流互不干扰。</td></tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section id="tools" class="band">
-      <h2>测试工具与基础设施</h2>
-      <div class="grid three">
-        <div class="card tint">
-          <h3>Mock LLM Provider</h3>
-          <p>回放预设响应序列，实现与真实 Provider 相同的 <code>Adapter</code> 接口。支持固定响应、序列响应、条件响应、流式输出模拟、延迟和错误模拟。</p>
-        </div>
-        <div class="card blue">
-          <h3>测试用内容包 Fixtures</h3>
-          <p>预定义的 Character Pack、World Pack 和 Agent Graph Pack，覆盖标准 NPC、简单 NPC、复杂 NPC、标准世界、简单世界、多种图配置。</p>
-        </div>
-        <div class="card">
-          <h3>长会话生成器</h3>
-          <p>按预定义场景自动选择每轮用户输入，每 N 轮自动运行断言检查，最终输出一致性报告。支持 100-1000 轮。</p>
-        </div>
-      </div>
-    </section>
-
-    <section id="perf" class="band">
-      <h2>性能基准</h2>
-      <table class="matrix">
-        <thead><tr><th>指标</th><th>目标</th><th>测量方法</th></tr></thead>
-        <tbody>
-          <tr><td>单轮 Runtime 执行（不含 LLM）</td><td>&lt; 50ms</td><td>Mock LLM 固定延迟 0ms。</td></tr>
-          <tr><td>状态快照读取</td><td>&lt; 5ms</td><td>读取最新 state_snapshots。</td></tr>
-          <tr><td>事件账本查询（500 条内）</td><td>&lt; 20ms</td><td>按 session + type 过滤。</td></tr>
-          <tr><td>伏笔检索（100 条内）</td><td>&lt; 10ms</td><td>按 status + importance 过滤。</td></tr>
-          <tr><td>内容包导入（10MB ZIP）</td><td>&lt; 5s</td><td>解压 + 校验 + 写入。</td></tr>
-          <tr><td>Artifact iframe 创建</td><td>&lt; 100ms</td><td>从创建到 ready 事件。</td></tr>
-          <tr><td>Artifact 快照保存</td><td>&lt; 50ms</td><td>保存 iframe 静态 HTML。</td></tr>
-          <tr><td>SSE 连接建立</td><td>&lt; 50ms</td><td>从请求到首个事件。</td></tr>
-          <tr><td>长会话 500 轮后页面滚动</td><td>60fps</td><td>虚拟列表，DOM 不随消息数增长。</td></tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section id="strategy" class="band">
-      <h2>测试分层与运行策略</h2>
-      <table class="matrix">
-        <thead><tr><th>层级</th><th>运行时机</th><th>耗时预期</th><th>覆盖目标</th></tr></thead>
-        <tbody>
-          <tr><td>单元测试</td><td>每次提交</td><td>&lt; 10s</td><td>逻辑正确性。</td></tr>
-          <tr><td>集成测试</td><td>每次 PR</td><td>&lt; 60s</td><td>API 和数据库链路。</td></tr>
-          <tr><td>场景测试</td><td>每次 PR</td><td>&lt; 5min</td><td>八大风险域。</td></tr>
-          <tr><td>长会话测试</td><td>每日/手动</td><td>&lt; 30min</td><td>100-1000 轮回归。</td></tr>
-          <tr><td>性能基准</td><td>每次 PR</td><td>&lt; 2min</td><td>关键路径延迟。</td></tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section id="risks" class="band">
-      <h2>风险</h2>
-      <table class="matrix">
-        <thead><tr><th>风险</th><th>影响</th><th>缓解措施</th></tr></thead>
-        <tbody>
-          <tr><td>Mock Provider 不代表真实 LLM 行为</td><td>测试通过但真实场景失败。</td><td>Mock 只测系统逻辑；LLM 质量用独立评测集。</td></tr>
-          <tr><td>长会话测试耗时过长</td><td>CI 时间不可接受。</td><td>日常 CI 只跑 100 轮；500+ 轮在每日任务。</td></tr>
-          <tr><td>OOC 检测依赖主观标准</td><td>测试结果不可靠。</td><td>只检查结构化约束，不评估文学质量。</td></tr>
-          <tr><td>测试 fixture 维护成本</td><td>格式变更后 fixture 失效。</td><td>fixture 和 schema 共用 JSON Schema 定义。</td></tr>
-          <tr><td>性能基准环境差异</td><td>CI 和本地性能不同。</td><td>关注相对回归百分比，不关注绝对值。</td></tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section id="tests" class="band">
-      <h2>验收测试</h2>
-      <table class="matrix">
-        <thead><tr><th>测试场景</th><th>通过标准</th></tr></thead>
-        <tbody>
-          <tr><td>全部单元测试通过</td><td>0 failure，覆盖率 ≥ 80%。</td></tr>
-          <tr><td>全部集成测试通过</td><td>API 端点、数据库读写、SSE 流式输出均正常。</td></tr>
-          <tr><td>长会话 100 轮场景测试</td><td>状态一致、记忆可召回、伏笔可检索、无 OOC 违规。</td></tr>
-          <tr><td>Agent 越权测试</td><td>所有权限矩阵中的禁止场景被 Runtime 正确拦截。</td></tr>
-          <tr><td>状态提交测试</td><td>low/medium/high 三级风险的提交行为符合规范。</td></tr>
-          <tr><td>Artifact 隔离测试</td><td>iframe 沙箱阻止所有禁止行为，资源预算被严格执行。</td></tr>
-          <tr><td>流式输出测试</td><td>SSE 事件序列完整、增量文本可拼接、断线可恢复。</td></tr>
-          <tr><td>性能基准无回归</td><td>关键路径延迟不超基线 20%。</td></tr>
-          <tr><td>Mock Provider 覆盖所有节点类型</td><td>9 种节点类型都有对应 mock 响应。</td></tr>
-          <tr><td>长会话 500 轮自动化测试</td><td>无状态丢失、无伏笔遗忘、无关系跳变、内存达标。</td></tr>
-        </tbody>
-      </table>
-    </section>
+<h1 id="测试与评测规范">测试与评测规范</h1>
+<blockquote>
+<p>定义平台核心风险的回归测试方案、测试分类、测试场景、测试工具和性能基准。确保长会话一致性、Agent
+权限隔离、状态提交安全、Artifact 隔离和成本控制能被持续验证。</p>
+</blockquote>
+<p><code>Testing</code> · <code>Regression</code> ·
+<code>OOC Detection</code> · <code>Foreshadowing</code> ·
+<code>Permission Boundary</code> · <code>Performance</code></p>
+<hr />
+<ul>
+<li><a href="docs.md">文档中心</a></li>
+<li><a href="index.md">架构首页</a></li>
+<li><a href="database-api.md">数据库与 API</a></li>
+<li><a href="agent-runtime.md">Agent Runtime</a></li>
+<li><a href="agent-boundaries.md">Agent 边界</a></li>
+<li><a href="long-context-memory.md">长期记忆</a></li>
+<li><a href="content-packages.md">内容包规范</a></li>
+<li><a href="artifact-renderer.md">Artifact Renderer</a></li>
+</ul>
+<hr />
+<h2 id="目标">目标</h2>
+<ul>
+<li>平台每个核心风险域都有可自动回归的测试场景。</li>
+<li>测试不依赖真实 LLM API，使用 Mock Provider 回放预设响应。</li>
+<li>长会话测试可自动模拟 100-1000 轮对话。</li>
+<li>每个验收测试能明确判定通过或失败，不依赖主观评估。</li>
+<li>性能基准有具体数值目标。</li>
+</ul>
+<hr />
+<h2 id="测试分类">测试分类</h2>
+<h3 id="单元测试">1. 单元测试</h3>
+<p>覆盖数据模型、schema 校验、state diff 合并、patch
+应用、权限检查等纯逻辑。不涉及 LLM 调用或网络。</p>
+<p><strong>工具：</strong> Rust 内置 <code>#[test]</code>，前端
+Vitest。</p>
+<p><strong>覆盖范围：</strong></p>
+<ul>
+<li>JSON schema 校验：合法输入通过，非法输入拒绝并返回明确错误。</li>
+<li>state diff
+合并：<code>add</code>、<code>update</code>、<code>remove</code>
+操作正确应用到状态快照。</li>
+<li>Artifact patch
+应用：<code>json_patch</code>、<code>state_diff</code>、<code>props</code>
+正确生成新版本。</li>
+<li>权限矩阵：每个 Agent 类型的 <code>ContextBundle</code>
+只包含授权字段。</li>
+<li>SemVer 解析和范围匹配。</li>
+<li>游标分页逻辑。</li>
+</ul>
+<h3 id="集成测试">2. 集成测试</h3>
+<p>覆盖 API 端点到数据库的完整链路。使用真实 SQLite 内存数据库，Mock LLM
+Provider。</p>
+<p><strong>工具：</strong> Rust <code>axum::test</code> +
+<code>sqlx</code> 内存模式，前端 Testing Library + MSW。</p>
+<p><strong>覆盖范围：</strong></p>
+<ul>
+<li>会话 CRUD → 数据库写入和读取。</li>
+<li>发送消息 → Runtime 触证 → SSE 流式输出 → 消息持久化。</li>
+<li>内容包导入 → 解压 → 校验 → 写入 <code>content_packs</code> 表。</li>
+<li>状态 proposal + commit 完整链路。</li>
+<li>Trace 记录完整性。</li>
+</ul>
+<h3 id="场景测试">3. 场景测试</h3>
+<p>覆盖端到端用户场景，模拟真实使用流程。使用 Mock LLM Provider
+回放多轮预设响应。</p>
+<p><strong>工具：</strong> Rust 集成测试 + 自定义场景脚本。</p>
+<p><strong>覆盖范围：</strong> 以下九个风险域。</p>
+<h3 id="性能基准">4. 性能基准</h3>
+<p>覆盖关键路径的延迟和资源占用。</p>
+<p><strong>工具：</strong> Rust <code>criterion</code> 基准测试，前端
+Lighthouse + 自定义指标。</p>
+<hr />
+<h2 id="九大风险域测试场景">九大风险域测试场景</h2>
+<h3 id="域-1多-agent-流水线">域 1：多 Agent 流水线</h3>
+<p>Dynamic Master 架构的 4 层流水线正确运行，Agent
+生命周期管理可靠。</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>测试</th>
+<th>方法</th>
+<th>通过标准</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Parser 输出结构化意图</td>
+<td>发送多种类型用户输入（对话、动作、查询、叙事）。</td>
+<td>每种输入都产生合法 <code>ParsedIntent</code> JSON，包含
+intent、action_type、target_characters。</td>
+</tr>
+<tr>
+<td>Master 动态调度</td>
+<td>模拟包含已知 NPC 名字的用户输入。</td>
+<td>Master 的 <code>MasterPlan</code> 包含对应 NPC Agent 的调用，且
+<code>inject_from</code> 正确。</td>
+</tr>
+<tr>
+<td>Master fallback 计划</td>
+<td>模拟 LLM 返回非法 JSON。</td>
+<td><code>fallback_plan()</code> 通过关键词匹配生成合理的备用计划。</td>
+</tr>
+<tr>
+<td>子 Agent 上下文隔离</td>
+<td>检查 NPC Agent 的 system prompt。</td>
+<td>不包含其他 NPC 内心、导演计划或未授权的隐藏信息。</td>
+</tr>
+<tr>
+<td>Agent 生命周期冷却</td>
+<td>模拟 15 轮对话，某 NPC 连续 10 轮未被调用。</td>
+<td>该 NPC 在第 11 轮自动进入 cooldown 状态。</td>
+</tr>
+<tr>
+<td>Agent 恢复</td>
+<td>冷却中的 Agent 被 Master 重新调用。</td>
+<td>Agent 自动恢复为 active 状态，保留完整上下文。</td>
+</tr>
+<tr>
+<td>压缩 Agent 去重</td>
+<td>连续 3 轮生成相似事件（相同 scene_type + 重叠 characters）。</td>
+<td><code>structured_events</code> 表不出现重复记录（content_hash 去重 +
+语义去重）。</td>
+</tr>
+<tr>
+<td>压缩 Agent 持久化</td>
+<td>完成一轮 multi_agent 对话。</td>
+<td><code>turn_summaries</code>、<code>memory_events</code>、<code>structured_events</code>、<code>foreshadowing</code>
+表都有新记录。</td>
+</tr>
+<tr>
+<td>结构化事件召回</td>
+<td>在第 10 轮引入特定事件，第 50 轮用户提及该事件关键词。</td>
+<td>子 Agent 的 ContextBundle 包含第 10 轮的结构化事件。</td>
+</tr>
+<tr>
+<td>Writer fallback</td>
+<td>Master 计划中未包含 Writer Agent。</td>
+<td>系统自动调用默认 Writer，用户仍收到叙事输出。</td>
+</tr>
+<tr>
+<td>SSE agent_status 事件</td>
+<td>监听 multi_agent 模式的 SSE 流。</td>
+<td>收到 <code>agent_status</code> 事件，显示
+parser/master/writer/compression 各阶段状态。</td>
+</tr>
+</tbody>
+</table>
+<h3 id="域-2长会话回归">域 2：长会话回归</h3>
+<p>长对话后系统状态、记忆和输出仍然一致。</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>测试</th>
+<th>方法</th>
+<th>通过标准</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>100 轮后召回第 10 轮事件</td>
+<td>模拟 100 轮对话，第 10 轮引入特定事件，第 100 轮询问该事件。</td>
+<td>系统从事件账本或结构化状态正确召回，不依赖全文上下文。</td>
+</tr>
+<tr>
+<td>500 轮后伏笔仍可检索</td>
+<td>第 50 轮种下伏笔，第 500 轮触发相关场景。</td>
+<td>伏笔状态仍为 <code>open</code> 或
+<code>hinted</code>，且被正确召回。</td>
+</tr>
+<tr>
+<td>1000 轮后状态一致性</td>
+<td>模拟 1000 轮对话，每轮有状态变化。</td>
+<td>结构化状态与事件账本一致，无丢失或矛盾。</td>
+</tr>
+<tr>
+<td>摘要不累积错误</td>
+<td>每 10 轮生成场景摘要，跨 100 轮。</td>
+<td>后续摘要不引入与原始事件矛盾的事实。</td>
+</tr>
+<tr>
+<td>长会话内存占用</td>
+<td>1000 轮后测量后端内存。</td>
+<td>单会话后端内存增量不超过 200MB（不含 LLM 调用）。</td>
+</tr>
+</tbody>
+</table>
+<h3 id="域-3ooc-检测">域 3：OOC 检测</h3>
+<p>角色不偏离人格核心、不跳变关系、不膨胀能力。</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>测试</th>
+<th>方法</th>
+<th>通过标准</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>角色不泄露未知秘密</td>
+<td>NPC 的 <code>knowledge_boundary</code> 不包含某秘密，模拟用户引导
+NPC 泄露。</td>
+<td>NPC 输出不包含该秘密，Consistency Agent 不报错。</td>
+</tr>
+<tr>
+<td>关系不跳变</td>
+<td>模拟信任值 0.3 的 NPC 被用户一次性示好。</td>
+<td>信任值变化不超过合理幅度（如 ≤0.15），有触发事件支撑。</td>
+</tr>
+<tr>
+<td>能力不膨胀</td>
+<td>模拟战斗场景，角色设定无飞行能力。</td>
+<td>角色不会突然飞行，WorldJudge 拒绝不合理行为。</td>
+</tr>
+<tr>
+<td>人格核心不被冲淡</td>
+<td>200 轮后角色仍保持核心价值观。</td>
+<td><code>personality_core</code> 未被修改，输出仍符合 OOC
+红线约束。</td>
+</tr>
+<tr>
+<td>成长有据可循</td>
+<td>角色经历多次事件后性格变化。</td>
+<td><code>growth_arc</code>
+有阶段推进记录，<code>ChangeJustification</code> 有事件引用。</td>
+</tr>
+</tbody>
+</table>
+<h3 id="域-4伏笔回收">域 4：伏笔回收</h3>
+<p>伏笔能被种下、暗示、触发和回收，不会遗忘。</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>测试</th>
+<th>方法</th>
+<th>通过标准</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>伏笔种下后可检索</td>
+<td>Memory Agent 在特定轮次种下伏笔。</td>
+<td>伏笔出现在 <code>foreshadowing</code> 表，状态为
+<code>open</code>。</td>
+</tr>
+<tr>
+<td>伏笔在合适场景被提醒</td>
+<td>模拟触发条件出现的场景。</td>
+<td>Director 的 <code>PlanResult</code> 中包含该伏笔引用。</td>
+</tr>
+<tr>
+<td>伏笔回收后状态更新</td>
+<td>伏笔被回收。</td>
+<td>状态变为 <code>resolved</code>，<code>resolved_at_turn</code>
+正确。</td>
+</tr>
+<tr>
+<td>伏笔长期未回收有提示</td>
+<td>伏笔 100 轮未处理。</td>
+<td>伏笔仍为 <code>open</code>，系统在合适场景向 Director
+发出提醒。</td>
+</tr>
+<tr>
+<td>多伏笔不混淆</td>
+<td>同时存在 10 个伏笔，触发条件不同。</td>
+<td>只有匹配条件的伏笔被召回，其他伏笔不受影响。</td>
+</tr>
+</tbody>
+</table>
+<h3 id="域-5agent-越权">域 5：Agent 越权</h3>
+<p>每个 Agent 严格遵守权限矩阵（参照 <a href="agent-boundaries.md">Agent
+边界与权限</a>）。</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>测试</th>
+<th>方法</th>
+<th>通过标准</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NPC 无法读取导演计划</td>
+<td>NPC 节点的 ContextBundle 检查。</td>
+<td><code>context_bundle</code> 不含 <code>director_plan</code> 或其他
+NPC 的内心。</td>
+</tr>
+<tr>
+<td>NPC 无法读取未知秘密</td>
+<td>NPC 设定中 <code>knows_blood_moon_secret: false</code>。</td>
+<td>ContextBundle 不含血月秘密相关内容。</td>
+</tr>
+<tr>
+<td>Writer 无法发明事实</td>
+<td>Writer 尝试输出未被 WorldJudge 裁决的新事实。</td>
+<td>Consistency Agent 检测到冲突，要求重写或标记。</td>
+</tr>
+<tr>
+<td>插件无法读取隐藏世界书</td>
+<td>Plugin Pack 未申请 <code>read_hidden_lore</code>。</td>
+<td>ContextBundle 不含 <code>lore/hidden/</code> 内容。</td>
+</tr>
+<tr>
+<td>插件无法越权写入</td>
+<td>Plugin Pack 未申请 <code>write_memory</code>。</td>
+<td>Plugin 的 <code>StateChangeProposal</code> 被 Runtime 拒绝。</td>
+</tr>
+<tr>
+<td>handoff 不传递完整推理</td>
+<td>Director handoff 到 NPC 时传递了完整思维链。</td>
+<td>Runtime 拦截，只允许传递结构化结果和授权上下文。</td>
+</tr>
+<tr>
+<td>多 Agent 同时写同一状态</td>
+<td>Memory 和 Plugin 同时提交对同一字段的变更。</td>
+<td>进入冲突解决流程，不静默覆盖。</td>
+</tr>
+</tbody>
+</table>
+<h3 id="域-6循环与成本">域 6：循环与成本</h3>
+<p>自由图和高级图受循环和 token 预算限制。</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>测试</th>
+<th>方法</th>
+<th>通过标准</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>自由图超过 max_loop_count</td>
+<td>Agent Graph 定义 <code>max_loop_count: 2</code>，图中出现 3
+次循环。</td>
+<td>第 3 次循环被 Runtime 阻止，走 fallback 路径。</td>
+</tr>
+<tr>
+<td>总节点数超过限制</td>
+<td>图定义 <code>max_total_nodes: 8</code>，执行路径超过 8 个节点。</td>
+<td>第 9 个节点被阻止，记录 trace 并走 fallback。</td>
+</tr>
+<tr>
+<td>Token 预算超限</td>
+<td>设置 <code>max_token_budget_per_turn: 4096</code>，单轮累计 token
+超过预算。</td>
+<td>Runtime 中止后续节点执行，返回已生成内容。</td>
+</tr>
+<tr>
+<td>运行时间超限</td>
+<td>设置 <code>max_turn_runtime_ms: 30000</code>，执行超时。</td>
+<td>Runtime 中止执行，记录 trace 和超时错误。</td>
+</tr>
+<tr>
+<td>并发节点数超限</td>
+<td>图定义 <code>max_parallel_nodes: 3</code>，有 5 个并行节点。</td>
+<td>Runtime 只同时执行 3 个，其余排队或取消。</td>
+</tr>
+</tbody>
+</table>
+<h3 id="域-7artifact-隔离">域 7：Artifact 隔离</h3>
+<p>Artifact iframe 沙箱安全、资源受控、不污染主 DOM。</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>测试</th>
+<th>方法</th>
+<th>通过标准</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>iframe 无法访问主 DOM</td>
+<td>artifact 内执行 <code>window.parent.document</code>。</td>
+<td>抛出安全错误或返回 null。</td>
+</tr>
+<tr>
+<td>iframe 无法访问存储</td>
+<td>artifact 内执行 <code>localStorage.setItem</code>。</td>
+<td>被沙箱阻止。</td>
+</tr>
+<tr>
+<td>iframe 无法发起网络请求</td>
+<td>artifact 内执行 <code>fetch('https://evil.com')</code>。</td>
+<td>CSP 阻止，请求失败。</td>
+</tr>
+<tr>
+<td>DOM 节点超限</td>
+<td>artifact 渲染超过 1000 个 DOM 节点。</td>
+<td>截断渲染，显示提示。</td>
+</tr>
+<tr>
+<td>JS 大小超限</td>
+<td>artifact JS 超过 200KB。</td>
+<td>拒绝加载，显示静态预览。</td>
+</tr>
+<tr>
+<td>离屏卸载</td>
+<td>artifact 滚出视口。</td>
+<td>iframe 被卸载，快照展示。</td>
+</tr>
+<tr>
+<td>恢复后状态一致</td>
+<td>artifact 离屏后恢复。</td>
+<td>重建的 iframe 状态与卸载前一致。</td>
+</tr>
+<tr>
+<td>最大活跃数</td>
+<td>同时创建 6 个 artifact。</td>
+<td>第 6 个 artifact 使用快照，最久未交互的 artifact 被卸载。</td>
+</tr>
+</tbody>
+</table>
+<h3 id="域-8状态提交安全">域 8：状态提交安全</h3>
+<p>高风险变更走 proposal + commit，不自动提交。</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>测试</th>
+<th>方法</th>
+<th>通过标准</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>low 风险自动提交</td>
+<td>Memory 提交普通事件摘要。</td>
+<td>自动写入
+<code>state_snapshots</code>，<code>committed_by = "runtime"</code>。</td>
+</tr>
+<tr>
+<td>medium 风险需 Director 审核</td>
+<td>Memory 提交关系变化。</td>
+<td>Director 审核后提交，<code>committed_by = "director"</code>。</td>
+</tr>
+<tr>
+<td>high 风险需证据链</td>
+<td>Memory 提交核心人格变化。</td>
+<td>必须附带 <code>ChangeJustification</code> 和触发事件引用，Director
+审核后提交。</td>
+</tr>
+<tr>
+<td>高风险不自动提交</td>
+<td>模拟 high 风险 proposal 但无 Director。</td>
+<td>proposal 被拒绝或挂起，不写入 <code>state_snapshots</code>。</td>
+</tr>
+<tr>
+<td>状态版本递增</td>
+<td>多次提交。</td>
+<td><code>state_snapshots.version</code> 每次递增，不跳号不重复。</td>
+</tr>
+<tr>
+<td>proposal 被拒绝时有 trace</td>
+<td>Director 拒绝 proposal。</td>
+<td>trace 记录拒绝原因和决策过程。</td>
+</tr>
+</tbody>
+</table>
+<h3 id="域-9流式输出">域 9：流式输出</h3>
+<p>SSE 连接稳定、事件完整、断线可恢复。</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>测试</th>
+<th>方法</th>
+<th>通过标准</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>完整轮次事件序列</td>
+<td>发送消息并监听 SSE。</td>
+<td>按序收到 <code>turn_start</code> → <code>node_enter</code> → … →
+<code>turn_end</code>。</td>
+</tr>
+<tr>
+<td>流式文本增量推送</td>
+<td>监听 <code>message_delta</code> 事件。</td>
+<td>文本增量拼接后等于最终消息内容。</td>
+</tr>
+<tr>
+<td>连接中断恢复</td>
+<td>模拟 SSE 连接在轮次中间断开。</td>
+<td>客户端可通过 <code>GET /messages</code> 拉取已完成的完整消息。</td>
+</tr>
+<tr>
+<td>大消息分块</td>
+<td>发送触发长文本输出的输入。</td>
+<td>消息分多个 <code>message_delta</code> 事件推送，无丢失或乱序。</td>
+</tr>
+<tr>
+<td>并发会话隔离</td>
+<td>同时在两个会话发送消息。</td>
+<td>各自的 SSE 流互不干扰，消息归属正确会话。</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="测试工具与基础设施">测试工具与基础设施</h2>
+<h3 id="mock-llm-provider">Mock LLM Provider</h3>
+<p>平台不使用真实 LLM API 运行测试。Mock Provider 回放预设响应序列。</p>
+<pre class="rust"><code>// Mock Provider 配置示例
+MockProvider {
+  responses: vec![
+    MockResponse {
+      trigger: &quot;用户推开档案馆的木门&quot;,
+      output: NpcIntent {
+        character_id: &quot;archivist&quot;,
+        dialogue: &quot;欢迎来到旧档案馆。请问你在寻找什么？&quot;,
+        action: &quot;微微抬头，放下手中的古籍&quot;,
+        internal_state: &quot;警惕但不排斥&quot;
+      }
+    },
+    // ...
+  ]
+}</code></pre>
+<ul>
+<li>Mock Provider 实现与真实 Provider 相同的 <code>Adapter</code>
+接口。</li>
+<li>支持固定响应、序列响应和条件响应。</li>
+<li>支持模拟流式输出（逐 token 推送）。</li>
+<li>支持模拟延迟和错误。</li>
+</ul>
+<h3 id="测试用内容包-fixtures">测试用内容包 Fixtures</h3>
+<p>预定义的测试用 Character Pack、World Pack 和 Agent Graph
+Pack，覆盖常见场景。</p>
+<pre class="text"><code>tests/fixtures/
+  characters/
+    archivist/          # 标准 NPC，有公开/隐藏设定
+    merchant/           # 简单 NPC，无隐藏设定
+    antagonist/         # 复杂 NPC，有多重秘密
+  worlds/
+    blood_moon/         # 标准世界包，有规则、时间线和导演配置
+    simple_rp/          # 简单世界包，最小规则
+  graphs/
+    single_agent/       # 最小图
+    strict_director/    # 严格导演图
+    complex_graph/      # 多节点并行图</code></pre>
+<h3 id="长会话生成器">长会话生成器</h3>
+<p>自动模拟多轮对话的测试工具。</p>
+<pre class="text"><code>LongSessionGenerator {
+  turns: 500,
+  scenario: &quot;archivist_rp&quot;,
+  actions: [
+    { turn_range: [1, 100], action_type: &quot;exploration&quot;, weight: 0.7 },
+    { turn_range: [101, 300], action_type: &quot;dialogue&quot;, weight: 0.8 },
+    { turn_range: [301, 500], action_type: &quot;combat&quot;, weight: 0.3 }
+  ],
+  assertions: {
+    every_n_turns: 50,
+    check: [&quot;state_consistency&quot;, &quot;foreshadowing_recall&quot;, &quot;character_ooc&quot;]
+  }
+}</code></pre>
+<ul>
+<li>按预定义场景自动选择每轮用户输入。</li>
+<li>每 N 轮自动运行断言检查。</li>
+<li>最终输出一致性报告。</li>
+</ul>
+<h3 id="trace-断言工具">Trace 断言工具</h3>
+<p>检查 trace 记录的完整性和正确性。</p>
+<pre class="text"><code>TraceAssert(trace_id)
+  .has_node_type(&quot;director&quot;)
+  .context_bundle_excludes(&quot;director_plan&quot;)  // NPC 不应看到导演计划
+  .token_usage_below(4096)
+  .duration_below(30000)
+  .no_errors()</code></pre>
+<hr />
+<h2 id="性能基准-1">性能基准</h2>
+<h3 id="目标值">目标值</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>指标</th>
+<th>目标</th>
+<th>测量方法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>单轮 Runtime 执行（不含 LLM 调用）</td>
+<td>&lt; 50ms</td>
+<td>从收到用户输入到返回结构化输出（Mock LLM 固定延迟 0ms）。</td>
+</tr>
+<tr>
+<td>状态快照读取</td>
+<td>&lt; 5ms</td>
+<td>读取最新 <code>state_snapshots</code>。</td>
+</tr>
+<tr>
+<td>事件账本查询（500 条内）</td>
+<td>&lt; 20ms</td>
+<td>按 session + type 过滤。</td>
+</tr>
+<tr>
+<td>伏笔检索（100 条内）</td>
+<td>&lt; 10ms</td>
+<td>按 status + importance 过滤。</td>
+</tr>
+<tr>
+<td>内容包导入（10MB ZIP）</td>
+<td>&lt; 5s</td>
+<td>解压 + 校验 + 写入。</td>
+</tr>
+<tr>
+<td>Artifact iframe 创建</td>
+<td>&lt; 100ms</td>
+<td>从创建到 <code>ready</code> 事件。</td>
+</tr>
+<tr>
+<td>Artifact 快照保存</td>
+<td>&lt; 50ms</td>
+<td>保存 iframe 静态 HTML。</td>
+</tr>
+<tr>
+<td>SSE 连接建立</td>
+<td>&lt; 50ms</td>
+<td>从请求到首个事件。</td>
+</tr>
+<tr>
+<td>长会话 500 轮后页面滚动</td>
+<td>60fps</td>
+<td>使用虚拟列表，DOM 节点数不随消息数增长。</td>
+</tr>
+</tbody>
+</table>
+<h3 id="基准测试运行">基准测试运行</h3>
+<ul>
+<li>性能基准在 CI 中每次 PR 运行。</li>
+<li>回归超过 20% 时标记 PR 为性能回归。</li>
+<li>基准测试结果存档，可追溯趋势。</li>
+</ul>
+<hr />
+<h2 id="测试分层与运行策略">测试分层与运行策略</h2>
+<table>
+<thead>
+<tr>
+<th>层级</th>
+<th>运行时机</th>
+<th>耗时预期</th>
+<th>覆盖目标</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>单元测试</td>
+<td>每次提交</td>
+<td>&lt; 10s</td>
+<td>逻辑正确性。</td>
+</tr>
+<tr>
+<td>集成测试</td>
+<td>每次 PR</td>
+<td>&lt; 60s</td>
+<td>API 和数据库链路。</td>
+</tr>
+<tr>
+<td>场景测试</td>
+<td>每次 PR</td>
+<td>&lt; 5min</td>
+<td>八大风险域。</td>
+</tr>
+<tr>
+<td>长会话测试</td>
+<td>每日/手动</td>
+<td>&lt; 30min</td>
+<td>100-1000 轮回归。</td>
+</tr>
+<tr>
+<td>性能基准</td>
+<td>每次 PR</td>
+<td>&lt; 2min</td>
+<td>关键路径延迟。</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="风险">风险</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>风险</th>
+<th>影响</th>
+<th>缓解措施</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Mock Provider 不代表真实 LLM 行为</td>
+<td>测试通过但真实场景失败。</td>
+<td>Mock 只测系统逻辑（权限、提交、记忆）；LLM
+输出质量用独立评测集评估，不混入回归测试。</td>
+</tr>
+<tr>
+<td>长会话测试耗时过长</td>
+<td>CI 时间不可接受。</td>
+<td>日常 CI 只跑 100 轮场景；500-1000 轮在每日定时任务或手动触发。</td>
+</tr>
+<tr>
+<td>OOC 检测依赖主观标准</td>
+<td>测试结果不可靠。</td>
+<td>OOC
+测试只检查结构化约束（知识边界、关系数值、能力列表），不评估文学质量。</td>
+</tr>
+<tr>
+<td>测试 fixture 维护成本</td>
+<td>内容包格式变更后 fixture 失效。</td>
+<td>fixture 和内容包 schema 共用同一份 JSON Schema
+定义，变更时自动提示更新。</td>
+</tr>
+<tr>
+<td>性能基准环境差异</td>
+<td>CI 和本地环境性能不同。</td>
+<td>基准测试关注相对回归（百分比变化），不关注绝对值。</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="验收测试">验收测试</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>测试场景</th>
+<th>通过标准</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>全部单元测试通过</td>
+<td>0 failure，覆盖率 ≥ 80%。</td>
+</tr>
+<tr>
+<td>全部集成测试通过</td>
+<td>API 端点、数据库读写、SSE 流式输出均正常。</td>
+</tr>
+<tr>
+<td>长会话 100 轮场景测试</td>
+<td>状态一致、记忆可召回、伏笔可检索、无 OOC 违规。</td>
+</tr>
+<tr>
+<td>Agent 越权测试</td>
+<td>所有权限矩阵中的禁止场景被 Runtime 正确拦截。</td>
+</tr>
+<tr>
+<td>状态提交测试</td>
+<td>low/medium/high 三级风险的提交行为符合规范。</td>
+</tr>
+<tr>
+<td>Artifact 隔离测试</td>
+<td>iframe 沙箱阻止所有禁止行为，资源预算被严格执行。</td>
+</tr>
+<tr>
+<td>流式输出测试</td>
+<td>SSE 事件序列完整、增量文本可拼接、断线可恢复。</td>
+</tr>
+<tr>
+<td>性能基准无回归</td>
+<td>关键路径延迟不超基线 20%。</td>
+</tr>
+<tr>
+<td>Mock Provider 覆盖所有 Agent 类型</td>
+<td>Parser、Master、NPC、Writer、Director、State（Compression）Agent
+都有对应 mock 响应。</td>
+</tr>
+<tr>
+<td>长会话 500 轮自动化测试</td>
+<td>无状态丢失、无伏笔遗忘、无关系跳变、内存占用在目标范围内。</td>
+</tr>
+</tbody>
+</table>
   </main>
 </body>
 </html>

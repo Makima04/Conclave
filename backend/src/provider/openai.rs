@@ -5,6 +5,7 @@ use futures::Stream;
 use reqwest::Client;
 use std::pin::Pin;
 
+#[derive(Clone)]
 pub struct OpenAiProvider {
     client: Client,
     base_url: String,
@@ -19,6 +20,38 @@ impl OpenAiProvider {
             api_key: api_key.to_string(),
         }
     }
+
+    /// Call chat_completion with automatic retry when the model returns empty content.
+    pub async fn chat_completion_with_retry(
+        &self,
+        request: ChatRequest,
+        max_retries: u32,
+    ) -> Result<ChatResponse, ProviderError> {
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                tracing::warn!(attempt = attempt, "Retrying LLM call due to empty content");
+            }
+
+            let response = self.chat_completion(request.clone()).await?;
+
+            let content = response
+                .choices
+                .first()
+                .map(|c| c.message.content.as_str())
+                .unwrap_or("");
+
+            if !content.trim().is_empty() {
+                return Ok(response);
+            }
+
+            tracing::warn!(attempt = attempt, "LLM returned empty content");
+        }
+
+        Err(ProviderError::Parse(format!(
+            "LLM returned empty content after {} retries",
+            max_retries + 1
+        )))
+    }
 }
 
 #[async_trait]
@@ -26,7 +59,7 @@ impl ProviderAdapter for OpenAiProvider {
     async fn chat_completion(&self, request: ChatRequest) -> Result<ChatResponse, ProviderError> {
         let url = format!("{}/chat/completions", self.base_url);
 
-        tracing::info!(url = %url, model = %request.model, messages = request.messages.len(), "LLM request: non-streaming");
+        tracing::debug!(model = %request.model, messages = request.messages.len(), "LLM request");
 
         let response = self
             .client
@@ -45,11 +78,24 @@ impl ProviderAdapter for OpenAiProvider {
             return Err(ProviderError::Http(format!("HTTP {}: {}", status, body)));
         }
 
-        tracing::info!(url = %url, "LLM response OK, parsing JSON");
-        response
-            .json::<ChatResponse>()
+        tracing::debug!("LLM response OK");
+        let bytes = response
+            .bytes()
             .await
-            .map_err(|e| ProviderError::Parse(e.to_string()))
+            .map_err(|e| ProviderError::Parse(e.to_string()))?;
+        match serde_json::from_slice::<ChatResponse>(&bytes) {
+            Ok(resp) => Ok(resp),
+            Err(e) => {
+                let body_preview = String::from_utf8_lossy(&bytes);
+                let preview = if body_preview.len() > 500 {
+                    &body_preview[..500]
+                } else {
+                    &body_preview
+                };
+                tracing::error!(error = %e, body = %preview, "Failed to decode LLM response body");
+                Err(ProviderError::Parse(e.to_string()))
+            }
+        }
     }
 
     async fn chat_completion_stream(
@@ -60,7 +106,7 @@ impl ProviderAdapter for OpenAiProvider {
         request.stream = true;
         let url = format!("{}/chat/completions", self.base_url);
 
-        tracing::info!(url = %url, model = %request.model, messages = request.messages.len(), "LLM request: streaming");
+        tracing::debug!(model = %request.model, messages = request.messages.len(), "LLM request: streaming");
 
         let response = self
             .client
@@ -79,7 +125,7 @@ impl ProviderAdapter for OpenAiProvider {
             return Err(ProviderError::Http(format!("HTTP {}: {}", status, body)));
         }
 
-        tracing::info!(url = %url, "LLM stream connected, reading chunks");
+        tracing::debug!("LLM stream connected");
         let byte_stream = response.bytes_stream();
         use futures::StreamExt;
 

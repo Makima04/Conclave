@@ -64,7 +64,7 @@
 
 **工具：** Rust 集成测试 + 自定义场景脚本。
 
-**覆盖范围：** 以下八个风险域。
+**覆盖范围：** 以下九个风险域。
 
 ### 4. 性能基准
 
@@ -74,9 +74,27 @@
 
 ---
 
-## 八大风险域测试场景
+## 九大风险域测试场景
 
-### 域 1：长会话回归
+### 域 1：多 Agent 流水线
+
+Dynamic Master 架构的 4 层流水线正确运行，Agent 生命周期管理可靠。
+
+| 测试 | 方法 | 通过标准 |
+|---|---|---|
+| Parser 输出结构化意图 | 发送多种类型用户输入（对话、动作、查询、叙事）。 | 每种输入都产生合法 `ParsedIntent` JSON，包含 intent、action_type、target_characters。 |
+| Master 动态调度 | 模拟包含已知 NPC 名字的用户输入。 | Master 的 `MasterPlan` 包含对应 NPC Agent 的调用，且 `inject_from` 正确。 |
+| Master fallback 计划 | 模拟 LLM 返回非法 JSON。 | `fallback_plan()` 通过关键词匹配生成合理的备用计划。 |
+| 子 Agent 上下文隔离 | 检查 NPC Agent 的 system prompt。 | 不包含其他 NPC 内心、导演计划或未授权的隐藏信息。 |
+| Agent 生命周期冷却 | 模拟 15 轮对话，某 NPC 连续 10 轮未被调用。 | 该 NPC 在第 11 轮自动进入 cooldown 状态。 |
+| Agent 恢复 | 冷却中的 Agent 被 Master 重新调用。 | Agent 自动恢复为 active 状态，保留完整上下文。 |
+| 压缩 Agent 去重 | 连续 3 轮生成相似事件（相同 scene_type + 重叠 characters）。 | `structured_events` 表不出现重复记录（content_hash 去重 + 语义去重）。 |
+| 压缩 Agent 持久化 | 完成一轮 multi_agent 对话。 | `turn_summaries`、`memory_events`、`structured_events`、`foreshadowing` 表都有新记录。 |
+| 结构化事件召回 | 在第 10 轮引入特定事件，第 50 轮用户提及该事件关键词。 | 子 Agent 的 ContextBundle 包含第 10 轮的结构化事件。 |
+| Writer fallback | Master 计划中未包含 Writer Agent。 | 系统自动调用默认 Writer，用户仍收到叙事输出。 |
+| SSE agent_status 事件 | 监听 multi_agent 模式的 SSE 流。 | 收到 `agent_status` 事件，显示 parser/master/writer/compression 各阶段状态。 |
+
+### 域 2：长会话回归
 
 长对话后系统状态、记忆和输出仍然一致。
 
@@ -88,7 +106,7 @@
 | 摘要不累积错误 | 每 10 轮生成场景摘要，跨 100 轮。 | 后续摘要不引入与原始事件矛盾的事实。 |
 | 长会话内存占用 | 1000 轮后测量后端内存。 | 单会话后端内存增量不超过 200MB（不含 LLM 调用）。 |
 
-### 域 2：OOC 检测
+### 域 3：OOC 检测
 
 角色不偏离人格核心、不跳变关系、不膨胀能力。
 
@@ -100,7 +118,7 @@
 | 人格核心不被冲淡 | 200 轮后角色仍保持核心价值观。 | `personality_core` 未被修改，输出仍符合 OOC 红线约束。 |
 | 成长有据可循 | 角色经历多次事件后性格变化。 | `growth_arc` 有阶段推进记录，`ChangeJustification` 有事件引用。 |
 
-### 域 3：伏笔回收
+### 域 4：伏笔回收
 
 伏笔能被种下、暗示、触发和回收，不会遗忘。
 
@@ -112,7 +130,7 @@
 | 伏笔长期未回收有提示 | 伏笔 100 轮未处理。 | 伏笔仍为 `open`，系统在合适场景向 Director 发出提醒。 |
 | 多伏笔不混淆 | 同时存在 10 个伏笔，触发条件不同。 | 只有匹配条件的伏笔被召回，其他伏笔不受影响。 |
 
-### 域 4：Agent 越权
+### 域 5：Agent 越权
 
 每个 Agent 严格遵守权限矩阵（参照 [Agent 边界与权限](agent-boundaries.md)）。
 
@@ -126,7 +144,7 @@
 | handoff 不传递完整推理 | Director handoff 到 NPC 时传递了完整思维链。 | Runtime 拦截，只允许传递结构化结果和授权上下文。 |
 | 多 Agent 同时写同一状态 | Memory 和 Plugin 同时提交对同一字段的变更。 | 进入冲突解决流程，不静默覆盖。 |
 
-### 域 5：循环与成本
+### 域 6：循环与成本
 
 自由图和高级图受循环和 token 预算限制。
 
@@ -138,7 +156,7 @@
 | 运行时间超限 | 设置 `max_turn_runtime_ms: 30000`，执行超时。 | Runtime 中止执行，记录 trace 和超时错误。 |
 | 并发节点数超限 | 图定义 `max_parallel_nodes: 3`，有 5 个并行节点。 | Runtime 只同时执行 3 个，其余排队或取消。 |
 
-### 域 6：Artifact 隔离
+### 域 7：Artifact 隔离
 
 Artifact iframe 沙箱安全、资源受控、不污染主 DOM。
 
@@ -153,7 +171,7 @@ Artifact iframe 沙箱安全、资源受控、不污染主 DOM。
 | 恢复后状态一致 | artifact 离屏后恢复。 | 重建的 iframe 状态与卸载前一致。 |
 | 最大活跃数 | 同时创建 6 个 artifact。 | 第 6 个 artifact 使用快照，最久未交互的 artifact 被卸载。 |
 
-### 域 7：状态提交安全
+### 域 8：状态提交安全
 
 高风险变更走 proposal + commit，不自动提交。
 
@@ -166,7 +184,7 @@ Artifact iframe 沙箱安全、资源受控、不污染主 DOM。
 | 状态版本递增 | 多次提交。 | `state_snapshots.version` 每次递增，不跳号不重复。 |
 | proposal 被拒绝时有 trace | Director 拒绝 proposal。 | trace 记录拒绝原因和决策过程。 |
 
-### 域 8：流式输出
+### 域 9：流式输出
 
 SSE 连接稳定、事件完整、断线可恢复。
 
@@ -327,5 +345,5 @@ TraceAssert(trace_id)
 | Artifact 隔离测试 | iframe 沙箱阻止所有禁止行为，资源预算被严格执行。 |
 | 流式输出测试 | SSE 事件序列完整、增量文本可拼接、断线可恢复。 |
 | 性能基准无回归 | 关键路径延迟不超基线 20%。 |
-| Mock Provider 覆盖所有节点类型 | Director、WorldJudge、Npc、Writer、Memory、Consistency、Artifact、Tool 节点都有对应 mock 响应。 |
+| Mock Provider 覆盖所有 Agent 类型 | Parser、Master、NPC、Writer、Director、State（Compression）Agent 都有对应 mock 响应。 |
 | 长会话 500 轮自动化测试 | 无状态丢失、无伏笔遗忘、无关系跳变、内存占用在目标范围内。 |

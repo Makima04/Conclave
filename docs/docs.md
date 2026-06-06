@@ -20,11 +20,15 @@
 
 ### 核心 — [Agent Runtime 规范](agent-runtime.md)
 
-定义运行模式、图分级、节点/边、每轮执行、输出协议、状态提交、自由图限制和验收测试。
+定义运行模式（single_agent / multi_agent）、Agent 类型、每轮执行流程、输出协议、状态提交和运行限制。
+
+### 核心 — [动态总控架构](dynamic-master-architecture.md)
+
+定义 multi_agent 模式的 4 层流水线（Parser → Master → Sub-agents → Writer → Compression）、Agent 生命周期管理、Turn State、上下文注入策略和双轨上下文架构。
 
 ### 核心 — [Agent 边界与权限](agent-boundaries.md)
 
-定义 Director、NPC、Writer、Memory、Plugin 等 Agent 的信息边界、行为边界、写入边界和 handoff。
+定义 parser、master、npc、writer、state 等 Agent 的信息边界、行为边界、写入边界和 visibility 隔离。
 
 ### 工程 — [技术选型](tech-selection.md)
 
@@ -42,7 +46,8 @@
 |---|---|---|
 | 1 | [项目总架构](index.md) | 先明确项目不是普通聊天应用，而是长篇叙事和多 Agent 编排平台。 |
 | 2 | [长期记忆与叙事一致性](long-context-memory.md) | 这是平台最核心的问题域，决定后端、Agent、数据库和测试方式。 |
-| 3 | [Agent Runtime 规范](agent-runtime.md) | 先明确多 Agent 每轮如何执行、图如何分级、状态如何提交。 |
+| 3 | [Agent Runtime 规范](agent-runtime.md) | 先明确多 Agent 每轮如何执行、Agent 类型、状态如何提交。 |
+| 3.5 | [动态总控架构](dynamic-master-architecture.md) | 深入理解 multi_agent 模式的 4 层流水线和 Agent 生命周期。 |
 | 4 | [Agent 边界与权限](agent-boundaries.md) | 多 Agent 是否有效，取决于上下文隔离、权限和写入控制。 |
 | 5 | [技术选型](tech-selection.md) | 最后再看技术栈，确保技术选择服务架构目标。 |
 | 6 | [数据库与 API 规范](database-api.md) | 进入实现前先明确数据模型和 API 契约。 |

@@ -12,9 +12,8 @@ export default function WorldBooks() {
   const [editingName, setEditingName] = useState(false);
   const [nameValue, setNameValue] = useState('');
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
-  const [parsing, setParsing] = useState(false);
-  const [parsedEntries, setParsedEntries] = useState<ParsedWorldBookEntry[] | null>(null);
-  const [showParsed, setShowParsed] = useState(false);
+  const [parsingMode, setParsingMode] = useState<'single_agent' | 'multi_agent' | null>(null);
+  const [viewMode, setViewMode] = useState<'raw' | 'single_agent' | 'multi_agent'>('raw');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
 
@@ -36,6 +35,7 @@ export default function WorldBooks() {
       const d = await api.getWorldBook(id);
       setDetail(d);
       setSelectedId(id);
+      setViewMode('raw');
     } catch (err) {
       console.error('Failed to load world book detail:', err);
     }
@@ -310,17 +310,31 @@ export default function WorldBooks() {
 
   async function handleParse() {
     if (!detail) return;
-    setParsing(true);
+    setParsingMode('multi_agent');
     try {
       const result = await api.parseWorldBook(detail.id);
-      setParsedEntries(result.entries);
-      setShowParsed(true);
-      setDetail({ ...detail, parse_status: 'done' });
+      setViewMode('multi_agent');
+      setDetail({ ...detail, parse_status: 'done', parsed_entries: result.entries });
     } catch (err) {
       alert('解析失败: ' + (err instanceof Error ? err.message : '未知错误'));
       setDetail({ ...detail, parse_status: 'error' });
     } finally {
-      setParsing(false);
+      setParsingMode(null);
+    }
+  }
+
+  async function handleParseSingleAgent() {
+    if (!detail) return;
+    setParsingMode('single_agent');
+    try {
+      const result = await api.parseWorldBookSingleAgent(detail.id);
+      setViewMode('single_agent');
+      setDetail({ ...detail, single_agent_parse_status: 'done', single_agent_parsed_entries: result.entries });
+    } catch (err) {
+      alert('解析失败: ' + (err instanceof Error ? err.message : '未知错误'));
+      setDetail({ ...detail, single_agent_parse_status: 'error' });
+    } finally {
+      setParsingMode(null);
     }
   }
 
@@ -345,13 +359,19 @@ export default function WorldBooks() {
           )}
           <span className="format-badge">{detail.original_format}</span>
           <span className={`parse-badge ${detail.parse_status || 'none'}`}>
-            {detail.parse_status === 'done' ? '已解析' : detail.parse_status === 'parsing' ? '解析中' : detail.parse_status === 'error' ? '解析失败' : '未解析'}
+            多Agent {detail.parse_status === 'done' ? '已解析' : detail.parse_status === 'parsing' ? '解析中' : detail.parse_status === 'error' ? '解析失败' : '未解析'}
+          </span>
+          <span className={`parse-badge ${detail.single_agent_parse_status || 'none'}`}>
+            单Agent {detail.single_agent_parse_status === 'done' ? '已解析' : detail.single_agent_parse_status === 'parsing' ? '解析中' : detail.single_agent_parse_status === 'error' ? '解析失败' : '未解析'}
           </span>
           {detail.has_character_card && detail.character_card_id && (
             <button className="action-btn" onClick={() => navigate(`/charactercards/${detail.character_card_id}`)}>角色卡</button>
           )}
-          <button className="action-btn" onClick={handleParse} disabled={parsing}>
-            {parsing ? '解析中...' : detail.parse_status === 'done' ? '重新解析' : '解析为多Agent'}
+          <button className="action-btn" onClick={handleParseSingleAgent} disabled={parsingMode !== null}>
+            {parsingMode === 'single_agent' ? '解析中...' : detail.single_agent_parse_status === 'done' ? '重新解析单Agent' : '解析为单Agent'}
+          </button>
+          <button className="action-btn" onClick={handleParse} disabled={parsingMode !== null}>
+            {parsingMode === 'multi_agent' ? '解析中...' : detail.parse_status === 'done' ? '重新解析多Agent' : '解析为多Agent'}
           </button>
           <button className="action-btn" onClick={() => handleExport(detail)}>导出</button>
           <button className="action-btn danger" onClick={() => handleDelete(detail.id)}>删除</button>
@@ -360,17 +380,16 @@ export default function WorldBooks() {
         {detail.description && <p className="wb-description">{detail.description}</p>}
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
           <span className="meta">{detail.entries.length} 个条目</span>
-          {parsedEntries && (
-            <div style={{ display: 'flex', gap: 6 }}>
-              <button className={`filter-tab ${!showParsed ? 'active' : ''}`} onClick={() => setShowParsed(false)}>原始条目</button>
-              <button className={`filter-tab ${showParsed ? 'active' : ''}`} onClick={() => setShowParsed(true)}>多Agent解析</button>
-            </div>
-          )}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className={`filter-tab ${viewMode === 'raw' ? 'active' : ''}`} onClick={() => setViewMode('raw')}>原始条目</button>
+            <button className={`filter-tab ${viewMode === 'single_agent' ? 'active' : ''}`} onClick={() => setViewMode('single_agent')}>单Agent解析</button>
+            <button className={`filter-tab ${viewMode === 'multi_agent' ? 'active' : ''}`} onClick={() => setViewMode('multi_agent')}>多Agent解析</button>
+          </div>
         </div>
 
-        {showParsed && parsedEntries ? (
+        {viewMode !== 'raw' ? (
           <div className="entry-list">
-            {parsedEntries.map((entry, i) => (
+            {(viewMode === 'single_agent' ? detail.single_agent_parsed_entries : detail.parsed_entries).map((entry, i) => (
               <div key={i} className="parsed-entry-row">
                 <span className={`parsed-category-badge ${entry.category.startsWith('npc:') ? 'npc' : entry.category}`}>
                   {entry.category}
@@ -385,6 +404,9 @@ export default function WorldBooks() {
                 </span>
               </div>
             ))}
+            {(viewMode === 'single_agent' ? detail.single_agent_parsed_entries : detail.parsed_entries).length === 0 && (
+              <p className="meta" style={{ padding: 20 }}>暂无解析结果</p>
+            )}
           </div>
         ) : (
         <div className="entry-list">

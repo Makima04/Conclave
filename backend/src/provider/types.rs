@@ -9,6 +9,8 @@ pub struct ChatMessage {
     /// We extract it as a fallback when `content` is empty/null.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 /// Deserialize null JSON values as empty string instead of failing.
@@ -32,7 +34,39 @@ pub struct ChatRequest {
     pub frequency_penalty: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presence_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ChatTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<serde_json::Value>,
     pub stream: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatTool {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: ChatToolFunction,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatToolFunction {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: Option<String>,
+    #[serde(rename = "type")]
+    pub tool_type: Option<String>,
+    pub function: ToolCallFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallFunction {
+    pub name: String,
+    pub arguments: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

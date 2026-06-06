@@ -10,6 +10,7 @@ use crate::provider::openai::OpenAiProvider;
 use crate::provider::types::{ChatMessage, ChatRequest, StreamChunk};
 use crate::routes::sessions::SessionConfig;
 use crate::runtime::turn_finalizer;
+use crate::runtime::variable_tool_agent;
 use crate::runtime::variable_update;
 use futures::Stream;
 use sqlx::SqlitePool;
@@ -52,6 +53,7 @@ fn format_world_book_reference(entries: &[WorldBookContextEntry]) -> Option<Stri
     let mut visible_entries: Vec<_> = entries
         .iter()
         .filter(|entry| entry.category != "user")
+        .filter(|entry| !is_variable_rule_entry(entry))
         .filter(|entry| !entry.content.trim().is_empty())
         .collect();
     if visible_entries.is_empty() {
@@ -68,6 +70,20 @@ fn format_world_book_reference(entries: &[WorldBookContextEntry]) -> Option<Stri
         }
     }
     Some(content)
+}
+
+fn is_variable_rule_entry(entry: &WorldBookContextEntry) -> bool {
+    if entry.category == "state_agent" {
+        return true;
+    }
+    let text = format!("{}\n{}", entry.keys.join(" "), entry.content).to_lowercase();
+    text.contains("updatevariable")
+        || text.contains("status_current_variables")
+        || text.contains("get_message_variable")
+        || (text.contains("stat_data")
+            && (text.contains("变量更新")
+                || text.contains("变量输出")
+                || text.contains("状态更新")))
 }
 
 fn format_role_reference(roles: &[RoleContext]) -> Option<String> {
@@ -103,13 +119,22 @@ fn build_single_agent_messages(
         role: "system".to_string(),
         content: system_prompt,
         reasoning_content: None,
+        tool_calls: None,
     }];
+
+    messages.push(ChatMessage {
+        role: "system".to_string(),
+        content: "Runtime constraint: output only user-visible narrative text. Do not output <UpdateVariable>, <Analysis>, variable audits, state update instructions, JSON state changes, or tool-call text.".to_string(),
+        reasoning_content: None,
+        tool_calls: None,
+    });
 
     if let Some(role_content) = format_role_reference(&context_bundle.role_contexts) {
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: role_content,
             reasoning_content: None,
+            tool_calls: None,
         });
     }
 
@@ -118,6 +143,7 @@ fn build_single_agent_messages(
             role: msg.role.clone(),
             content: msg.content.clone(),
             reasoning_content: None,
+            tool_calls: None,
         });
     }
 
@@ -126,6 +152,7 @@ fn build_single_agent_messages(
             role: "system".to_string(),
             content: format!("Known events:\n{}", context_bundle.events.join("\n")),
             reasoning_content: None,
+            tool_calls: None,
         });
     }
 
@@ -137,6 +164,7 @@ fn build_single_agent_messages(
                 context_bundle.foreshadowing.join("\n")
             ),
             reasoning_content: None,
+            tool_calls: None,
         });
     }
 
@@ -145,6 +173,7 @@ fn build_single_agent_messages(
             role: "system".to_string(),
             content: format!("Scene summary:\n{}", summary),
             reasoning_content: None,
+            tool_calls: None,
         });
     }
 
@@ -160,6 +189,7 @@ fn build_single_agent_messages(
                 serde_json::to_string_pretty(&context_bundle.structured_state).unwrap_or_default()
             ),
             reasoning_content: None,
+            tool_calls: None,
         });
     }
 
@@ -169,6 +199,7 @@ fn build_single_agent_messages(
             role: "system".to_string(),
             content: wb_content,
             reasoning_content: None,
+            tool_calls: None,
         });
     }
 
@@ -295,6 +326,74 @@ pub async fn resolve_model_target(
         trace_model: model.clone(),
         model,
     })
+}
+
+pub async fn propose_single_agent_variable_changes_for_session(
+    pool: &SqlitePool,
+    session_id: &str,
+    turn_number: i32,
+    user_input: &str,
+    narrative_text: &str,
+) -> Result<Option<StateChangeProposal>, AppError> {
+    let fallback_model = load_provider_model(pool).await?;
+    let config_json: String =
+        sqlx::query_scalar("SELECT config FROM sessions WHERE id = ? AND deleted_at IS NULL")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let session_config: SessionConfig = serde_json::from_str(&config_json).unwrap_or_default();
+    let context_bundle = context::build_context(
+        pool,
+        session_id,
+        turn_number,
+        session_config.max_context_turns as usize,
+    )
+    .await?;
+
+    propose_single_agent_variable_changes(
+        pool,
+        &fallback_model,
+        &session_config,
+        user_input,
+        narrative_text,
+        &context_bundle,
+    )
+    .await
+}
+
+async fn propose_single_agent_variable_changes(
+    pool: &SqlitePool,
+    fallback_model: &str,
+    session_config: &SessionConfig,
+    user_input: &str,
+    narrative_text: &str,
+    context_bundle: &ContextBundle,
+) -> Result<Option<StateChangeProposal>, AppError> {
+    if !session_config.parser_enabled {
+        return Ok(None);
+    }
+
+    let model_ref = session_config.variable_tool_model.trim();
+    let target = resolve_model_target(
+        pool,
+        fallback_model,
+        if model_ref.is_empty() {
+            fallback_model
+        } else {
+            model_ref
+        },
+    )
+    .await?;
+
+    variable_tool_agent::propose_variable_tool_changes(
+        &target.provider,
+        &target.model,
+        user_input,
+        narrative_text,
+        context_bundle,
+    )
+    .await
 }
 
 #[instrument(skip(pool, _app_config, user_input), fields(session = session_id))]
@@ -475,6 +574,8 @@ pub async fn execute_turn(
         max_tokens: Some(session_config.max_tokens as u32),
         frequency_penalty: Some(session_config.frequency_penalty),
         presence_penalty: Some(session_config.presence_penalty),
+        tools: None,
+        tool_choice: None,
         stream: false,
     };
 
@@ -560,6 +661,27 @@ pub async fn execute_turn(
         model: model_for_trace,
     };
 
+    let variable_proposal = propose_single_agent_variable_changes(
+        pool,
+        &model,
+        &session_config,
+        user_input,
+        &narrative_text,
+        &context_bundle,
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!(
+            session = session_id,
+            turn = turn_number,
+            "Single-agent variable tool failed: {}",
+            e
+        );
+        e
+    })
+    .ok()
+    .flatten();
+
     // Single transaction: user msg + assistant msg + traces + current_turn
     tracing::info!(
         session = session_id,
@@ -567,13 +689,14 @@ pub async fn execute_turn(
         "Persisting turn to database"
     );
     let mut tx = pool.begin().await?;
-    turn_finalizer::finalize_turn(
+    turn_finalizer::finalize_turn_with_options(
         &mut tx,
         session_id,
         turn_number,
         user_input,
         &narrative_text,
         &[trace],
+        false,
     )
     .await?;
     tx.commit().await?;
@@ -601,17 +724,7 @@ pub async fn execute_turn(
     )
     .await;
 
-    // State proposals (currently always empty — placeholder for future LLM structured output)
-    let writer_draft = WriterDraft {
-        narrative_text: narrative_text.clone(),
-        memory_candidates: MemoryProposal::default(),
-    };
-    if !writer_draft.memory_candidates.state_changes.is_empty() {
-        let proposal = StateChangeProposal {
-            proposed_by: "single_agent".to_string(),
-            risk: "low".to_string(),
-            changes: writer_draft.memory_candidates.state_changes.clone(),
-        };
+    if let Some(proposal) = variable_proposal {
         turn_finalizer::persist_turn_extras(pool, session_id, turn_number, &None, &[proposal])
             .await;
     }
@@ -641,7 +754,8 @@ Guidelines:
 - Describe environments, emotions, and actions with sensory detail
 - Advance the story naturally based on user input
 - Keep track of established facts, relationships, and ongoing plot threads
-- Output only narrative text — no meta-commentary or out-of-character notes"#.to_string()
+- Output only narrative text — no meta-commentary or out-of-character notes
+- Do not output <UpdateVariable>, <Analysis>, variable audits, state update instructions, or tool-call text"#.to_string()
 }
 
 async fn generate_title(
@@ -662,12 +776,15 @@ async fn generate_title(
             role: "user".to_string(),
             content: prompt,
             reasoning_content: None,
+            tool_calls: None,
         }],
         temperature: Some(0.3),
         top_p: None,
         max_tokens: Some(10000),
         frequency_penalty: None,
         presence_penalty: None,
+        tools: None,
+        tool_choice: None,
         stream: false,
     };
 
@@ -926,6 +1043,8 @@ pub async fn execute_turn_stream(
         max_tokens: Some(session_config.max_tokens as u32),
         frequency_penalty: Some(session_config.frequency_penalty),
         presence_penalty: Some(session_config.presence_penalty),
+        tools: None,
+        tool_choice: None,
         stream: true,
     };
 
@@ -1063,6 +1182,8 @@ pub async fn regenerate_turn(
         max_tokens: Some(session_config.max_tokens as u32),
         frequency_penalty: Some(session_config.frequency_penalty),
         presence_penalty: Some(session_config.presence_penalty),
+        tools: None,
+        tool_choice: None,
         stream: false,
     };
 

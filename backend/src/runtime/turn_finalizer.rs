@@ -42,6 +42,27 @@ pub async fn finalize_turn(
     narrative: &str,
     traces: &[AgentTrace],
 ) -> Result<(), AppError> {
+    finalize_turn_with_options(
+        tx,
+        session_id,
+        turn_number,
+        user_input,
+        narrative,
+        traces,
+        true,
+    )
+    .await
+}
+
+pub async fn finalize_turn_with_options(
+    tx: &mut Transaction<'_, Sqlite>,
+    session_id: &str,
+    turn_number: i32,
+    user_input: &str,
+    narrative: &str,
+    traces: &[AgentTrace],
+    persist_inline_variable_updates: bool,
+) -> Result<(), AppError> {
     let now = chrono::Utc::now().to_rfc3339();
     let variable_extraction = variable_update::extract(narrative);
     let assistant_content = if variable_extraction.display_text.is_empty() {
@@ -136,8 +157,10 @@ pub async fn finalize_turn(
         .execute(&mut **tx)
         .await?;
 
-    variable_update::persist_extraction_tx(tx, session_id, turn_number, &variable_extraction)
-        .await?;
+    if persist_inline_variable_updates {
+        variable_update::persist_extraction_tx(tx, session_id, turn_number, &variable_extraction)
+            .await?;
+    }
 
     Ok(())
 }

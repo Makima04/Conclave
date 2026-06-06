@@ -78,11 +78,13 @@ pub async fn propose_variable_changes(
                 role: "system".to_string(),
                 content: system_prompt,
                 reasoning_content: None,
+                tool_calls: None,
             },
             ChatMessage {
                 role: "user".to_string(),
                 content: user_content,
                 reasoning_content: None,
+                tool_calls: None,
             },
         ],
         temperature: Some(0.2),
@@ -90,6 +92,8 @@ pub async fn propose_variable_changes(
         max_tokens: Some(4096),
         frequency_penalty: None,
         presence_penalty: None,
+        tools: None,
+        tool_choice: None,
         stream: false,
     };
 

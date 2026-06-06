@@ -40,6 +40,8 @@ pub struct SessionConfig {
     pub parser_enabled: bool,
     #[serde(default)]
     pub compression_model: String,
+    #[serde(default)]
+    pub variable_tool_model: String,
     #[serde(default = "default_render_mode")]
     pub render_mode: String,
     #[serde(default)]

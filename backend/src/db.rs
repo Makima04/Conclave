@@ -194,6 +194,29 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         tracing::debug!("Added parse_status and parsed_entries columns to world_books");
     }
 
+    let has_single_agent_parse_status: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('world_books') WHERE name = 'single_agent_parse_status'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+
+    if !has_single_agent_parse_status {
+        sqlx::raw_sql(
+            "ALTER TABLE world_books ADD COLUMN single_agent_parse_status TEXT NOT NULL DEFAULT 'none'",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::raw_sql(
+            "ALTER TABLE world_books ADD COLUMN single_agent_parsed_entries TEXT NOT NULL DEFAULT '[]'",
+        )
+        .execute(pool)
+        .await?;
+        tracing::debug!(
+            "Added single_agent_parse_status and single_agent_parsed_entries columns to world_books"
+        );
+    }
+
     tracing::info!("All database migrations applied");
     Ok(())
 }

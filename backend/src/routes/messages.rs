@@ -13,14 +13,60 @@ use tokio::sync::broadcast;
 
 use crate::config::AppConfig;
 use crate::error::AppError;
-use crate::runtime::compression;
 use crate::runtime::executor;
 use crate::runtime::executor::ActiveTurns;
+use crate::runtime::sse_types::SseEvent;
 use crate::runtime::state_initializer;
 use crate::runtime::turn_finalizer;
+use crate::runtime::turn_service;
 use crate::runtime::variable_update;
 
 type SseStream = Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>;
+
+fn sse_event_to_axum_event(event: SseEvent) -> Event {
+    match event {
+        SseEvent::TurnStart { turn_number } => Event::default()
+            .event("turn_start")
+            .data(serde_json::json!({"turn_number": turn_number}).to_string()),
+        SseEvent::AgentStatus {
+            agent_type,
+            label,
+            status,
+        } => Event::default().event("agent_status").data(
+            serde_json::json!({
+                "agent_type": agent_type,
+                "label": label,
+                "status": status
+            })
+            .to_string(),
+        ),
+        SseEvent::MessageDelta { content } => Event::default()
+            .event("message_delta")
+            .data(serde_json::json!({"content": content}).to_string()),
+        SseEvent::StreamError { error } => Event::default()
+            .event("stream_error")
+            .data(serde_json::json!({"error": error}).to_string()),
+        SseEvent::TurnEnd {
+            turn_number,
+            message_content,
+        } => Event::default().event("turn_end").data(
+            serde_json::json!({
+                "turn_number": turn_number,
+                "message_content": message_content
+            })
+            .to_string(),
+        ),
+        SseEvent::MemoryStart { turn_number } => Event::default()
+            .event("memory_start")
+            .data(serde_json::json!({"turn_number": turn_number}).to_string()),
+        SseEvent::MemoryError { error } => Event::default()
+            .event("memory_error")
+            .data(serde_json::json!({"error": error}).to_string()),
+        SseEvent::TurnReady { turn_number } => Event::default()
+            .event("turn_ready")
+            .data(serde_json::json!({"turn_number": turn_number}).to_string()),
+    }
+}
 
 pub struct AppState {
     pub pool: SqlitePool,
@@ -70,6 +116,16 @@ pub async fn apply_opening(
             .await?;
     if session_exists.is_none() {
         return Err(AppError::NotFound("Session not found".to_string()));
+    }
+
+    let has_started: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM messages WHERE session_id = ? AND turn_number > 0 LIMIT 1",
+    )
+    .bind(&session_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    if has_started.is_some() {
+        return Err(AppError::BadRequest("对话开始后不能切换开场白".to_string()));
     }
 
     if let Err(e) =
@@ -164,18 +220,7 @@ pub async fn send_message(
     let _guard = session_lock.lock().await;
 
     // Atomic status check-and-set: only proceed if session is in a recoverable state
-    let status_result = sqlx::query(
-        "UPDATE sessions SET status = 'processing' WHERE id = ? AND status IN ('idle', 'failed_generation', 'failed_compression', 'needs_repair')"
-    )
-    .bind(&session_id)
-    .execute(&state.pool)
-    .await?;
-
-    if status_result.rows_affected() == 0 {
-        return Err(AppError::Conflict(
-            "会话正在处理中，请稍后再试。".to_string(),
-        ));
-    }
+    turn_service::acquire_processing_status(&state.pool, &session_id).await?;
 
     if body.stream.unwrap_or(false) {
         tracing::info!(session = %session_id, "streaming turn start, content_len={}", body.content.len());
@@ -202,11 +247,7 @@ pub async fn send_message(
             Err(e) => {
                 // execute_turn_stream failed before spawning background task — reset status
                 state.active_turns.lock().await.remove(&session_id);
-                let _ =
-                    sqlx::query("UPDATE sessions SET status = 'failed_generation' WHERE id = ?")
-                        .bind(&session_id)
-                        .execute(&state.pool)
-                        .await;
+                turn_service::mark_failed_generation(&state.pool, &session_id).await;
                 return Err(e);
             }
         };
@@ -295,11 +336,7 @@ pub async fn send_message(
                     "LLM stream failed before persistence: {}",
                     error
                 );
-                let _ =
-                    sqlx::query("UPDATE sessions SET status = 'failed_generation' WHERE id = ?")
-                        .bind(&session_id_clone)
-                        .execute(&pool)
-                        .await;
+                turn_service::mark_failed_generation(&pool, &session_id_clone).await;
                 let _ = broadcast_tx.send(crate::runtime::sse_types::SseEvent::StreamError {
                     error: error.clone(),
                 });
@@ -334,23 +371,46 @@ pub async fn send_message(
             };
 
             // Finalize: user msg + assistant msg + traces + current_turn in one transaction
-            let (commit_traces, commit_compression, compression_job, state_proposals) = commit_data
-                .as_ref()
-                .and_then(|data| data.lock().ok().and_then(|guard| guard.clone()))
-                .map(|(traces, compression, job, proposals)| {
-                    (Some(traces), compression, job, proposals)
-                })
-                .unwrap_or((None, None, None, vec![]));
+            let (commit_traces, commit_compression, compression_job, mut state_proposals) =
+                commit_data
+                    .as_ref()
+                    .and_then(|data| data.lock().ok().and_then(|guard| guard.clone()))
+                    .map(|(traces, compression, job, proposals)| {
+                        (Some(traces), compression, job, proposals)
+                    })
+                    .unwrap_or((None, None, None, vec![]));
+            let is_multi_agent_commit = commit_data.is_some();
+            if !is_multi_agent_commit {
+                match executor::propose_single_agent_variable_changes_for_session(
+                    &pool,
+                    &session_id_clone,
+                    turn_number,
+                    &user_input,
+                    &accumulated,
+                )
+                .await
+                {
+                    Ok(Some(proposal)) => state_proposals.push(proposal),
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!(
+                        session = %session_id_clone,
+                        turn = turn_number,
+                        "Single-agent variable tool failed: {}",
+                        e
+                    ),
+                }
+            }
             let traces_ref = commit_traces.as_deref().unwrap_or(&[]);
             let finalize_result: Result<(), String> = async {
                 let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-                turn_finalizer::finalize_turn(
+                turn_finalizer::finalize_turn_with_options(
                     &mut tx,
                     &session_id_clone,
                     turn_number,
                     &user_input,
                     &accumulated,
                     traces_ref,
+                    is_multi_agent_commit,
                 )
                 .await
                 .map_err(|e| e.to_string())?;
@@ -369,11 +429,7 @@ pub async fn send_message(
                     .event("stream_error")
                     .data(serde_json::json!({"error": error}).to_string())));
                 // Set failed status — next send_message will allow retry
-                let _ =
-                    sqlx::query("UPDATE sessions SET status = 'failed_generation' WHERE id = ?")
-                        .bind(&session_id_clone)
-                        .execute(&pool)
-                        .await;
+                turn_service::mark_failed_generation(&pool, &session_id_clone).await;
                 let _ = broadcast_tx
                     .send(crate::runtime::sse_types::SseEvent::TurnReady { turn_number });
                 active_turns_clone
@@ -445,10 +501,7 @@ pub async fn send_message(
                             .await;
                         }
                     }
-                    let _ = sqlx::query("UPDATE sessions SET status = 'idle' WHERE id = ?")
-                        .bind(&session_id_clone)
-                        .execute(&pool)
-                        .await;
+                    turn_service::mark_idle(&pool, &session_id_clone).await;
                 } else {
                     if !state_proposals.is_empty() {
                         turn_finalizer::persist_turn_extras(
@@ -536,21 +589,13 @@ pub async fn send_message(
             {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = sqlx::query(
-                        "UPDATE sessions SET status = 'failed_generation' WHERE id = ?",
-                    )
-                    .bind(&session_id)
-                    .execute(&state.pool)
-                    .await;
+                    turn_service::mark_failed_generation(&state.pool, &session_id).await;
                     return Err(e);
                 }
             };
 
         // Non-streaming succeeded — set idle
-        let _ = sqlx::query("UPDATE sessions SET status = 'idle' WHERE id = ?")
-            .bind(&session_id)
-            .execute(&state.pool)
-            .await;
+        turn_service::mark_idle(&state.pool, &session_id).await;
 
         let stream = async_stream::stream! {
             yield Ok(Event::default()
@@ -900,56 +945,10 @@ pub async fn reconnect_stream(
         loop {
             match rx.recv().await {
                 Ok(event) => {
-                    use crate::runtime::sse_types::SseEvent;
-                    match event {
-                        SseEvent::TurnStart { turn_number } => {
-                            yield Ok(Event::default()
-                                .event("turn_start")
-                                .data(serde_json::json!({"turn_number": turn_number}).to_string()));
-                        }
-                        SseEvent::AgentStatus { agent_type, label, status } => {
-                            yield Ok(Event::default()
-                                .event("agent_status")
-                                .data(serde_json::json!({
-                                    "agent_type": agent_type,
-                                    "label": label,
-                                    "status": status
-                                }).to_string()));
-                        }
-                        SseEvent::MessageDelta { content } => {
-                            yield Ok(Event::default()
-                                .event("message_delta")
-                                .data(serde_json::json!({"content": content}).to_string()));
-                        }
-                        SseEvent::StreamError { error } => {
-                            yield Ok(Event::default()
-                                .event("stream_error")
-                                .data(serde_json::json!({"error": error}).to_string()));
-                        }
-                        SseEvent::TurnEnd { turn_number, message_content } => {
-                            yield Ok(Event::default()
-                                .event("turn_end")
-                                .data(serde_json::json!({
-                                    "turn_number": turn_number,
-                                    "message_content": message_content
-                                }).to_string()));
-                        }
-                        SseEvent::MemoryStart { turn_number } => {
-                            yield Ok(Event::default()
-                                .event("memory_start")
-                                .data(serde_json::json!({"turn_number": turn_number}).to_string()));
-                        }
-                        SseEvent::MemoryError { error } => {
-                            yield Ok(Event::default()
-                                .event("memory_error")
-                                .data(serde_json::json!({"error": error}).to_string()));
-                        }
-                        SseEvent::TurnReady { turn_number } => {
-                            yield Ok(Event::default()
-                                .event("turn_ready")
-                                .data(serde_json::json!({"turn_number": turn_number}).to_string()));
-                            break;
-                        }
+                    let is_ready = matches!(event, SseEvent::TurnReady { .. });
+                    yield Ok(sse_event_to_axum_event(event));
+                    if is_ready {
+                        break;
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {

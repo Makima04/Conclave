@@ -42,11 +42,13 @@ where
                 role: "system".to_string(),
                 content: "你是JSON修复助手。只输出修复后的纯JSON，不要其他文字。".to_string(),
                 reasoning_content: None,
+                tool_calls: None,
             },
             ChatMessage {
                 role: "user".to_string(),
                 content: repair_prompt,
                 reasoning_content: None,
+                tool_calls: None,
             },
         ],
         temperature: Some(0.1),
@@ -54,6 +56,8 @@ where
         max_tokens: Some(4096),
         frequency_penalty: None,
         presence_penalty: None,
+        tools: None,
+        tool_choice: None,
         stream: false,
     };
 

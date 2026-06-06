@@ -17,11 +17,13 @@ pub fn build_chat_request(
                 role: "system".to_string(),
                 content: system_prompt.to_string(),
                 reasoning_content: None,
+                tool_calls: None,
             },
             ChatMessage {
                 role: "user".to_string(),
                 content: user_content.to_string(),
                 reasoning_content: None,
+                tool_calls: None,
             },
         ],
         temperature: Some(temperature),
@@ -29,6 +31,8 @@ pub fn build_chat_request(
         max_tokens: Some(max_tokens as u32),
         frequency_penalty: None,
         presence_penalty: None,
+        tools: None,
+        tool_choice: None,
         stream: false,
     }
 }

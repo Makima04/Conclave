@@ -69,11 +69,13 @@ pub async fn execute_sub_agent(
                 role: "system".to_string(),
                 content: system_prompt,
                 reasoning_content: None,
+                tool_calls: None,
             },
             ChatMessage {
                 role: "user".to_string(),
                 content: user_content,
                 reasoning_content: None,
+                tool_calls: None,
             },
         ],
         temperature: Some(effective_temperature),
@@ -81,6 +83,8 @@ pub async fn execute_sub_agent(
         max_tokens: Some(effective_max_tokens),
         frequency_penalty: Some(0.0),
         presence_penalty: Some(0.0),
+        tools: None,
+        tool_choice: None,
         stream: false,
     };
 

@@ -87,12 +87,26 @@ pub async fn load_worldbook_user_context(
         return Ok(String::new());
     };
 
-    let parsed_json: Option<String> = sqlx::query_scalar(
-        "SELECT parsed_entries FROM world_books WHERE id = ? AND parse_status = 'done'",
-    )
-    .bind(world_pack_id)
-    .fetch_optional(pool)
-    .await?;
+    let parsed_json: Option<String> = {
+        let single_agent_json: Option<String> = sqlx::query_scalar(
+            "SELECT single_agent_parsed_entries FROM world_books WHERE id = ? AND single_agent_parse_status = 'done'",
+        )
+        .bind(world_pack_id)
+        .fetch_optional(pool)
+        .await?;
+
+        match single_agent_json {
+            Some(json) => Some(json),
+            None => {
+                sqlx::query_scalar(
+                    "SELECT parsed_entries FROM world_books WHERE id = ? AND parse_status = 'done'",
+                )
+                .bind(world_pack_id)
+                .fetch_optional(pool)
+                .await?
+            }
+        }
+    };
 
     let mut entries: Vec<(i32, String)> = if let Some(parsed_json) = parsed_json {
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&parsed_json).unwrap_or_default();

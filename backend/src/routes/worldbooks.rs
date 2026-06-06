@@ -28,7 +28,10 @@ pub struct WorldBookDetailResponse {
     pub original_format: String,
     pub source_data: String,
     pub parse_status: String,
+    pub single_agent_parse_status: String,
     pub entries: Vec<WorldBookEntryResponse>,
+    pub parsed_entries: Vec<crate::runtime::worldbook_parser::ParsedWorldBookEntry>,
+    pub single_agent_parsed_entries: Vec<crate::runtime::worldbook_parser::ParsedWorldBookEntry>,
     pub has_character_card: bool,
     pub character_card_id: Option<String>,
     pub created_at: String,
@@ -537,7 +540,10 @@ pub async fn import_worldbook(
         original_format: format_tag,
         source_data,
         parse_status: "none".to_string(),
+        single_agent_parse_status: "none".to_string(),
         entries: entry_responses,
+        parsed_entries: vec![],
+        single_agent_parsed_entries: vec![],
         has_character_card: card_meta.is_some(),
         character_card_id,
         created_at: now.clone(),
@@ -591,8 +597,8 @@ pub async fn get_worldbook(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<WorldBookDetailResponse>, AppError> {
-    let row = sqlx::query_as::<_, (String, String, String, String, String, String, String, String)>(
-        "SELECT id, name, description, original_format, source_data, COALESCE(parse_status, 'none'), created_at, updated_at FROM world_books WHERE id = ?"
+    let row = sqlx::query_as::<_, (String, String, String, String, String, String, String, String, String, String, String)>(
+        "SELECT id, name, description, original_format, source_data, COALESCE(parse_status, 'none'), COALESCE(single_agent_parse_status, 'none'), COALESCE(parsed_entries, '[]'), COALESCE(single_agent_parsed_entries, '[]'), created_at, updated_at FROM world_books WHERE id = ?"
     )
     .bind(&id)
     .fetch_optional(&state.pool)
@@ -606,9 +612,16 @@ pub async fn get_worldbook(
         original_format,
         source_data,
         parse_status,
+        single_agent_parse_status,
+        parsed_entries_json,
+        single_agent_parsed_entries_json,
         created_at,
         updated_at,
     ) = row;
+
+    let parsed_entries = serde_json::from_str(&parsed_entries_json).unwrap_or_else(|_| Vec::new());
+    let single_agent_parsed_entries =
+        serde_json::from_str(&single_agent_parsed_entries_json).unwrap_or_else(|_| Vec::new());
 
     // Check for character card
     let cc_id: Option<String> =
@@ -670,7 +683,10 @@ pub async fn get_worldbook(
         original_format,
         source_data,
         parse_status,
+        single_agent_parse_status,
         entries,
+        parsed_entries,
+        single_agent_parsed_entries,
         has_character_card: cc_id.is_some(),
         character_card_id: cc_id,
         created_at,
@@ -915,6 +931,28 @@ pub async fn parse_worldbook(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    parse_worldbook_with_mode(state, id, WorldBookParseMode::MultiAgent).await
+}
+
+/// POST /api/worldbooks/{id}/parse-single-agent — parse world book entries for single-agent routing
+pub async fn parse_worldbook_single_agent(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    parse_worldbook_with_mode(state, id, WorldBookParseMode::SingleAgent).await
+}
+
+#[derive(Debug, Clone, Copy)]
+enum WorldBookParseMode {
+    MultiAgent,
+    SingleAgent,
+}
+
+async fn parse_worldbook_with_mode(
+    state: Arc<AppState>,
+    id: String,
+    mode: WorldBookParseMode,
+) -> Result<Json<serde_json::Value>, AppError> {
     // Load entries
     let entry_rows = sqlx::query_as::<_, (String, String, String, String, String, i32, i32, i32, String, i32, String, i32, String, String)>(
         "SELECT id, world_book_id, keys, content, comment, constant, priority, enabled, position, selective, secondary_keys, selective_logic, created_at, updated_at FROM world_book_entries WHERE world_book_id = ? AND enabled = 1 ORDER BY priority DESC"
@@ -947,53 +985,109 @@ pub async fn parse_worldbook(
 
     // Mark as parsing
     let now = chrono::Utc::now().to_rfc3339();
-    sqlx::query("UPDATE world_books SET parse_status = 'parsing', updated_at = ? WHERE id = ?")
-        .bind(&now)
-        .bind(&id)
-        .execute(&state.pool)
-        .await?;
+    match mode {
+        WorldBookParseMode::MultiAgent => {
+            sqlx::query(
+                "UPDATE world_books SET parse_status = 'parsing', updated_at = ? WHERE id = ?",
+            )
+            .bind(&now)
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+        }
+        WorldBookParseMode::SingleAgent => {
+            sqlx::query(
+                "UPDATE world_books SET single_agent_parse_status = 'parsing', updated_at = ? WHERE id = ?",
+            )
+            .bind(&now)
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+        }
+    }
 
     // Load provider
     let provider = crate::runtime::executor::load_default_provider(&state.pool).await?;
     let model = crate::runtime::executor::load_provider_model(&state.pool).await?;
 
-    // Parse
-    match crate::runtime::worldbook_parser::parse_world_book_for_multi_agent(
-        &provider,
-        &model,
-        &entries_for_parse,
-    )
-    .await
-    {
+    let parsed_result = match mode {
+        WorldBookParseMode::MultiAgent => {
+            crate::runtime::worldbook_parser::parse_world_book_for_multi_agent(
+                &provider,
+                &model,
+                &entries_for_parse,
+            )
+            .await
+        }
+        WorldBookParseMode::SingleAgent => {
+            crate::runtime::worldbook_parser::parse_world_book_for_single_agent(
+                &provider,
+                &model,
+                &entries_for_parse,
+            )
+            .await
+        }
+    };
+
+    match parsed_result {
         Ok(parsed) => {
             let parsed_json = serde_json::to_string(&parsed).map_err(|e| {
                 AppError::Internal(format!("Failed to serialize parsed entries: {}", e))
             })?;
 
             let now2 = chrono::Utc::now().to_rfc3339();
-            sqlx::query("UPDATE world_books SET parse_status = 'done', parsed_entries = ?, updated_at = ? WHERE id = ?")
-                .bind(&parsed_json)
-                .bind(&now2)
-                .bind(&id)
-                .execute(&state.pool)
-                .await?;
+            match mode {
+                WorldBookParseMode::MultiAgent => {
+                    sqlx::query("UPDATE world_books SET parse_status = 'done', parsed_entries = ?, updated_at = ? WHERE id = ?")
+                        .bind(&parsed_json)
+                        .bind(&now2)
+                        .bind(&id)
+                        .execute(&state.pool)
+                        .await?;
+                }
+                WorldBookParseMode::SingleAgent => {
+                    sqlx::query("UPDATE world_books SET single_agent_parse_status = 'done', single_agent_parsed_entries = ?, updated_at = ? WHERE id = ?")
+                        .bind(&parsed_json)
+                        .bind(&now2)
+                        .bind(&id)
+                        .execute(&state.pool)
+                        .await?;
+                }
+            }
 
-            tracing::info!(book_id = %id, entries = parsed.len(), "World book parsed for multi-agent");
+            tracing::info!(book_id = %id, entries = parsed.len(), mode = ?mode, "World book parsed");
 
             Ok(Json(serde_json::json!({
                 "status": "done",
                 "entries": parsed,
+                "mode": match mode {
+                    WorldBookParseMode::MultiAgent => "multi_agent",
+                    WorldBookParseMode::SingleAgent => "single_agent",
+                },
             })))
         }
         Err(e) => {
             let now2 = chrono::Utc::now().to_rfc3339();
-            sqlx::query(
-                "UPDATE world_books SET parse_status = 'error', updated_at = ? WHERE id = ?",
-            )
-            .bind(&now2)
-            .bind(&id)
-            .execute(&state.pool)
-            .await?;
+            match mode {
+                WorldBookParseMode::MultiAgent => {
+                    sqlx::query(
+                        "UPDATE world_books SET parse_status = 'error', updated_at = ? WHERE id = ?",
+                    )
+                    .bind(&now2)
+                    .bind(&id)
+                    .execute(&state.pool)
+                    .await?;
+                }
+                WorldBookParseMode::SingleAgent => {
+                    sqlx::query(
+                        "UPDATE world_books SET single_agent_parse_status = 'error', updated_at = ? WHERE id = ?",
+                    )
+                    .bind(&now2)
+                    .bind(&id)
+                    .execute(&state.pool)
+                    .await?;
+                }
+            }
 
             tracing::error!(book_id = %id, error = %e, "World book parse failed");
             Err(e)

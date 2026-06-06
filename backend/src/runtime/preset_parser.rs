@@ -179,11 +179,13 @@ async fn classify_batch(
                 role: "system".to_string(),
                 content: CLASSIFY_SYSTEM_PROMPT.to_string(),
                 reasoning_content: None,
+                tool_calls: None,
             },
             ChatMessage {
                 role: "user".to_string(),
                 content: user_content,
                 reasoning_content: None,
+                tool_calls: None,
             },
         ],
         temperature: Some(0.3),
@@ -191,6 +193,8 @@ async fn classify_batch(
         max_tokens: Some(LLM_MAX_TOKENS),
         frequency_penalty: Some(0.0),
         presence_penalty: Some(0.0),
+        tools: None,
+        tool_choice: None,
         stream: false,
     };
 

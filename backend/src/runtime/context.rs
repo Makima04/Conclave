@@ -104,8 +104,14 @@ async fn build_context_inner(
             .fetch_optional(pool)
             .await?;
 
+    let session_mode: String = sqlx::query_scalar("SELECT mode FROM sessions WHERE id = ?")
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?
+        .unwrap_or_else(|| "single_agent".to_string());
+
     let world_book_entries = if let Some(ref wb_id) = world_pack_id {
-        load_world_book_entries(pool, wb_id)
+        load_world_book_entries(pool, wb_id, &session_mode)
             .await
             .unwrap_or_default()
     } else {
@@ -233,14 +239,37 @@ async fn load_knowledge_events(
 async fn load_world_book_entries(
     pool: &SqlitePool,
     wb_id: &str,
+    session_mode: &str,
 ) -> Result<Vec<WorldBookContextEntry>, AppError> {
-    // Try parsed entries first
-    let parsed_json: Option<String> = sqlx::query_scalar(
-        "SELECT parsed_entries FROM world_books WHERE id = ? AND parse_status = 'done'",
-    )
-    .bind(wb_id)
-    .fetch_optional(pool)
-    .await?;
+    // Try parsed entries first. Single-agent sessions use their own routing parse;
+    // multi-agent keeps the legacy parsed_entries column.
+    let parsed_json: Option<String> = if session_mode == "single_agent" {
+        let single_agent_json: Option<String> = sqlx::query_scalar(
+            "SELECT single_agent_parsed_entries FROM world_books WHERE id = ? AND single_agent_parse_status = 'done'",
+        )
+        .bind(wb_id)
+        .fetch_optional(pool)
+        .await?;
+
+        match single_agent_json {
+            Some(json) => Some(json),
+            None => {
+                sqlx::query_scalar(
+                    "SELECT parsed_entries FROM world_books WHERE id = ? AND parse_status = 'done'",
+                )
+                .bind(wb_id)
+                .fetch_optional(pool)
+                .await?
+            }
+        }
+    } else {
+        sqlx::query_scalar(
+            "SELECT parsed_entries FROM world_books WHERE id = ? AND parse_status = 'done'",
+        )
+        .bind(wb_id)
+        .fetch_optional(pool)
+        .await?
+    };
 
     if let Some(json) = parsed_json {
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap_or_default();

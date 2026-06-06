@@ -277,6 +277,7 @@ export default function Settings() {
                 <ModelPicker label="Master 模型" value={globalDefaults.master_model} providers={providers} defaultText="使用默认模型配置" onChange={value => updateGlobalDefault('master_model', value)} />
                 <ModelPicker label="Sub Agent 模型" value={globalDefaults.sub_agent_model} providers={providers} defaultText="使用默认模型配置" onChange={value => updateGlobalDefault('sub_agent_model', value)} />
                 <ModelPicker label="压缩模型" value={globalDefaults.compression_model} providers={providers} defaultText="使用 Sub Agent 模型" onChange={value => updateGlobalDefault('compression_model', value)} />
+                <ModelPicker label="变量工具模型" value={globalDefaults.variable_tool_model} providers={providers} defaultText="复用主模型配置" onChange={value => updateGlobalDefault('variable_tool_model', value)} />
                 <div className="form-field"><label>User 自动模式</label><select value={globalDefaults.user_auto_mode} onChange={e => updateGlobalDefault('user_auto_mode', e.target.value)}><option value="ask">Ask</option><option value="auto">Auto</option><option value="manual">Manual</option></select></div>
               </div>
               <div className="global-default-grid">

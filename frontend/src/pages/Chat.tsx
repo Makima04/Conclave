@@ -5,8 +5,10 @@ import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import * as api from '../api/client';
-import type { CharacterCard, Message, RenderMode, SessionConfig, UserPersona, UserSettingMergeStrategy } from '../api/types';
+import { consumeSseResponse } from '../api/sse';
+import type { CharacterCard, Message, ProviderConfig, RenderMode, SessionConfig, UserPersona, UserSettingMergeStrategy } from '../api/types';
 import { DEFAULT_SESSION_CONFIG } from '../api/types';
+import { describeModelRef, ModelPicker } from '../settings/modelSelection';
 import {
   loadGlobalSessionDefaults,
   loadUserPersonaPresets,
@@ -273,6 +275,13 @@ function sanitizeHtmlFragment(source: string): string {
     .replace(/<embed\b[\s\S]*?>/gi, '');
 }
 
+function serializeSandboxData(value: any): string {
+  return JSON.stringify(value ?? {})
+    .replace(/</g, '\\u003C')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
 function parseRegexLiteral(source: string): RegExp | null {
   if (!source.startsWith('/')) return null;
   const lastSlash = source.lastIndexOf('/');
@@ -328,10 +337,11 @@ function renderCardFormattedContent(card: CharacterCard | null, content: string)
   return renderInlineDecorators(formatted);
 }
 
-function buildSandboxDocument(innerHtml: string): string {
+function buildSandboxDocument(innerHtml: string, variables: any): string {
   const body = /<html[\s\S]*?>[\s\S]*<\/html>/i.test(innerHtml)
     ? innerHtml
     : `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>${innerHtml}</body></html>`;
+  const variablesJson = serializeSandboxData(variables);
 
   const shim = `
 <script>
@@ -427,6 +437,19 @@ img,video{max-width:100%;height:auto;}
   const post = (message) => parent.postMessage(message, '*');
   const safeText = (value) => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 160);
   const notify = () => post({ type: 'sandbox-resize', height: Math.min(1800, Math.max(360, document.documentElement.scrollHeight || document.body.scrollHeight || 0)) });
+  const runtimeVariables = ${variablesJson};
+  const runtimeMessage = Object.freeze({
+    message_id: 0,
+    id: 0,
+    swipe_id: 0,
+    swipes: [],
+    data: Object.freeze({
+      stat_data: runtimeVariables,
+      display_data: runtimeVariables,
+      variables: runtimeVariables,
+    }),
+    variables: runtimeVariables,
+  });
   window.__XRPBridge = Object.freeze({
     applyGreeting: (index) => post({ type: 'card-sandbox-action', action: 'applyGreeting', payload: { index: Number(index) } }),
     readVariables: (paths) => post({ type: 'card-sandbox-action', action: 'readVariables', payload: { paths: Array.isArray(paths) ? paths.slice(0, 50) : [] } }),
@@ -434,7 +457,11 @@ img,video{max-width:100%;height:auto;}
     openStatusPanel: () => post({ type: 'card-sandbox-action', action: 'openStatusPanel', payload: {} }),
     submitFreeStart: (payload) => post({ type: 'card-sandbox-action', action: 'submitFreeStart', payload: payload && typeof payload === 'object' ? payload : {} }),
   });
-  window.getChatMessages = async () => [{ message_id: 0, swipes: [] }];
+  window.getCurrentMessageId = () => 0;
+  window.getChatMessages = async () => [runtimeMessage];
+  window.getChatMessage = async () => runtimeMessage;
+  window.getVariables = async () => runtimeVariables;
+  window.__XRPVariables = runtimeVariables;
   window.setChatMessage = (message, messageId, options) => {
     const swipeId = Number(options?.swipe_id);
     post({ type: 'card-sandbox-action', action: 'setChatMessage', payload: { message: String(message || '').slice(0, 8000), swipeId: Number.isFinite(swipeId) ? swipeId : undefined } });
@@ -895,6 +922,8 @@ function SchemaWidget({ widget, variables }: { widget: UiWidget; variables: any 
 }
 
 function CustomStatusRenderer({ schema, variables }: { schema: UiSchema | null; variables: any }) {
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(() => new Set());
+
   if (!schema) return null;
 
   const worldDate = schema.datePaths
@@ -912,6 +941,18 @@ function CustomStatusRenderer({ schema, variables }: { schema: UiSchema | null; 
     '--schema-shadow': schema.theme.shadow,
   } as React.CSSProperties;
 
+  function toggleSection(title: string) {
+    setExpandedSections(prev => {
+      const next = new Set(prev);
+      if (next.has(title)) {
+        next.delete(title);
+      } else {
+        next.add(title);
+      }
+      return next;
+    });
+  }
+
   return (
     <details className="schema-status-shell" open={initialized} style={style}>
       <summary>
@@ -925,16 +966,29 @@ function CustomStatusRenderer({ schema, variables }: { schema: UiSchema | null; 
           </div>
         )}
 
-        {schema.sections.map(section => (
-          <div className="schema-section" key={section.title}>
-            <div className="schema-section-title">{section.title}</div>
-            <div className="schema-grid">
-              {section.widgets.map((widget, index) => (
-                <SchemaWidget key={`${section.title}-${index}`} widget={widget} variables={variables} />
-              ))}
+        {schema.sections.map(section => {
+          const expanded = expandedSections.has(section.title);
+          return (
+            <div className={`schema-section ${expanded ? 'expanded' : ''}`} key={section.title}>
+              <button
+                className="schema-section-title"
+                type="button"
+                aria-expanded={expanded}
+                onClick={() => toggleSection(section.title)}
+              >
+                <span>{section.title}</span>
+                <span className="schema-section-arrow">▼</span>
+              </button>
+              {expanded && (
+                <div className="schema-grid">
+                  {section.widgets.map((widget, index) => (
+                    <SchemaWidget key={`${section.title}-${index}`} widget={widget} variables={variables} />
+                  ))}
+                </div>
+              )}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </details>
   );
@@ -1130,11 +1184,11 @@ type SandboxCardAction = {
   payload: any;
 };
 
-function SandboxHtmlRenderer({ html, onAction }: { html: string; onAction?: (action: SandboxCardAction) => void }) {
+function SandboxHtmlRenderer({ html, variables, onAction }: { html: string; variables: any; onAction?: (action: SandboxCardAction) => void }) {
   const [height, setHeight] = useState(640);
   const frameIdRef = useRef(`sandbox-${Math.random().toString(36).slice(2)}`);
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const documentHtml = React.useMemo(() => buildSandboxDocument(html), [html]);
+  const documentHtml = React.useMemo(() => buildSandboxDocument(html, variables || {}), [html, variables]);
 
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
@@ -1192,11 +1246,13 @@ function MessageContent({
 
   const schema = buildStatusSchema(card);
   const marker = '<StatusPlaceHolderImpl/>';
+  const contentHasStatusMarker = content.includes(marker);
+  const statusContent = contentHasStatusMarker ? content : `${content.trim()}\n\n${marker}`;
 
   // Schema mode: status + platform + cover, but NO sandbox iframe
   if (renderMode === 'schema') {
-    if (schema && content.includes(marker)) {
-      const parts = content.split(marker);
+    if (schema) {
+      const parts = statusContent.split(marker);
       return (
         <>
           {parts.map((part, index) => (
@@ -1245,12 +1301,12 @@ function MessageContent({
   // Sandbox mode: render the author's original UI first. Platform schema is only
   // a fallback when the card cannot provide runnable HTML for this message.
   if (renderMode === 'sandbox') {
-    const sandboxHtml = getSandboxHtmlForContent(card, content);
+    const sandboxHtml = getSandboxHtmlForContent(card, statusContent);
     if (sandboxHtml) {
-      const contentWithoutTrigger = cleanCardDisplayText(removeUiTriggers(card, content));
+      const contentWithoutTrigger = cleanCardDisplayText(removeUiTriggers(card, statusContent));
       return (
         <>
-          <SandboxHtmlRenderer html={sandboxHtml} onAction={onSandboxAction} />
+          <SandboxHtmlRenderer html={sandboxHtml} variables={variables || {}} onAction={onSandboxAction} />
           {contentWithoutTrigger && renderCardFormattedContent(card, contentWithoutTrigger)}
         </>
       );
@@ -1282,8 +1338,8 @@ function MessageContent({
   // Status card takes priority over sandbox — the status-bar regex_script
   // contains <style>/<div>/<script> and would otherwise be mis-routed into
   // the iframe sandbox where SillyTavern globals (getChatMessages etc.) don't exist.
-  if (schema && content.includes(marker)) {
-    const parts = content.split(marker);
+  if (schema) {
+    const parts = statusContent.split(marker);
     return (
       <>
         {parts.map((part, index) => (
@@ -1300,12 +1356,12 @@ function MessageContent({
     );
   }
 
-  const sandboxHtml = getSandboxHtmlForContent(card, content);
+  const sandboxHtml = getSandboxHtmlForContent(card, statusContent);
   if (sandboxHtml) {
-    const contentWithoutTrigger = cleanCardDisplayText(removeUiTriggers(card, content));
+    const contentWithoutTrigger = cleanCardDisplayText(removeUiTriggers(card, statusContent));
     return (
       <>
-        <SandboxHtmlRenderer html={sandboxHtml} onAction={onSandboxAction} />
+        <SandboxHtmlRenderer html={sandboxHtml} variables={variables || {}} onAction={onSandboxAction} />
         {contentWithoutTrigger && renderCardFormattedContent(card, contentWithoutTrigger)}
       </>
     );
@@ -1424,6 +1480,7 @@ export default function Chat() {
   const [memoryPending, setMemoryPending] = useState(false);
   const [sessionState, setSessionState] = useState<any>({});
   const [characterCard, setCharacterCard] = useState<CharacterCard | null>(null);
+  const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [selectedGreetingIndex, setSelectedGreetingIndex] = useState(-1);
   const [showVariableDebug, setShowVariableDebug] = useState(false);
   // Inspector panel
@@ -1449,6 +1506,8 @@ export default function Chat() {
   const cardHasStatusRenderer = hasStatusRenderer(characterCard);
   const cardHasComplexUi = hasComplexCardUi(characterCard);
   const cardHasGameStart = isGameStartCard(characterCard);
+  const openingLocked = messages.some(msg => msg.turn_number > 0);
+  const canApplyOpening = !openingLocked;
   const debugPlatformSchema = buildPlatformCardSchema(characterCard, characterCard?.first_mes || '【GameStart】');
   const flatVariables = React.useMemo(
     () => flattenVariables(sessionState?.variables || {}),
@@ -1516,69 +1575,49 @@ export default function Chat() {
         return;
       }
 
-      // SSE stream connected — receive real-time agent_status + message_delta
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        let currentEvent = '';
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            currentEvent = line.slice(7).trim();
-          } else if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            try {
-              const parsed = JSON.parse(data);
-              if (currentEvent === 'agent_status') {
-                if (parsed.status === 'working') {
-                  setAgentStatuses(prev => [...prev.filter(s => s.agent_type !== parsed.agent_type), parsed]);
-                } else {
-                  setAgentStatuses(prev => prev.filter(s => s.agent_type !== parsed.agent_type));
-                }
-              }
-              if (currentEvent === 'message_delta' && parsed.content) {
-                setAgentStatuses([]);
-                setStreamText(prev => {
-                  const next = prev + parsed.content;
-                  streamTextRef.current = next;
-                  return next;
-                });
-              }
-              if (currentEvent === 'stream_error') {
-                setStreamError(parsed.error || '生成出现错误');
-              }
-              if (currentEvent === 'turn_end') {
-                // Reload final messages
-                const data = await api.listMessages(sessionId!);
-                setMessages(data.items);
-                setStreamText('');
-                streamTextRef.current = '';
-                setMemoryBusy(true);
-              }
-              if (currentEvent === 'memory_start') {
-                setMemoryBusy(true);
-              }
-              if (currentEvent === 'memory_error') {
-                setStreamError(parsed.error || '记忆整理失败，已允许继续');
-              }
-              if (currentEvent === 'turn_ready') {
-                setMemoryBusy(false);
-                clearPending();
-                stopRecovery();
-                return;
-              }
-            } catch { /* ignore parse errors */ }
+      await consumeSseResponse(res, async message => {
+        switch (message.event) {
+          case 'agent_status':
+            if (message.data.status === 'working') {
+              setAgentStatuses(prev => [...prev.filter(s => s.agent_type !== message.data.agent_type), message.data]);
+            } else {
+              setAgentStatuses(prev => prev.filter(s => s.agent_type !== message.data.agent_type));
+            }
+            break;
+          case 'message_delta':
+            if (message.data.content) {
+              setAgentStatuses([]);
+              setStreamText(prev => {
+                const next = prev + message.data.content;
+                streamTextRef.current = next;
+                return next;
+              });
+            }
+            break;
+          case 'stream_error':
+            setStreamError(message.data.error || '生成出现错误');
+            break;
+          case 'turn_end': {
+            const data = await api.listMessages(sessionId!);
+            setMessages(data.items);
+            setStreamText('');
+            streamTextRef.current = '';
+            setMemoryBusy(true);
+            break;
           }
+          case 'memory_start':
+            setMemoryBusy(true);
+            break;
+          case 'memory_error':
+            setStreamError(message.data.error || '记忆整理失败，已允许继续');
+            break;
+          case 'turn_ready':
+            setMemoryBusy(false);
+            clearPending();
+            stopRecovery();
+            return false;
         }
-      }
+      });
 
       // Stream closed without turn_end — turn likely finished, reload
       if (recoveringRef.current) {
@@ -1621,12 +1660,22 @@ export default function Chat() {
       }
     });
     loadSession();
+    loadProviders();
     loadSessionState();
     setUserPresets(loadUserPersonaPresets());
     return () => {
       stopRecovery();
     };
   }, [sessionId]);
+
+  async function loadProviders() {
+    try {
+      const data = await api.listProviders();
+      setProviders(data.items || []);
+    } catch (err) {
+      console.error('Failed to load providers:', err);
+    }
+  }
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -1802,76 +1851,80 @@ export default function Chat() {
     abortRef.current = api.sendMessageStream(
       sessionId!,
       content,
-      (event, data) => {
-        if (event === 'agent_status') {
-          if (data.status === 'working') {
-            setAgentStatuses(prev => [...prev.filter(s => s.agent_type !== data.agent_type), data]);
-          } else {
-            setAgentStatuses(prev => prev.filter(s => s.agent_type !== data.agent_type));
+      message => {
+        switch (message.event) {
+          case 'agent_status':
+            if (message.data.status === 'working') {
+              setAgentStatuses(prev => [...prev.filter(s => s.agent_type !== message.data.agent_type), message.data]);
+            } else {
+              setAgentStatuses(prev => prev.filter(s => s.agent_type !== message.data.agent_type));
+            }
+            break;
+          case 'message_delta':
+            if (message.data.content) {
+              setAgentStatuses([]);
+              setStreamError(null);
+              streamHadErrorRef.current = false;
+              setStreamText(prev => {
+                const next = prev + message.data.content;
+                streamTextRef.current = next;
+                return next;
+              });
+            }
+            break;
+          case 'stream_error':
+            streamHadErrorRef.current = true;
+            setStreamError(message.data.error || '生成出现错误，正在重试...');
+            break;
+          case 'memory_start':
+            setMemoryBusy(true);
+            break;
+          case 'memory_error':
+            setStreamError(message.data.error || '记忆整理失败，已允许继续');
+            break;
+          case 'turn_end': {
+            if (streamHadErrorRef.current) return;
+            setAgentStatuses([]);
+            setStreamError(null);
+            const messageContent = message.data.message_content || streamTextRef.current;
+            const assistantMsg: Message = {
+              id: `assistant-${Date.now()}`,
+              session_id: sessionId!,
+              turn_number: message.data.turn_number,
+              role: 'assistant',
+              content: messageContent,
+              variants: '[]',
+              variant_index: -1,
+              created_at: new Date().toISOString(),
+            };
+            setMessages(prev => [...prev, assistantMsg]);
+            setStreamText('');
+            streamTextRef.current = '';
+            setMemoryBusy(true);
+            if (message.data.turn_number === 1) {
+              (async () => {
+                for (let i = 0; i < 10; i++) {
+                  await new Promise(r => setTimeout(r, 2000));
+                  try {
+                    const s = await api.getSession(sessionId!);
+                    if (s.title) {
+                      setSessionTitle(s.title);
+                      return;
+                    }
+                  } catch {}
+                }
+              })();
+            }
+            break;
           }
-        }
-        if (event === 'message_delta' && data.content) {
-          setAgentStatuses([]);
-          setStreamError(null);
-          streamHadErrorRef.current = false;
-          setStreamText(prev => {
-            const next = prev + data.content;
-            streamTextRef.current = next;
-            return next;
-          });
-        }
-        if (event === 'stream_error') {
-          streamHadErrorRef.current = true;
-          setStreamError(data.error || '生成出现错误，正在重试...');
-        }
-        if (event === 'memory_start') {
-          setMemoryBusy(true);
-        }
-        if (event === 'memory_error') {
-          setStreamError(data.error || '记忆整理失败，已允许继续');
-        }
-        if (event === 'turn_end') {
-          if (streamHadErrorRef.current) return;
-          setAgentStatuses([]);
-          setStreamError(null);
-          const content = streamTextRef.current || data.message_content;
-          const assistantMsg: Message = {
-            id: `assistant-${Date.now()}`,
-            session_id: sessionId!,
-            turn_number: data.turn_number,
-            role: 'assistant',
-            content,
-            variants: '[]',
-            variant_index: -1,
-            created_at: new Date().toISOString(),
-          };
-          setMessages(prev => [...prev, assistantMsg]);
-          setStreamText('');
-          streamTextRef.current = '';
-          setMemoryBusy(true);
-          // Refresh session title after first turn (auto-generated title via background LLM call)
-          if (data.turn_number === 1) {
-            (async () => {
-              for (let i = 0; i < 10; i++) {
-                await new Promise(r => setTimeout(r, 2000));
-                try {
-                  const s = await api.getSession(sessionId!);
-                  if (s.title) {
-                    setSessionTitle(s.title);
-                    return;
-                  }
-                } catch {}
-              }
-            })();
-          }
-        }
-        if (event === 'turn_ready') {
-          setAgentStatuses([]);
-          setMemoryBusy(false);
-          setStreaming(false);
-          streamingRef.current = false;
-          clearPending();
-          loadSessionState();
+          case 'turn_ready':
+            setAgentStatuses([]);
+            setMemoryBusy(false);
+            setStreaming(false);
+            streamingRef.current = false;
+            clearPending();
+            loadSessionState();
+            break;
         }
       },
       (error) => {
@@ -1916,6 +1969,10 @@ export default function Chat() {
   }
 
   async function handleApplyGreeting() {
+    if (!canApplyOpening) {
+      setStreamError('对话开始后不能切换开场白');
+      return;
+    }
     const greeting = selectedGreetingText();
     await applyOpeningContent(greeting, '应用开场白失败');
   }
@@ -1924,7 +1981,7 @@ export default function Chat() {
     const content = cardHasStatusRenderer && !greeting.includes('<StatusPlaceHolderImpl/>')
       ? `${greeting.trim()}\n\n<StatusPlaceHolderImpl/>`
       : greeting;
-    if (!content || inputLocked || !sessionId) return;
+    if (!content || inputLocked || !sessionId || !canApplyOpening) return;
     try {
       const opening = await api.applyOpeningMessage(sessionId, content);
       setMessages(prev => {
@@ -1943,6 +2000,10 @@ export default function Chat() {
 
   async function applyOpeningSwipe(swipeId: number) {
     if (!characterCard) return;
+    if (!canApplyOpening) {
+      setStreamError('对话开始后不能切换开场白');
+      return;
+    }
     const index = swipeId - 1;
     const greeting = index >= 0
       ? characterCard.alternate_greetings[index]
@@ -2255,7 +2316,7 @@ export default function Chat() {
                   </div>
                 )}
               </div>
-              {(characterCard.first_mes || characterCard.alternate_greetings.length > 0) && (
+              {canApplyOpening && (characterCard.first_mes || characterCard.alternate_greetings.length > 0) && (
                 <div className="chat-card-greeting-controls">
                   {characterCard.alternate_greetings.length > 0 && (
                     <select
@@ -2604,6 +2665,7 @@ export default function Chat() {
                     <div className="summary-metric"><span>上下文</span><strong>{config.max_context_turns}</strong></div>
                   </div>
                   <div className="debug-row"><span className="debug-key">流式输出</span><span className="debug-value">{config.stream ? '开启' : '关闭'}</span></div>
+                  <div className="debug-row"><span className="debug-key">变量工具模型</span><span className="debug-value">{describeModelRef(config.variable_tool_model, providers, '复用主模型')}</span></div>
                   <div className="debug-row"><span className="debug-key">系统提示词</span><span className="debug-value">{config.system_prompt?.trim() ? '已自定义' : '默认'}</span></div>
                   <button className="inspector-btn primary full-width" onClick={() => setParamsEditing(true)}>编辑参数</button>
                 </>
@@ -2618,6 +2680,7 @@ export default function Chat() {
                     <div className="config-field"><label>存在惩罚</label><input type="number" value={config.presence_penalty} onChange={e => updateConfig('presence_penalty', Number(e.target.value))} min={-2} max={2} step={0.1} /></div>
                   </div>
                   <div className="config-field"><label>流式输出</label><button type="button" className={`toggle-btn ${config.stream ? 'on' : 'off'}`} onClick={() => updateConfig('stream', !config.stream)}>{config.stream ? '开启' : '关闭'}</button></div>
+                  <div className="config-field"><ModelPicker label="变量工具模型" value={config.variable_tool_model} providers={providers} defaultText="复用主模型配置" onChange={value => updateConfig('variable_tool_model', value)} /></div>
                 </>
               )}
             </div>

@@ -28,6 +28,7 @@ export interface SessionConfig {
   max_active_agents: number;
   parser_enabled: boolean;
   compression_model: string;
+  variable_tool_model: string;
   render_mode: RenderMode;
   user_persona: UserPersona;
   user_setting_merge_strategy: UserSettingMergeStrategy;
@@ -62,6 +63,7 @@ export const DEFAULT_SESSION_CONFIG: SessionConfig = {
   max_active_agents: 8,
   parser_enabled: true,
   compression_model: '',
+  variable_tool_model: '',
   render_mode: 'auto',
   user_persona: { name: '', avatar: '', address: '', background: '', style: '' },
   user_setting_merge_strategy: 'user_overrides_worldbook',
@@ -76,11 +78,6 @@ export interface Message {
   variants: string;
   variant_index: number;
   created_at: string;
-}
-
-export interface StreamEvent {
-  event: string;
-  data: any;
 }
 
 export interface ProviderConfig {
@@ -113,7 +110,10 @@ export interface WorldBookDetail {
   original_format: string;
   source_data: string;
   parse_status: string;
+  single_agent_parse_status: string;
   entries: WorldBookEntry[];
+  parsed_entries: ParsedWorldBookEntry[];
+  single_agent_parsed_entries: ParsedWorldBookEntry[];
   has_character_card: boolean;
   character_card_id: string | null;
   created_at: string;

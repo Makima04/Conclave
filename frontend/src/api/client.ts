@@ -1,4 +1,5 @@
 import type { Session, SessionConfig, Message, ProviderConfig, WorldBook, WorldBookDetail, WorldBookEntry, CharacterCard, ParsedWorldBookEntry, Preset, PresetDetail } from './types';
+import { consumeSseResponse, type ChatSseHandler } from './sse';
 
 const BASE_URL = '/api';
 
@@ -64,7 +65,7 @@ export async function applyOpeningMessage(sessionId: string, content: string): P
 export function sendMessageStream(
   sessionId: string,
   content: string,
-  onEvent: (event: string, data: any) => void,
+  onMessage: ChatSseHandler,
   onError: (error: Error) => void,
   onDone: () => void,
   stream: boolean = true,
@@ -89,51 +90,7 @@ export function sendMessageStream(
         throw new Error(body?.error?.message || `HTTP ${res.status}`);
       }
 
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        let currentEvent = '';
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            currentEvent = line.slice(7).trim();
-          } else if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            try {
-              onEvent(currentEvent, JSON.parse(data));
-            } catch {
-              onEvent(currentEvent, data);
-            }
-          }
-        }
-      }
-
-      // Flush remaining buffer (final event may lack trailing newline)
-      if (buffer.trim()) {
-        const lines = buffer.split('\n');
-        let currentEvent = '';
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            currentEvent = line.slice(7).trim();
-          } else if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            try {
-              onEvent(currentEvent, JSON.parse(data));
-            } catch {
-              onEvent(currentEvent, data);
-            }
-          }
-        }
-      }
-
+      await consumeSseResponse(res, onMessage);
       onDone();
     } catch (err: any) {
       if (err.name !== 'AbortError') {
@@ -376,6 +333,10 @@ export async function updateCharacterCard(id: string, data: Partial<CharacterCar
 
 export async function parseWorldBook(id: string): Promise<{ status: string; entries: ParsedWorldBookEntry[] }> {
   return request(`/worldbooks/${id}/parse`, { method: 'POST' });
+}
+
+export async function parseWorldBookSingleAgent(id: string): Promise<{ status: string; mode: string; entries: ParsedWorldBookEntry[] }> {
+  return request(`/worldbooks/${id}/parse-single-agent`, { method: 'POST' });
 }
 
 // --- Presets ---

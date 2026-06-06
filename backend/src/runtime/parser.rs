@@ -57,11 +57,13 @@ JSON格式：
                 role: "system".to_string(),
                 content: system_prompt.to_string(),
                 reasoning_content: None,
+                tool_calls: None,
             },
             ChatMessage {
                 role: "user".to_string(),
                 content: user_content,
                 reasoning_content: None,
+                tool_calls: None,
             },
         ],
         temperature: Some(0.2),
@@ -69,6 +71,8 @@ JSON格式：
         max_tokens: Some(10000),
         frequency_penalty: None,
         presence_penalty: None,
+        tools: None,
+        tool_choice: None,
         stream: false,
     };
 

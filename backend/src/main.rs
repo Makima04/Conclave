@@ -179,6 +179,10 @@ async fn create_app(config: AppConfig) -> Router {
             post(worldbooks::parse_worldbook),
         )
         .route(
+            "/api/worldbooks/{id}/parse-single-agent",
+            post(worldbooks::parse_worldbook_single_agent),
+        )
+        .route(
             "/api/worldbooks/{id}/character-card",
             get(charactercards::get_card_for_worldbook),
         )

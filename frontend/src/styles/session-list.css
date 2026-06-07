@@ -1,201 +1,179 @@
-/* ===== Session List Page (sl- namespace) ===== */
+/* ===== Session List Page (sl- namespace, compact) ===== */
 
 /* ── Page Layout ── */
 
 .sl-page {
-  padding: 28px;
+  max-width: 1000px;
+  margin: 0 auto;
   min-height: 100vh;
   background: var(--bg);
-  padding-bottom: 40px;
+  padding-bottom: 32px;
 }
 
-/* ── Section Titles ── */
+/* ── Banner Header ── */
 
-.sl-section-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text-2);
-  margin-bottom: 14px;
+.sl-banner {
+  background: linear-gradient(135deg, #1A0B12 0%, #2D0F1E 40%, #15081F 100%);
+  padding: 16px 24px 18px;
+}
+
+.sl-banner-top {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 12px;
 }
 
-.sl-section-title .sl-action-btn {
+.sl-page-title {
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  flex: 1;
+}
+
+.sl-page-subtitle {
   font-size: 13px;
-  padding: 5px 14px;
+  color: rgba(255, 255, 255, 0.45);
+  margin-top: 3px;
+}
+
+.sl-nav-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.sl-nav-btn {
+  background: rgba(255, 255, 255, 0.12);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.sl-nav-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* ── Create Session Card ── */
+
+.sl-create-card {
+  margin: 12px 24px;
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.sl-create-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 10px;
+}
+
+.sl-create-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.sl-create-grid input,
+.sl-create-grid select {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 14px;
+  outline: none;
+  background: var(--surface-0);
+  color: var(--text);
+  font-family: inherit;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.sl-create-grid input:focus,
+.sl-create-grid select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.sl-create-grid input::placeholder {
+  color: var(--text-3);
+}
+
+.sl-title-input {
+  grid-column: 1 / -1;
+}
+
+.sl-create-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.sl-create-btn {
+  padding: 7px 16px;
   background: var(--accent);
   color: white;
   border: none;
   border-radius: var(--radius);
-  cursor: pointer;
-  transition: background var(--transition);
-}
-
-.sl-section-title .sl-action-btn:hover {
-  background: var(--accent-hover);
-}
-
-/* ── Recent Sessions Grid ── */
-
-.sl-recent-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px;
-  margin-bottom: 32px;
-}
-
-.sl-recent-card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 14px;
-  cursor: pointer;
-  transition: border-color var(--transition), box-shadow var(--transition), transform 0.15s ease;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.sl-recent-card:hover {
-  border-color: var(--accent);
-  box-shadow: var(--shadow-md);
-  transform: translateY(-1px);
-}
-
-.sl-recent-card .recent-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  overflow: hidden;
-  flex-shrink: 0;
-  background: var(--surface-2);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.sl-recent-card .recent-avatar img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.sl-recent-card .recent-avatar .recent-avatar-fallback {
-  font-size: 16px;
-  opacity: 0.5;
-}
-
-.sl-recent-card .recent-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.sl-recent-card .recent-info .recent-title {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sl-recent-card .recent-info .recent-meta {
-  font-size: 12px;
-  color: var(--muted);
-  margin-top: 2px;
-}
-
-.sl-recent-empty {
-  color: var(--text-3);
-  font-size: 14px;
-  padding: 20px 0;
-}
-
-/* ── World Book Grid ── */
-
-.sl-wb-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.sl-wb-card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 14px;
   cursor: pointer;
-  transition: border-color var(--transition), background var(--transition), box-shadow var(--transition);
-  display: flex;
-  align-items: center;
-  gap: 12px;
+  transition: background var(--transition), box-shadow var(--transition), transform 0.1s ease;
 }
 
-.sl-wb-card:hover {
-  border-color: var(--accent);
+.sl-create-btn:hover {
+  background: var(--accent-hover);
   box-shadow: var(--shadow-sm);
 }
 
-.sl-wb-card.selected {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.sl-wb-card .wb-avatar {
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
-  overflow: hidden;
-  flex-shrink: 0;
-  background: var(--surface-2);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.sl-wb-card .wb-avatar img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.sl-wb-card .wb-avatar .wb-avatar-fallback {
-  font-size: 20px;
-  opacity: 0.5;
-}
-
-.sl-wb-card .wb-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.sl-wb-card .wb-info .wb-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sl-wb-card .wb-info .wb-count {
-  font-size: 12px;
-  color: var(--muted);
-  margin-top: 2px;
-}
-
-/* ── World Book Sessions Section ── */
-
-.sl-wb-sessions {
-  margin-top: 24px;
+.sl-create-btn:active {
+  transform: scale(0.98);
 }
 
 /* ── Sessions Area ── */
 
 .sl-sessions-area {
-  /* kept for compatibility */
+  padding: 0 24px;
+}
+
+/* ── Filter Tabs ── */
+
+.sl-filter-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.sl-filter-tab {
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+
+.sl-filter-tab:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.sl-filter-tab.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
 }
 
 /* ── Session Cards ── */
@@ -203,7 +181,7 @@
 .sl-sessions {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .sl-card {
@@ -213,7 +191,7 @@
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 12px 14px;
+  padding: 10px 12px;
   cursor: pointer;
   transition: border-color var(--transition), box-shadow var(--transition), transform 0.15s ease;
   gap: 10px;
@@ -226,9 +204,9 @@
 }
 
 .session-avatar {
-  width: 38px;
-  height: 38px;
-  border-radius: 10px;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
   overflow: hidden;
   flex-shrink: 0;
   background: var(--surface-2);
@@ -244,27 +222,27 @@
 }
 
 .session-avatar-fallback {
-  font-size: 20px;
+  font-size: 16px;
   opacity: 0.5;
 }
 
 .session-info h3 {
-  font-size: 15px;
-  margin-bottom: 1px;
+  font-size: 14px;
+  margin-bottom: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .session-info .meta {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--muted);
 }
 
 .processing-spinner {
   display: inline-block;
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
   border: 2px solid var(--line);
   border-top-color: var(--accent);
   border-radius: 50%;
@@ -277,15 +255,15 @@
 
 .session-actions {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   align-items: center;
 }
 
 .rename-btn {
   background: transparent;
   color: var(--text-2);
-  font-size: 13px;
-  padding: 6px 10px;
+  font-size: 12px;
+  padding: 4px 8px;
   border: none;
   border-radius: var(--radius);
   cursor: pointer;
@@ -300,8 +278,8 @@
 .delete-btn {
   background: transparent;
   color: var(--danger);
-  font-size: 13px;
-  padding: 6px 10px;
+  font-size: 12px;
+  padding: 4px 8px;
   border: none;
   border-radius: var(--radius);
   cursor: pointer;
@@ -310,11 +288,10 @@
 
 .delete-btn:hover {
   background: rgba(201, 37, 70, 0.12);
-  color: var(--danger);
 }
 
 .rename-input {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 600;
   background: var(--surface-0);
   color: var(--text);
@@ -330,9 +307,10 @@
 .sl-empty {
   color: var(--text-3);
   text-align: center;
-  margin-top: 40px;
+  margin-top: 32px;
   position: relative;
-  padding-top: 120px;
+  padding-top: 100px;
+  font-size: 14px;
 }
 
 .sl-empty::before {
@@ -341,201 +319,39 @@
   top: 0;
   left: 50%;
   transform: translateX(-50%);
-  width: 100px;
-  height: 100px;
+  width: 80px;
+  height: 80px;
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 120' fill='none' stroke='%233D2E4F' stroke-width='1.5'%3E%3Cpath d='M15 110 V50 Q15 15 50 15 Q85 15 85 50 V110'/%3E%3Cpath d='M28 110 V55 Q28 28 50 28 Q72 28 72 55 V110'/%3E%3Ccircle cx='50' cy='8' r='3'/%3E%3C/svg%3E") center/contain no-repeat;
-  opacity: 0.4;
+  opacity: 0.35;
 }
 
-/* ── New Session Dialog ── */
-
-.new-session-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background: rgba(7, 6, 9, 0.72);
-  backdrop-filter: blur(8px);
-}
-
-.new-session-dialog {
-  width: min(480px, 100%);
-  background: var(--surface-1);
-  border: 1px solid var(--border-hi);
-  border-radius: 10px;
-  box-shadow: var(--shadow-md);
-}
-
-.new-session-dialog form {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding: 22px;
-}
-
-.new-session-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.new-session-head h2 {
-  font-size: 18px;
-  line-height: 1.2;
-}
-
-.new-session-head p {
-  margin-top: 4px;
-  color: var(--text-2);
-  font-size: 13px;
-}
-
-.new-session-close {
-  width: 30px;
-  height: 30px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-2);
-  color: var(--text-2);
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.new-session-close:hover:not(:disabled) {
-  color: var(--text);
-  border-color: var(--accent);
-}
-
-.new-session-field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.new-session-label {
-  color: var(--text-2);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.new-session-segment {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.new-session-segment label {
-  min-height: 44px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-2);
-  color: var(--text-2);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: border-color var(--transition), background var(--transition), color var(--transition);
-}
-
-.new-session-segment label.selected {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--text);
-}
-
-.new-session-segment input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.new-session-field select {
-  width: 100%;
-  min-height: 42px;
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-2);
-  color: var(--text);
-  font: inherit;
-  outline: none;
-}
-
-.new-session-field select:focus {
-  border-color: var(--accent);
-}
-
-.new-session-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-}
-
-.new-session-secondary,
-.new-session-primary {
-  min-height: 38px;
-  padding: 0 16px;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.new-session-secondary {
-  background: transparent;
-  color: var(--text-2);
-  border-color: var(--border);
-}
-
-.new-session-primary {
-  background: var(--accent);
-  color: white;
-}
-
-.new-session-secondary:hover:not(:disabled) {
-  color: var(--text);
-  border-color: var(--border-hi);
-}
-
-.new-session-primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-}
-
-.new-session-close:disabled,
-.new-session-secondary:disabled,
-.new-session-primary:disabled,
-.new-session-field select:disabled,
-.new-session-segment label:has(input:disabled) {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-/* ── Meta text (shared utility) ── */
+/* ── Meta (shared utility) ── */
 
 .meta {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--muted);
 }
 
 /* ── Responsive ── */
 
 @media (max-width: 640px) {
-  .sl-page {
-    padding: 16px;
+  .sl-banner {
+    padding: 12px 14px 14px;
   }
 
-  .sl-recent-grid {
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  .sl-create-card {
+    margin: 10px 14px;
   }
 
-  .sl-wb-grid {
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  .sl-create-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sl-sessions-area {
+    padding: 0 14px;
+  }
+
+  .sl-page-subtitle {
+    display: none;
   }
 }

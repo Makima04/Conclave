@@ -1,0 +1,716 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>聊天布局临时原型</title>
+    <style>
+      :root {
+        --bg: #08070d;
+        --panel: #12101a;
+        --panel-2: #191524;
+        --panel-3: #221b2f;
+        --line: rgba(255, 255, 255, 0.1);
+        --muted: #9a91ad;
+        --text: #f5efff;
+        --soft: #d6cae8;
+        --accent: #d94467;
+        --accent-2: #b997ff;
+        --paper: #faf4e8;
+        --paper-line: rgba(122, 92, 47, 0.14);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", "Microsoft YaHei", sans-serif;
+        background:
+          radial-gradient(circle at 18% 18%, rgba(126, 71, 152, 0.16), transparent 28rem),
+          linear-gradient(180deg, #0d0a13 0%, var(--bg) 62%, #050409 100%);
+      }
+
+      button,
+      textarea {
+        font: inherit;
+      }
+
+      .app-shell {
+        display: grid;
+        grid-template-columns: 248px minmax(520px, 1fr) 332px;
+        gap: 0;
+        height: 100vh;
+        overflow: hidden;
+      }
+
+      .left-rail {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        border-right: 1px solid var(--line);
+        background: rgba(14, 12, 21, 0.92);
+      }
+
+      .top-nav {
+        display: grid;
+        grid-template-columns: 36px 1fr 36px;
+        align-items: center;
+        gap: 8px;
+        min-height: 54px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(18, 15, 27, 0.96);
+      }
+
+      .icon-button {
+        display: inline-grid;
+        place-items: center;
+        width: 36px;
+        height: 36px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--soft);
+        background: rgba(255, 255, 255, 0.04);
+        cursor: pointer;
+      }
+
+      .icon-button:hover {
+        border-color: rgba(185, 151, 255, 0.42);
+        color: #fff;
+      }
+
+      .persona {
+        min-width: 0;
+      }
+
+      .persona strong {
+        display: block;
+        overflow: hidden;
+        font-size: 14px;
+        line-height: 18px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .persona span {
+        display: block;
+        margin-top: 1px;
+        overflow: hidden;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 15px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .section-tabs {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .section-tab {
+        min-width: 0;
+        height: 30px;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        color: var(--muted);
+        background: transparent;
+        cursor: pointer;
+      }
+
+      .section-tab.active {
+        border-color: rgba(217, 68, 103, 0.6);
+        color: #fff;
+        background: rgba(217, 68, 103, 0.14);
+      }
+
+      .settings-panel {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        padding: 14px 12px 18px;
+      }
+
+      .setting-group {
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.035);
+      }
+
+      .setting-group + .setting-group {
+        margin-top: 10px;
+      }
+
+      .group-title {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        color: #fff;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0;
+      }
+
+      .group-title span {
+        color: var(--muted);
+        font-weight: 500;
+      }
+
+      .field {
+        margin-top: 10px;
+      }
+
+      .field label {
+        display: block;
+        margin-bottom: 5px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .mock-select,
+      .mock-input {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        min-height: 34px;
+        padding: 0 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--soft);
+        background: rgba(0, 0, 0, 0.18);
+        font-size: 13px;
+      }
+
+      .center-stage {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        background: #0a090f;
+      }
+
+      .stage-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        min-height: 42px;
+        padding: 6px 14px;
+        border-bottom: 1px solid var(--line);
+        color: var(--muted);
+        background: rgba(12, 10, 17, 0.96);
+      }
+
+      .stage-toolbar strong {
+        overflow: hidden;
+        color: var(--soft);
+        font-size: 13px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .toolbar-actions {
+        display: flex;
+        gap: 6px;
+        flex: 0 0 auto;
+      }
+
+      .tiny-button {
+        height: 28px;
+        padding: 0 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.04);
+        cursor: pointer;
+        font-size: 12px;
+      }
+
+      .tiny-button.primary {
+        border-color: rgba(217, 68, 103, 0.5);
+        color: #fff;
+        background: rgba(217, 68, 103, 0.18);
+      }
+
+      .render-wrap {
+        flex: 1;
+        min-height: 0;
+        padding: 18px;
+        overflow: auto;
+      }
+
+      .render-surface {
+        min-height: 100%;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--paper);
+        box-shadow: 0 18px 44px rgba(0, 0, 0, 0.38);
+      }
+
+      .game-screen {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 242px;
+        min-height: calc(100vh - 80px);
+        color: #2e2730;
+      }
+
+      .paper {
+        min-width: 0;
+        padding: 30px 34px;
+        background:
+          linear-gradient(var(--paper-line) 1px, transparent 1px),
+          linear-gradient(90deg, var(--paper-line) 1px, transparent 1px),
+          var(--paper);
+        background-size: 24px 24px;
+      }
+
+      .date-row {
+        color: #6e6574;
+        font-size: 13px;
+      }
+
+      .large-date {
+        margin-top: 3px;
+        font-size: 26px;
+        font-weight: 800;
+        letter-spacing: 0;
+      }
+
+      .meta {
+        margin-top: 6px;
+        color: #736a76;
+        font-size: 13px;
+      }
+
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        height: 26px;
+        margin-top: 14px;
+        padding: 0 10px;
+        border-radius: 8px;
+        color: #805bd1;
+        background: rgba(185, 151, 255, 0.18);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .dash {
+        margin: 16px 0;
+        border-top: 2px dashed rgba(185, 151, 255, 0.26);
+      }
+
+      .chapter-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #a286df;
+        font-weight: 800;
+      }
+
+      .chapter-pill {
+        min-width: 32px;
+        height: 28px;
+        border-radius: 999px;
+        background: rgba(185, 151, 255, 0.16);
+        text-align: center;
+        line-height: 28px;
+      }
+
+      .story {
+        margin-top: 24px;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 16px;
+        line-height: 1.7;
+      }
+
+      .phone-pane {
+        border-left: 1px solid rgba(64, 44, 65, 0.16);
+        background: rgba(255, 250, 241, 0.7);
+      }
+
+      .phone-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 42px;
+        padding: 0 12px;
+        color: #453947;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .phone-content {
+        padding: 14px 14px 20px;
+      }
+
+      .music-card {
+        padding: 10px;
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 8px 20px rgba(89, 64, 94, 0.1);
+      }
+
+      .album {
+        height: 132px;
+        border-radius: 7px;
+        background:
+          linear-gradient(135deg, rgba(217, 68, 103, 0.2), transparent),
+          linear-gradient(45deg, #efc4cf, #d7b7ff 52%, #f6e2a8);
+      }
+
+      .music-card strong {
+        display: block;
+        margin-top: 10px;
+        font-size: 13px;
+      }
+
+      .music-card span {
+        display: block;
+        margin-top: 2px;
+        color: #7b7180;
+        font-size: 12px;
+      }
+
+      .phone-list {
+        display: grid;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .phone-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 40px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        color: #4a4050;
+        background: rgba(255, 255, 255, 0.72);
+        font-size: 13px;
+      }
+
+      .right-composer {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        border-left: 1px solid var(--line);
+        background: rgba(13, 11, 18, 0.96);
+      }
+
+      .conversation-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 54px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .avatar {
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        background: linear-gradient(135deg, #ffd3dc, #b997ff);
+      }
+
+      .conversation-head strong {
+        display: block;
+        font-size: 13px;
+      }
+
+      .conversation-head span {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .right-scroll {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        padding: 12px;
+      }
+
+      .message-card {
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.035);
+      }
+
+      .message-card + .message-card {
+        margin-top: 10px;
+      }
+
+      .message-card header {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .message-card p {
+        margin: 8px 0 0;
+        color: var(--soft);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .composer-box {
+        padding: 12px;
+        border-top: 1px solid var(--line);
+        background: rgba(18, 15, 27, 0.98);
+      }
+
+      .prompt-chip {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 10px;
+        padding: 9px 10px;
+        border: 1px solid rgba(185, 151, 255, 0.28);
+        border-radius: 8px;
+        color: var(--soft);
+        background: rgba(185, 151, 255, 0.08);
+        font-size: 13px;
+      }
+
+      textarea {
+        display: block;
+        width: 100%;
+        height: 116px;
+        min-height: 116px;
+        resize: vertical;
+        padding: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 8px;
+        outline: none;
+        color: #1b1722;
+        background: #fff;
+        line-height: 1.55;
+      }
+
+      textarea:focus {
+        border-color: rgba(217, 68, 103, 0.7);
+        box-shadow: 0 0 0 3px rgba(217, 68, 103, 0.16);
+      }
+
+      .composer-actions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .action-cluster {
+        display: flex;
+        gap: 6px;
+      }
+
+      .send-button {
+        height: 36px;
+        padding: 0 16px;
+        border: 0;
+        border-radius: 8px;
+        color: #fff;
+        background: var(--accent);
+        cursor: pointer;
+        font-weight: 700;
+      }
+
+      @media (max-width: 1180px) {
+        .app-shell {
+          grid-template-columns: 216px minmax(420px, 1fr) 300px;
+        }
+
+        .game-screen {
+          grid-template-columns: 1fr;
+        }
+
+        .phone-pane {
+          display: none;
+        }
+      }
+
+      @media (max-width: 900px) {
+        .app-shell {
+          grid-template-columns: 1fr;
+        }
+
+        .left-rail,
+        .right-composer {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="left-rail" aria-label="设置与调用">
+        <nav class="top-nav">
+          <button class="icon-button" aria-label="返回">←</button>
+          <div class="persona">
+            <strong>浅野堇</strong>
+            <span>User Persona · 用户优先</span>
+          </div>
+          <button class="icon-button" aria-label="设置">⚙</button>
+        </nav>
+
+        <div class="section-tabs" role="tablist" aria-label="设置分类">
+          <button class="section-tab active">User</button>
+          <button class="section-tab">预设</button>
+          <button class="section-tab">世界书</button>
+        </div>
+
+        <section class="settings-panel">
+          <div class="setting-group">
+            <div class="group-title">USER PERSONA <span>已套用</span></div>
+            <div class="field">
+              <label>当前用户</label>
+              <div class="mock-select">浅野堇</div>
+            </div>
+            <div class="field">
+              <label>称呼</label>
+              <div class="mock-input">未设置称呼</div>
+            </div>
+            <div class="field">
+              <label>背景</label>
+              <div class="mock-input">未设置</div>
+            </div>
+            <div class="field">
+              <label>覆盖策略</label>
+              <div class="mock-select">用户优先</div>
+            </div>
+          </div>
+
+          <div class="setting-group">
+            <div class="group-title">AGENTS <span>2 个活跃</span></div>
+            <div class="field">
+              <label>主控</label>
+              <div class="mock-select">路人女主 DM</div>
+            </div>
+            <div class="field">
+              <label>渲染</label>
+              <div class="mock-select">HTML Artifact</div>
+            </div>
+          </div>
+
+          <div class="setting-group">
+            <div class="group-title">调试 <span>收起</span></div>
+            <div class="field">
+              <label>连接状态</label>
+              <div class="mock-input">已连接存档</div>
+            </div>
+          </div>
+        </section>
+      </aside>
+
+      <section class="center-stage" aria-label="渲染页面">
+        <header class="stage-toolbar">
+          <strong>路人女主的养成方法测试版 v0.09</strong>
+          <div class="toolbar-actions">
+            <button class="tiny-button">源码</button>
+            <button class="tiny-button">复制</button>
+            <button class="tiny-button primary">重新生成</button>
+          </div>
+        </header>
+
+        <div class="render-wrap">
+          <article class="render-surface">
+            <div class="game-screen">
+              <section class="paper">
+                <div class="date-row">土曜日</div>
+                <div class="large-date">2012-03-31 <small>08:30</small></div>
+                <div class="meta">地点 侦探坡</div>
+                <div class="tag">2年B班</div>
+                <div class="dash"></div>
+                <div class="chapter-row">
+                  <span class="chapter-pill">01</span>
+                  <span>开始吧</span>
+                  <span class="chapter-pill">02</span>
+                  <span>✎</span>
+                </div>
+                <div class="story">
+                  <p>开始吧</p>
+                  <p>侦探坡 has gone quiet for a moment.</p>
+                  <p>The scene reacts to what you just said and continues.</p>
+                </div>
+              </section>
+
+              <aside class="phone-pane">
+                <div class="phone-top">
+                  <span>08:30</span>
+                  <span>LTE</span>
+                </div>
+                <div class="phone-content">
+                  <div class="music-card">
+                    <div class="album"></div>
+                    <strong>波島出海 主题曲</strong>
+                    <span>波岛出海 · OST</span>
+                  </div>
+                  <div class="phone-list">
+                    <div class="phone-item">💬 消息 · 暂无会话</div>
+                    <div class="phone-item">📅 日历 · 2012-03-31</div>
+                    <div class="phone-item">🗂 档案 · 波岛出海</div>
+                    <div class="phone-item">🎵 音乐 · 已暂停</div>
+                  </div>
+                </div>
+              </aside>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <aside class="right-composer" aria-label="输入与记录">
+        <header class="conversation-head">
+          <div class="avatar" aria-hidden="true"></div>
+          <div>
+            <strong>未命名会话</strong>
+            <span>外层标题已隐藏，只保留操作区</span>
+          </div>
+        </header>
+
+        <div class="right-scroll">
+          <article class="message-card">
+            <header><span>User</span><span>08:30</span></header>
+            <p>开始吧</p>
+          </article>
+          <article class="message-card">
+            <header><span>系统</span><span>已落笔</span></header>
+            <p>当前楼层 02。继续书写会直接更新中间渲染页面。</p>
+          </article>
+        </div>
+
+        <footer class="composer-box">
+          <div class="prompt-chip">
+            <span>继续书写这个故事的后续...</span>
+            <button class="tiny-button">记录</button>
+          </div>
+          <textarea placeholder="输入消息..."></textarea>
+          <div class="composer-actions">
+            <div class="action-cluster">
+              <button class="tiny-button">＋</button>
+              <button class="tiny-button">记事本 1</button>
+            </div>
+            <button class="send-button">发送</button>
+          </div>
+        </footer>
+      </aside>
+    </main>
+  </body>
+</html>

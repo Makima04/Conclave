@@ -1,0 +1,187 @@
+/* ===== Global Sidebar ===== */
+
+.sidebar {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 56px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-1);
+  border-right: 1px solid var(--border);
+  z-index: 100;
+  user-select: none;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  padding-top: 16px;
+}
+
+.sidebar-item {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 20px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.sidebar-item:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.sidebar-item.active {
+  color: var(--text);
+  background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
+  padding-left: 0;
+}
+
+.sidebar-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  background: var(--accent);
+  border-radius: 0 2px 2px 0;
+}
+
+/* Remove the left border approach — use a ::before pseudo-element so it doesn't shift content */
+.sidebar-item.active {
+  border-left: none;
+}
+
+/* ── Tooltip ── */
+
+.sidebar-tooltip {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 4px 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 200;
+}
+
+.sidebar-tooltip::before {
+  content: '';
+  position: absolute;
+  right: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 5px solid transparent;
+  border-right-color: var(--border);
+}
+
+.sidebar-item:hover .sidebar-tooltip {
+  opacity: 1;
+}
+
+/* ── Bottom area ── */
+
+.sidebar-bottom {
+  padding: 12px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.sidebar-new-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--border-hi);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 20px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.sidebar-new-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ===== Responsive: bottom bar at <=900px ===== */
+
+@media (max-width: 900px) {
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: auto;
+    bottom: 0;
+    width: 100%;
+    height: 48px;
+    flex-direction: row;
+    border-right: none;
+    border-top: 1px solid var(--border);
+  }
+
+  .sidebar-nav {
+    flex-direction: row;
+    justify-content: center;
+    padding-top: 0;
+    gap: 2px;
+  }
+
+  .sidebar-item {
+    width: 40px;
+    height: 40px;
+    font-size: 18px;
+  }
+
+  .sidebar-item.active::before {
+    /* Move the accent bar to the top instead of left */
+    left: 6px;
+    right: 6px;
+    top: 0;
+    bottom: auto;
+    width: auto;
+    height: 3px;
+    border-radius: 0 0 2px 2px;
+  }
+
+  .sidebar-tooltip {
+    display: none;
+  }
+
+  .sidebar-bottom {
+    padding: 0 8px;
+  }
+
+  .sidebar-new-btn {
+    width: 32px;
+    height: 32px;
+    font-size: 18px;
+  }
+}

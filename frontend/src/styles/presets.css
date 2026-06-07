@@ -1,56 +1,361 @@
-/* ===== Presets Page Styles ===== */
-/* ── Presets ── */
+/* ===== Presets Page (pr- namespace) ===== */
 
-.card-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
+/* ── Page Layout ── */
+
+.pr-page {
+  max-width: 1100px;
+  margin: 0 auto;
+  min-height: 100vh;
+  background: var(--bg);
+  padding-bottom: 40px;
 }
 
-.card {
+.import-input-hidden { display: none; }
+
+/* ── List View Banner ── */
+
+.pr-banner {
+  background: linear-gradient(135deg, #14100A 0%, #1E1710 40%, #120D18 100%);
+  padding: 20px 28px 28px;
+}
+
+.pr-banner-top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.pr-page-title {
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 700;
+  color: white;
+  flex: 1;
+}
+
+.pr-page-subtitle {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-top: 6px;
+}
+
+/* ── Buttons ── */
+
+.pr-back-btn {
+  background: rgba(255, 255, 255, 0.12);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+
+.pr-back-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.pr-primary-btn {
+  background: var(--accent-2);
+  color: #1a1408;
+  border: none;
+  border-radius: var(--radius);
+  padding: 8px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+
+.pr-primary-btn:hover:not(:disabled) {
+  filter: brightness(1.15);
+  box-shadow: var(--shadow-sm);
+}
+
+.pr-primary-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pr-action-btn {
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: var(--radius);
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.pr-action-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.pr-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pr-action-btn.pr-danger {
+  color: #f0627a;
+  border-color: rgba(240, 98, 122, 0.3);
+}
+
+.pr-action-btn.pr-danger:hover {
+  background: rgba(201, 37, 70, 0.2);
+}
+
+/* ── Card Grid ── */
+
+.pr-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+  padding: 20px 28px;
+}
+
+.pr-card {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 14px;
+  padding: 18px;
   cursor: pointer;
-  transition: border-color var(--transition), box-shadow var(--transition);
-}
-.card:hover { border-color: var(--accent); box-shadow: var(--shadow-sm); }
-
-.card-header {
+  transition: border-color var(--transition), box-shadow var(--transition), transform 0.15s ease;
   display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pr-card:hover {
+  border-color: var(--accent-2);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.pr-card-header {
+  display: flex;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 10px;
+}
+
+.pr-card-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pr-card-format {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-2);
+  background: rgba(184, 154, 91, 0.12);
+  padding: 2px 8px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.pr-card-body {
+  display: flex;
   align-items: center;
+  gap: 10px;
+}
+
+.pr-card-meta {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.pr-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.pr-card-date {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.pr-card-actions {
+  display: flex;
+  gap: 2px;
+}
+
+.pr-icon-btn {
+  background: transparent;
+  border: none;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+  transition: background var(--transition);
+}
+
+.pr-icon-btn:hover {
+  background: var(--surface-2);
+}
+
+.pr-icon-btn.pr-danger-icon:hover {
+  background: rgba(201, 37, 70, 0.15);
+}
+
+/* ── Empty State ── */
+
+.pr-empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-2);
+}
+
+.pr-empty-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.pr-empty-state h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
   margin-bottom: 6px;
 }
-.card-header h3 { font-size: 15px; margin: 0; }
 
-.card-meta {
+.pr-empty-state p {
+  font-size: 14px;
+  color: var(--text-3);
+}
+
+/* ── Parse Status Badge (moved from session-list.css) ── */
+
+.parse-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.parse-badge.none { background: var(--surface-2); color: var(--text-3); }
+.parse-badge.parsing { background: rgba(184, 154, 91, 0.15); color: var(--warn); }
+.parse-badge.done { background: rgba(91, 138, 94, 0.15); color: var(--success); }
+.parse-badge.error { background: rgba(201, 37, 70, 0.15); color: var(--danger); }
+
+/* ── Status Badge (detail banner variant) ── */
+
+.pr-status-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 10px;
+}
+
+.pr-status-badge.none { color: var(--text-3); background: rgba(255, 255, 255, 0.08); }
+.pr-status-badge.done { color: #6fcf74; background: rgba(91, 138, 94, 0.2); }
+.pr-status-badge.parsing { color: #e6c65a; background: rgba(184, 154, 91, 0.2); }
+.pr-status-badge.error { color: #f0627a; background: rgba(201, 37, 70, 0.2); }
+
+/* ── Detail View Banner ── */
+
+.pr-detail-banner {
+  background: linear-gradient(135deg, #14100A 0%, #1E1710 40%, #120D18 100%);
+  padding: 16px 28px 24px;
+}
+
+.pr-detail-top {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: center;
-  font-size: 13px;
-  color: var(--muted);
-  margin-bottom: 8px;
-}
-
-.card-actions {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
-}
-
-.detail-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
   margin-bottom: 16px;
 }
-.toolbar-info { font-size: 13px; color: var(--muted); }
+
+.pr-detail-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.pr-detail-title-row {
+  margin-bottom: 10px;
+}
+
+.pr-detail-name {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 700;
+  color: white;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pr-detail-name:hover .pr-edit-icon {
+  opacity: 0.7;
+}
+
+.pr-edit-icon {
+  font-size: 14px;
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+
+.pr-rename-inline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.pr-rename-inline input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: var(--radius);
+  font-size: 20px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  outline: none;
+}
+
+.pr-rename-inline input:focus {
+  border-color: var(--accent-2);
+}
+
+.pr-detail-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pr-detail-stat {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* ── Detail Body ── */
+
+.pr-detail-body {
+  padding: 20px 28px;
+}
+
+/* ── Detail Section (existing) ── */
 
 .detail-section {
   margin-bottom: 20px;
 }
+
 .detail-section h3 {
   font-size: 14px;
   color: var(--text-2);
@@ -59,20 +364,26 @@
   padding-bottom: 6px;
 }
 
+/* ── Param Grid (existing) ── */
+
 .param-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
   gap: 8px;
 }
+
 .param-item {
   background: var(--surface-2);
-  border-radius: var(--radius-sm, 4px);
+  border-radius: 4px;
   padding: 6px 10px;
   display: flex;
   justify-content: space-between;
 }
+
 .param-label { font-size: 12px; color: var(--muted); }
 .param-value { font-size: 13px; font-weight: 600; }
+
+/* ── Module List (existing, enhanced) ── */
 
 .module-list {
   border: 1px solid var(--line);
@@ -84,7 +395,9 @@
 .module-row {
   border-bottom: 1px solid var(--line);
 }
+
 .module-row:last-child { border-bottom: none; }
+
 .module-disabled { opacity: 0.5; }
 
 .module-header {
@@ -94,10 +407,16 @@
   padding: 10px 14px;
   cursor: pointer;
   transition: background 0.1s;
+  flex-wrap: wrap;
 }
+
 .module-header:hover { background: var(--accent-soft); }
 
-.module-toggle { flex-shrink: 0; cursor: pointer; }
+.module-toggle {
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
 .module-toggle input { cursor: pointer; }
 
 .module-name {
@@ -121,6 +440,8 @@
   gap: 4px;
   flex-wrap: wrap;
   margin-left: auto;
+  max-width: 340px;
+  justify-content: flex-end;
 }
 
 .agent-tag {
@@ -133,7 +454,9 @@
   cursor: pointer;
   transition: all 0.15s;
 }
+
 .agent-tag:hover { border-color: var(--accent); }
+
 .agent-active {
   background: var(--accent-soft);
   border-color: var(--accent);
@@ -154,7 +477,7 @@
 
 .module-content {
   background: var(--surface-2);
-  border-radius: var(--radius-sm, 4px);
+  border-radius: 4px;
   padding: 10px;
   font-size: 12px;
   white-space: pre-wrap;
@@ -164,11 +487,14 @@
   color: var(--text-2);
 }
 
+/* ── Inline Edit (existing) ── */
+
 .inline-edit {
   display: flex;
   align-items: center;
   gap: 6px;
 }
+
 .inline-edit input {
   background: var(--surface-2);
   border: 1px solid var(--accent);
@@ -182,6 +508,26 @@
 .editable-title { cursor: pointer; }
 .editable-title:hover { color: var(--accent); }
 
-.badge-sm { font-size: 10px; padding: 0 5px; }
-.badge-info { background: rgba(91,138,200,0.15); color: var(--accent); }
+/* ── Badges (existing) ── */
 
+.badge-sm { font-size: 10px; padding: 0 5px; border-radius: 4px; }
+.badge-info { background: rgba(91, 138, 200, 0.15); color: var(--accent); }
+.badge-warning { background: rgba(184, 154, 91, 0.15); color: var(--warn); }
+
+/* ── Responsive ── */
+
+@media (max-width: 768px) {
+  .pr-grid {
+    grid-template-columns: 1fr;
+    padding: 16px;
+  }
+
+  .pr-banner,
+  .pr-detail-banner {
+    padding: 16px;
+  }
+
+  .pr-detail-body {
+    padding: 16px;
+  }
+}

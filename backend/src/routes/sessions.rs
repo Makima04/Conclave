@@ -297,6 +297,7 @@ pub async fn create_session(
 #[derive(Deserialize)]
 pub struct ListParams {
     pub limit: Option<i32>,
+    pub world_pack_id: Option<String>,
 }
 
 pub async fn list_sessions(
@@ -305,12 +306,22 @@ pub async fn list_sessions(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(100);
 
-    let rows = sqlx::query_as::<_, SessionRow>(
-        "SELECT id, title, mode, config, current_turn, title_source, status, world_pack_id, created_at, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?"
-    )
-    .bind(limit)
-    .fetch_all(&state.pool)
-    .await?;
+    let rows = if let Some(world_pack_id) = params.world_pack_id {
+        sqlx::query_as::<_, SessionRow>(
+            "SELECT id, title, mode, config, current_turn, title_source, status, world_pack_id, created_at, updated_at FROM sessions WHERE deleted_at IS NULL AND world_pack_id = ? ORDER BY updated_at DESC LIMIT ?"
+        )
+        .bind(world_pack_id)
+        .bind(limit)
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, SessionRow>(
+            "SELECT id, title, mode, config, current_turn, title_source, status, world_pack_id, created_at, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?"
+        )
+        .bind(limit)
+        .fetch_all(&state.pool)
+        .await?
+    };
 
     let items: Vec<SessionResponse> = rows.into_iter().map(row_to_response).collect();
     Ok(Json(serde_json::json!({ "items": items })))

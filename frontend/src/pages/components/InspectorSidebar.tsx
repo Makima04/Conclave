@@ -23,6 +23,23 @@ function shortText(value: string, max = 180): string {
   return `${text.slice(0, max)}...`;
 }
 
+function formatLogPayload(payload: any): string {
+  if (!payload || typeof payload !== 'object') return payload == null ? '' : String(payload);
+  try {
+    return JSON.stringify(payload);
+  } catch {
+    return String(payload);
+  }
+}
+
+function logSeverity(action: string, payload: any): string {
+  if (action === 'runtimeError' || action === 'missingApi') return ' error';
+  if (action === 'diagnostic' && ['error', 'unhandledrejection'].includes(String(payload?.event || ''))) return ' error';
+  if (action === 'diagnostic' && String(payload?.level || '') === 'warn') return ' warn';
+  if (action === 'submitText' || action === 'formSubmit' || action === 'triggerSlash') return ' success';
+  return '';
+}
+
 // --- props ---
 
 export type InspectorTab = 'params' | 'worldbook' | 'preset' | 'agents' | 'render' | 'user' | 'debug';
@@ -411,10 +428,18 @@ export function InspectorSidebar(props: InspectorSidebarProps) {
               </div>
               {sandboxActionLog.length > 0 && (
                 <div className="inspector-section">
-                  <div className="inspector-section-title">Sandbox Actions ({sandboxActionLog.length})</div>
+                  <div className="inspector-section-title">Sandbox Timeline ({sandboxActionLog.length})</div>
                   <div className="sandbox-log">
                     {sandboxActionLog.map((entry, i) => (
-                      <div key={i} className="sandbox-log-entry"><span className="log-action">{entry.action}</span>{entry.payload && Object.keys(entry.payload).length > 0 && <span> {JSON.stringify(entry.payload).slice(0, 80)}</span>}</div>
+                      <div key={i} className={`sandbox-log-entry${logSeverity(entry.action, entry.payload)}`}>
+                        <div className="sandbox-log-head">
+                          <span className="log-action">{entry.action}</span>
+                          <span className="log-time">{new Date(entry.time).toLocaleTimeString()}</span>
+                        </div>
+                        {entry.payload && Object.keys(entry.payload).length > 0 && (
+                          <div className="sandbox-log-payload">{formatLogPayload(entry.payload).slice(0, 900)}</div>
+                        )}
+                      </div>
                     ))}
                   </div>
                 </div>

@@ -36,8 +36,12 @@ export async function createSession(title?: string, mode?: string, worldPackId?:
   });
 }
 
-export async function listSessions(): Promise<{ items: Session[] }> {
-  return request('/sessions');
+export async function listSessions(params?: { limit?: number; worldPackId?: string }): Promise<{ items: Session[] }> {
+  const query = new URLSearchParams();
+  if (params?.limit) query.set('limit', String(params.limit));
+  if (params?.worldPackId) query.set('world_pack_id', params.worldPackId);
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return request(`/sessions${suffix}`);
 }
 
 export async function getSession(id: string): Promise<Session> {

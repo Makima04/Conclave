@@ -99,6 +99,8 @@ export interface WorldBook {
   original_format: string;
   entry_count: number;
   has_character_card: boolean;
+  character_card_name?: string;
+  character_card_avatar?: string;
   created_at: string;
   updated_at: string;
 }
@@ -116,6 +118,8 @@ export interface WorldBookDetail {
   single_agent_parsed_entries: ParsedWorldBookEntry[];
   has_character_card: boolean;
   character_card_id: string | null;
+  character_card_name?: string;
+  character_card_avatar?: string;
   created_at: string;
   updated_at: string;
 }

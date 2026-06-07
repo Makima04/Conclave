@@ -1,8 +1,8 @@
-# 文档同步规则
+# 文档维护规则
 
-> 定义项目文档的同步矩阵、更新触发条件、Markdown ↔ HTML 一致性要求和自动化检查建议。防止实现进度与文档描述长期漂移。
+> 定义项目文档的唯一来源、更新触发条件、索引维护和检查建议。当前正式文档只维护 Markdown；旧的 `docs/html/` 手写副本已删除。
 
-`Docs Sync` · `Markdown` · `HTML` · `AGENT.md` · `Documentation` · `CI`
+`Docs` · `Markdown` · `AGENT.md` · `Documentation` · `CI`
 
 ---
 
@@ -12,247 +12,95 @@
 
 ---
 
-## 目标
+## 当前策略
 
-- 项目实际代码、目录结构、Markdown 文档、HTML 文档和 AGENT.md 五者始终描述同一状态。
-- 任何变更都有明确的文档更新触发规则，不依赖开发者记忆。
-- 新增文档时有标准化流程，不会遗漏索引更新。
-- 文档内链接始终有效，不存在死链。
+`docs/*.md` 是唯一正式文档来源。
 
----
+不再手写维护 `docs/html/*.html`，原因：
 
-## 同步层次
+- 手写 HTML 容易和 Markdown 漂移。
+- 当前没有稳定生成脚本保证同步。
+- 旧 HTML 文档已经描述了过时实现。
+- 对协作 Agent 来说，单一 Markdown 来源更容易检索和修改。
 
-文档同步有四个层次，每一层都必须保持一致。
-
-| 层次 | 包含 | 一致性要求 |
-|---|---|---|
-| 代码 ↔ 文档 | 代码实现、架构决策、模块边界 | 代码变更后，对应文档描述必须反映实际行为。 |
-| Markdown ↔ HTML | `docs/*.md` 和 `docs/html/*.html` | 内容完全一致，HTML 是 Markdown 的视觉化呈现。 |
-| 文档 ↔ 索引 | 文档文件和 `docs.md`、`index.md` | 文档中心和架构首页列出所有已存在文档，不存在未索引的文档。 |
-| 索引 ↔ AGENT.md | `docs.md`、目录结构和 `AGENT.md` | AGENT.md 的项目结构索引、阅读顺序和待补规范与实际状态一致。 |
+如果以后需要 HTML 版本，必须通过生成脚本从 Markdown 生成，并把脚本和生成规则写入本文。
 
 ---
 
-## 同步矩阵
-
-以下矩阵定义每种变更类型需要更新哪些文件。
-
-### 代码变更
-
-| 变更内容 | 必须更新的文档 | 必须更新的索引 |
-|---|---|---|
-| Runtime 行为变更 | `agent-runtime.md` + HTML | — |
-| Agent 权限或上下文可见性变更 | `agent-boundaries.md` + HTML | — |
-| 长期记忆、状态、事件、伏笔、角色成长变更 | `long-context-memory.md` + HTML | — |
-| 技术栈、依赖、数据库、前端框架变更 | `tech-selection.md` + HTML | — |
-| 内容包格式或校验逻辑变更 | `content-packages.md` + HTML | — |
-| Artifact 渲染行为或沙箱规则变更 | `artifact-renderer.md` + HTML | — |
-| API 端点或数据模型变更 | `database-api.md` + HTML | — |
-| 测试覆盖或性能基准变更 | `testing.md` + HTML | — |
-| 实现顺序或阶段目标变更 | `implementation-priority.md` + HTML | `docs.md` + HTML、`AGENT.md` |
-
-### 文档变更
-
-| 变更内容 | 必须同步 |
-|---|---|
-| 新增文档 | 1. 创建 `docs/<name>.md`<br>2. 创建 `docs/html/<name>.html`<br>3. 更新 `docs/docs.md` 当前文档列表<br>4. 更新 `docs/html/docs.html` 当前文档列表<br>5. 更新 `docs/index.md` 相关链接<br>6. 更新 `docs/html/index.html` 相关链接<br>7. 更新 `AGENT.md` 阅读顺序和项目结构索引 |
-| 删除文档 | 同新增文档的反向操作，所有引用必须清除。 |
-| 重命名文档 | 同删除 + 新增，所有交叉引用更新。 |
-| 文档内容变更 | 同步更新对应的 HTML 版本。 |
-
-### 目录结构变更
+## 更新触发
 
 | 变更内容 | 必须更新 |
 |---|---|
-| 新增顶层目录 | `AGENT.md` 项目结构索引。 |
-| 新增重要子目录 | `AGENT.md` 计划结构（如 `backend/migrations/`）。 |
-| 新增 schema 文件 | 相关规范文档 + `AGENT.md` 待补规范状态。 |
+| Runtime 行为变更 | `agent-runtime.md`，必要时 `dynamic-master-architecture.md` |
+| Agent 权限或上下文可见性变更 | `agent-boundaries.md` |
+| 长期记忆、状态、事件、伏笔、角色成长变更 | `long-context-memory.md` |
+| 技术栈、依赖、数据库、前端框架变更 | `tech-selection.md` |
+| API 端点或数据模型变更 | `database-api.md` |
+| 内容包格式、导入导出、迁移逻辑变更 | `content-packages.md`、`card-import-normalization.md` |
+| 角色卡渲染、sandbox、共享存档、开场白、iframe 性能变更 | `card-rendering-runtime.md` |
+| Artifact 渲染、安全预算、沙箱策略变更 | `artifact-renderer.md` |
+| 测试覆盖或性能基准变更 | `testing.md` |
+| 实现顺序、阶段目标、MVP 范围变更 | `implementation-priority.md` |
+| 新增、删除或重命名文档 | `docs.md`、`index.md`、`AGENT.md` |
+| 新增顶层目录或重要模块 | `AGENT.md` |
 
 ---
 
-## Markdown ↔ HTML 同步规则
+## 新增文档流程
 
-### 一对一映射
-
-每个 `docs/*.md` 文件对应一个 `docs/html/*.html` 文件。当前映射：
-
-| Markdown | HTML |
-|---|---|
-| `docs/docs.md` | `docs/html/docs.html` |
-| `docs/index.md` | `docs/html/index.html` |
-| `docs/long-context-memory.md` | `docs/html/long-context-memory.html` |
-| `docs/agent-runtime.md` | `docs/html/agent-runtime.html` |
-| `docs/agent-boundaries.md` | `docs/html/agent-boundaries.html` |
-| `docs/tech-selection.md` | `docs/html/tech-selection.html` |
-| `docs/implementation-priority.md` | `docs/html/implementation-priority.html` |
-| `docs/database-api.md` | `docs/html/database-api.html` |
-| `docs/content-packages.md` | `docs/html/content-packages.html` |
-| `docs/artifact-renderer.md` | `docs/html/artifact-renderer.html` |
-| `docs/testing.md` | `docs/html/testing.html` |
-| `docs/docs-sync.md` | `docs/html/docs-sync.html` |
-
-### 同步时机
-
-- **先 Markdown 后 HTML：** 修改内容时先编辑 Markdown，再同步 HTML。HTML 是 Markdown 的派生呈现。
-- **同时提交：** Markdown 和 HTML 的变更在同一个 commit 中提交。不允许只改 Markdown 不改 HTML 的 commit 存在于主分支。
-- **内容一致：** HTML 版本必须包含与 Markdown 相同的信息段落、表格、代码块和交叉引用。差异只在视觉样式（CSS）。
-
-### HTML 模板规范
-
-所有 HTML 文档使用统一设计系统：
-
-- 相同的 CSS 变量（`--bg`、`--panel`、`--ink`、`--accent` 等）。
-- 相同的布局结构：`header` → `nav`（sticky）→ `main` → `section.band`。
-- 响应式断点：`max-width: 900px`。
-- 导航栏链接到相关文档（HTML 版本之间互链，不链到 Markdown）。
-- 表格使用 `.matrix` 样式。
-- 卡片使用 `.card` 样式，可选 `.tint`、`.blue`、`.warn` 色彩。
+1. 创建 `docs/<name>.md`。
+2. 使用统一结构：标题、摘要、标签、导航、目标/现状、关键设计、风险、验收测试。
+3. 更新 `docs/docs.md` 的当前文档和阅读顺序。
+4. 更新 `docs/index.md` 的相关入口。
+5. 更新 `AGENT.md` 的阅读顺序和“改某功能先读哪篇”。
+6. 用 `rg "<name>|旧文件名"` 检查引用是否完整。
 
 ---
 
-## 索引文件维护
+## 删除文档流程
 
-### docs.md / docs.html — 文档中心
-
-文档中心是所有文档的入口索引。必须反映 `docs/` 目录的实际文件。
-
-**维护规则：**
-
-- 当前文档：列出所有 `docs/*.md` 文件（不含 `docs.md` 自身）。
-- 待补文档：列出计划中但尚未创建的文档，格式与当前文档一致。
-- 建议阅读顺序：包含所有当前文档，按依赖关系排序。
-- 文档从"待补"移到"当前"时，同时更新当前文档列表和待补文档列表。
-
-### index.md / index.html — 架构首页
-
-架构首页是项目总览。新增文档时检查是否需要在总览中添加引用。
-
-**维护规则：**
-
-- 框架结论部分的"新增文档"段落列出所有文档。
-- 导航链接区域包含所有相关文档。
-- 不承载过深细节，细节由各独立文档承担。
-
-### AGENT.md
-
-AGENT.md 是 LLM 编程 Agent 的协作协议。必须反映最新状态。
-
-**需要更新的场景：**
-
-| 触发 | 更新内容 |
-|---|---|
-| 新增文档 | 阅读顺序、项目结构索引、对应"改 XX"指引。 |
-| 新增顶层目录 | 项目结构索引的"当前结构"和"计划结构"。 |
-| 新增 schema | 工程约束 → 类型和 schema 部分。 |
-| 完成待补文档 | "后续待补规范"列表移除已完成项。 |
-| 新增模块 | 模块职责边界新增对应章节。 |
-| 项目阶段变化 | "当前项目状态"更新。 |
+1. 用 `rg "deleted-file-name"` 确认所有引用。
+2. 删除 Markdown 文件。
+3. 删除所有引用或替换为新文档。
+4. 更新 `docs/docs.md`、`docs/index.md`、`AGENT.md`。
+5. 如删除的是生成物目录，更新本文的同步策略说明。
 
 ---
 
-## 自动化建议
+## 链接检查
 
-以下自动化检查可以在 CI 中配置，减少人工同步遗漏。
+推荐检查：
 
-### 文档结构检查
-
-```text
-检查 docs/*.md 和 docs/html/*.html 是否一一对应。
-检查 docs.md 中列出的文档是否全部存在。
-检查 docs.md 中的待补文档列表是否仍有对应的 docs/*.md 文件。
+```sh
+rg -n "\]\([^)]+\.md\)" docs AGENT.md README.md CLAUDE.md
+find docs -maxdepth 1 -name "*.md" -print
 ```
 
-### 链接检查
+检查重点：
 
-```text
-检查所有 Markdown 文件中的 [text](file.md) 链接是否指向存在的文件。
-检查所有 HTML 文件中的 <a href="file.html"> 链接是否指向存在的文件。
-检查锚点链接（#section-id）是否在目标文件中存在。
-```
-
-### 同时修改检查
-
-```text
-如果 commit 修改了 docs/foo.md 但未修改 docs/html/foo.html，发出警告。
-如果 commit 修改了 docs/html/foo.html 但未修改 docs/foo.md，发出警告。
-```
-
-### AGENT.md 一致性检查
-
-```text
-检查 AGENT.md 项目结构索引中的文件是否全部存在。
-检查 AGENT.md 阅读顺序中的文件是否全部存在。
-检查 AGENT.md 待补规范列表中是否有文档已经创建。
-```
-
----
-
-## 文档生命周期
-
-### 新增文档流程
-
-```text
-1. 确认文档属于哪个模块（Runtime / Memory / Boundary / Artifact / Content Package / API / Testing / Plugin）。
-2. 在 docs.md 的"待补文档"中确认已登记（如未登记，先登记）。
-3. 编写 docs/<name>.md，包含：标题、摘要、标签、导航链接、目标、关键设计、风险、验收测试。
-4. 编写 docs/html/<name>.html，内容与 Markdown 一致，遵循 HTML 模板规范。
-5. 更新 docs/docs.md：从"待补文档"移到"当前文档"，更新阅读顺序。
-6. 更新 docs/html/docs.html：同上。
-7. 更新 docs/index.md：在相关位置添加引用。
-8. 更新 docs/html/index.html：同上。
-9. 更新 AGENT.md：阅读顺序、项目结构索引、如适用则更新模块职责边界和待补规范。
-10. 检查所有新文件中的链接是否正确。
-11. 单独 commit，消息说明新增了什么文档。
-```
-
-### 修改文档流程
-
-```text`
-1. 读取目标文档和相关文档，确认变更范围。
-2. 编辑 docs/<name>.md。
-3. 同步编辑 docs/html/<name>.html。
-4. 如变更影响其他文档的交叉引用，同步更新。
-5. 如变更影响 docs.md、index.md 或 AGENT.md，同步更新。
-6. 运行链接检查。
-7. commit，消息说明变更内容和原因。
-```
-
-### 删除文档流程
-
-```text
-1. 确认没有其他文档引用该文档（grep 检查所有 .md 和 .html 文件）。
-2. 如有引用，先更新引用文档移除引用。
-3. 删除 docs/<name>.md 和 docs/html/<name>.html。
-4. 更新 docs/docs.md 和 docs/html/docs.html：从当前文档列表移除。
-5. 更新 docs/index.md 和 docs/html/index.html：移除引用。
-6. 更新 AGENT.md：移除阅读顺序条目和项目结构索引。
-7. commit。
-```
+- 所有 Markdown 链接指向存在文件。
+- 文档中心列出的文件都存在。
+- 实际存在的 `docs/*.md` 都在文档中心出现。
+- AGENT.md / CLAUDE.md 不引用已删除的 `docs/html/`。
 
 ---
 
 ## 风险
 
-| 风险 | 影响 | 缓解措施 |
+| 风险 | 影响 | 缓解 |
 |---|---|---|
-| 同步规则本身过时 | 规则描述的文件结构与实际不符。 | 每次新增文档时检查本文档的映射表是否需要更新。 |
-| HTML 维护成本高 | 手写 HTML 容易出错或遗漏内容。 | 后续可引入 Markdown → HTML 自动转换工具；当前阶段手动同步。 |
-| AGENT.md 更新遗漏 | LLM Agent 读到过时信息，做出错误决策。 | CI 自动检查 AGENT.md 与实际文件的一致性。 |
-| 交叉引用断裂 | 文档间链接指向已删除或重命名的文件。 | CI 链接检查，每次 PR 运行。 |
-| 大量文档后阅读顺序混乱 | 新增文档后阅读顺序未更新。 | docs.md 和 AGENT.md 阅读顺序在新增文档时必须更新，作为文档新增流程的强制步骤。 |
+| 文档仍引用旧 HTML | Agent 读错入口。 | 删除 `docs/html/` 后用 `rg "docs/html|html/"` 清理引用。 |
+| 文档描述理想架构而非当前实现 | 后续修改会按错误假设做。 | 明确区分“当前实现”和“长期目标”。 |
+| 新增功能未补文档 | 维护者无法理解行为边界。 | 代码变更后按更新触发表检查。 |
+| 文档过度详细且不维护 | 信息噪音增加。 | 删除或重写不再对应实现的旧文档。 |
 
 ---
 
-## 验收测试
+## 验收
 
-| 测试场景 | 通过标准 |
+| 场景 | 通过标准 |
 |---|---|
-| `docs/*.md` 与 `docs/html/*.html` 一一对应 | 每个 Markdown 文件有对应 HTML 文件，无多余或缺失。 |
-| docs.md 当前文档列表与实际文件一致 | `docs.md` 列出的所有文档在 `docs/` 目录中存在，反向亦然。 |
-| AGENT.md 阅读顺序文件全部存在 | 阅读顺序中列出的每个文件路径都指向实际存在的文件。 |
-| AGENT.md 待补规范与 docs.md 待补文档一致 | 两个列表描述同一组待补文档。 |
-| 所有文档内链接有效 | 无死链，所有 `[text](file.md)` 和 `<a href="file.html">` 指向存在的文件。 |
-| 新增文档后所有索引已更新 | docs.md、index.html、AGENT.md 均反映新文档的存在。 |
-| Markdown 和 HTML 同一 commit 提交 | 不出现只改 Markdown 不改 HTML 的 commit。 |
-| CI 检查通过 | 文档结构检查、链接检查、同时修改检查均无错误。 |
+| 文档索引 | `docs/docs.md` 包含所有 `docs/*.md`。 |
+| HTML 旧引用 | `AGENT.md`、`CLAUDE.md` 和 `docs/*.md` 不再要求维护 `docs/html/`。 |
+| 新文档链接 | 新增文档能从 `docs/docs.md` 和 `docs/index.md` 到达。 |
+| 当前实现一致性 | 角色卡渲染、共享存档、开场白选择等行为有文档描述。 |

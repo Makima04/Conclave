@@ -1,6 +1,6 @@
 # Artifact Renderer 规范
 
-> 定义 LLM 生成的 UI 内容如何安全、高效地渲染：三层渲染模型、Artifact 生命周期、UI Schema、iframe 沙箱、资源预算和快照策略。防止 LLM 生成代码污染主 DOM 或拖垮长会话性能。
+> 定义 LLM 生成的 UI 内容如何安全、高效地渲染：三层渲染模型、Artifact 生命周期、UI Schema、iframe 沙箱、资源预算和快照策略。角色卡 HTML app 的当前运行时细节见 [角色卡渲染运行时](card-rendering-runtime.md)。
 
 `Artifact` · `iframe Sandbox` · `State Diff` · `Resource Budget` · `Snapshot` · `UI Schema`
 
@@ -21,7 +21,7 @@
 - 支持从简单状态更新到复杂自定义 UI 的渐进式渲染能力。
 - 每个渲染单元有独立的资源预算，长会话不会因 DOM 堆积而卡顿。
 - 离屏渲染单元可安全卸载并恢复，不影响用户体验。
-- 自定义代码在 iframe 沙箱中运行，无法访问主页面 DOM、存储或网络。
+- 自定义代码在 iframe 沙箱中运行，无法访问主页面 DOM。LLM artifact 默认不开放持久存储或网络；导入角色卡 sandbox 另有受控兼容层。
 
 ---
 
@@ -306,8 +306,8 @@ iframe 内 JS 可用的 Web API：
 | `setTimeout` / `setInterval` | 是 | 受平台托管，超时自动清理。 |
 | `fetch` | 否 | `connect-src 'none'` 阻止。 |
 | `XMLHttpRequest` | 否 | 同上。 |
-| `localStorage` / `sessionStorage` | 否 | 无 `allow-storage` 权限。 |
-| `IndexedDB` | 否 | 同上。 |
+| `localStorage` / `sessionStorage` | LLM artifact 默认否；角色卡 sandbox 可 shim | LLM 输出不应持久化存储。ST 风格角色卡见 `card-rendering-runtime.md`。 |
+| `IndexedDB` | LLM artifact 默认否；角色卡 sandbox 可 shim | 仅用于受控兼容，不作为通用 artifact 能力。 |
 | `navigator.geolocation` | 否 | 无权限。 |
 | `getUserMedia` | 否 | 无权限。 |
 | `window.open` | 否 | `allow-popups` 未启用。 |
@@ -316,7 +316,7 @@ iframe 内 JS 可用的 Web API：
 ### 禁止行为
 
 - 访问主页面 DOM（`window.parent.document`）。
-- 读写 `localStorage`、`sessionStorage`、`IndexedDB`。
+- LLM artifact 读写 `localStorage`、`sessionStorage`、`IndexedDB`。
 - 发起网络请求（`fetch`、`XHR`、`WebSocket`）。
 - 打开新窗口或弹窗。
 - 跳转主页面。
@@ -443,7 +443,7 @@ artifact 进入视口
 
 | 风险 | 影响 | 缓解措施 |
 |---|---|---|
-| LLM 输出恶意 JS | 在 iframe 内执行恶意代码。 | sandbox 属性 + CSP 限制 + postMessage 通信 + 资源预算。主页面 DOM 和存储不可访问。 |
+| LLM 输出恶意 JS | 在 iframe 内执行恶意代码。 | sandbox 属性 + CSP 限制 + postMessage 通信 + 资源预算。主页面 DOM 不可访问。 |
 | iframe 逃逸 | 通过 `allow-same-origin` + `allow-scripts` 组合绕过沙箱。 | 不使用 `allow-top-navigation`、`allow-popups`、`allow-forms`；CSP 阻止外部脚本和网络请求。 |
 | DOM 堆积导致卡顿 | 长会话创建大量 artifact iframe。 | 虚拟列表 + 离屏卸载 + 最大同时活跃数限制 + 快照替代。 |
 | 状态 patch 冲突 | 多个节点同时 patch 同一 artifact。 | artifact patch 通过 Runtime 串行化，每个版本基于上一版本。 |
@@ -459,7 +459,7 @@ artifact 进入视口
 | 第一层 state diff 渲染 | LLM 输出 `state_diff` 后，内置组件正确显示物品、属性或任务变化。 |
 | 第二层白名单渲染器 | LLM 输出 `component_declaration` 后，校验 renderer 和 props，使用白名单组件渲染。 |
 | 第二层非法渲染器 | LLM 引用不在白名单的 renderer 时，拒绝渲染，回退到第一层或显示错误。 |
-| 第三层 iframe 沙箱隔离 | artifact 内 JS 无法访问 `window.parent.document`、`localStorage`、网络。 |
+| 第三层 iframe 沙箱隔离 | LLM artifact 内 JS 无法访问 `window.parent.document`、持久存储和网络。 |
 | postMessage 通信 | 主页面发送 `init` 和 `state_update`，iframe 正确接收并响应 `ready` 和 `state_change`。 |
 | 离屏卸载与恢复 | artifact 滚出视口后 iframe 被卸载，滚回后恢复，用户无感知中断。 |
 | 资源预算 DOM 超限 | artifact DOM 超过 1000 节点时截断渲染并显示提示。 |

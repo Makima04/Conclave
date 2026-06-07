@@ -178,6 +178,8 @@ export default function WorldBooks() {
             id: result.id, name: result.name, description: result.description,
             original_format: result.original_format, entry_count: result.entries.length,
             has_character_card: result.has_character_card,
+            character_card_name: result.character_card_name,
+            character_card_avatar: result.character_card_avatar,
             created_at: result.created_at, updated_at: result.updated_at,
           }, ...prev]);
         } catch (err) {
@@ -199,6 +201,8 @@ export default function WorldBooks() {
             id: result.id, name: result.name, description: result.description,
             original_format: result.original_format, entry_count: result.entries.length,
             has_character_card: result.has_character_card,
+            character_card_name: result.character_card_name,
+            character_card_avatar: result.character_card_avatar,
             created_at: result.created_at, updated_at: result.updated_at,
           }, ...prev]);
         } catch (err) {
@@ -423,19 +427,28 @@ export default function WorldBooks() {
       <div className="wb-grid">
         {books.map(book => (
           <div key={book.id} className="wb-card" onClick={() => loadDetail(book.id)}>
-            <div className="wb-card-header">
-              <h3 className="wb-card-name">{book.name}</h3>
-              <span className="wb-card-format">{book.original_format}</span>
+            <div className="wb-card-avatar">
+              {book.character_card_avatar && book.character_card_avatar !== 'none' ? (
+                <img src={book.character_card_avatar} alt="" />
+              ) : (
+                <span className="wb-card-avatar-fallback">📚</span>
+              )}
             </div>
-            <div className="wb-card-body">
-              <span className="wb-card-meta">{book.entry_count} 个条目</span>
-              {book.has_character_card && <span className="wb-card-tag">🎭 角色卡</span>}
-            </div>
-            <div className="wb-card-footer">
-              <span className="wb-card-date">{new Date(book.created_at).toLocaleDateString()}</span>
-              <div className="wb-card-actions" onClick={e => e.stopPropagation()}>
-                <button className="wb-icon-btn" title="导出" onClick={() => handleExport(book)}>📤</button>
-                <button className="wb-icon-btn wb-danger-icon" title="删除" onClick={() => handleDelete(book.id)}>🗑️</button>
+            <div className="wb-card-content">
+              <div className="wb-card-header">
+                <h3 className="wb-card-name">{book.name}</h3>
+                <span className="wb-card-format">{book.original_format}</span>
+              </div>
+              <div className="wb-card-body">
+                <span className="wb-card-meta">{book.entry_count} 个条目</span>
+                {book.has_character_card && <span className="wb-card-tag">🎭 角色卡</span>}
+              </div>
+              <div className="wb-card-footer">
+                <span className="wb-card-date">{new Date(book.created_at).toLocaleDateString()}</span>
+                <div className="wb-card-actions" onClick={e => e.stopPropagation()}>
+                  <button className="wb-icon-btn" title="导出" onClick={() => handleExport(book)}>📤</button>
+                  <button className="wb-icon-btn wb-danger-icon" title="删除" onClick={() => handleDelete(book.id)}>🗑️</button>
+                </div>
               </div>
             </div>
           </div>

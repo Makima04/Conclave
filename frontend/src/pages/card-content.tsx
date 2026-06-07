@@ -41,6 +41,28 @@ export function getRegexScripts(card: CharacterCard | null): any[] {
   return Array.isArray(scripts) ? scripts : [];
 }
 
+export function getTavernHelperScripts(card: CharacterCard | null): Array<{ name: string; content: string }> {
+  const scripts = card?.extensions?.tavern_helper?.scripts;
+  if (!Array.isArray(scripts)) return [];
+  return scripts.flatMap((script: any) => {
+    const disabled = script?.disabled === true || script?.enabled === false;
+    const content = typeof script?.content === 'string'
+      ? script.content
+      : typeof script?.script === 'string'
+        ? script.script
+        : '';
+    if (disabled || !content.trim()) return [];
+    return [{
+      name: String(script?.name || script?.script_name || script?.scriptName || 'TavernHelper Script'),
+      content,
+    }];
+  });
+}
+
+export function hasTavernHelperScripts(card: CharacterCard | null): boolean {
+  return getTavernHelperScripts(card).length > 0;
+}
+
 export function getUiReplaceStringForContent(card: CharacterCard | null, content: string): string {
   const scripts = getRegexScripts(card);
   const script = scripts.find((item: any) => {
@@ -60,6 +82,18 @@ export function isComplexCardUiSource(source: string): boolean {
     || /<html\b|<head\b|<body\b|<style\b/i.test(source)
     || /<script\b/i.test(source)
     || /\b(?:cx-launcher|view-container|TavernHelper|jquery|audio|music)\b/i.test(source);
+}
+
+function isSandboxUiSource(source: string): boolean {
+  return /<!doctype\b|<html\b|<head\b|<body\b|<script\b/i.test(source)
+    || /\b(?:cx-launcher|view-container|TavernHelper|jquery|audio|music)\b/i.test(source);
+}
+
+function getSandboxRegexScripts(card: CharacterCard | null): any[] {
+  return getRegexScripts(card).filter((item: any) => {
+    if (item?.disabled || typeof item?.replaceString !== 'string') return false;
+    return isSandboxUiSource(stripCodeFence(item.replaceString));
+  });
 }
 
 export function hasComplexCardUi(card: CharacterCard | null): boolean {
@@ -87,7 +121,12 @@ export function isGameStartCard(card: CharacterCard | null): boolean {
 // --- GROUP 7: HTML sanitization & serialization ---
 
 export function getSandboxHtmlForContent(card: CharacterCard | null, content: string): string {
-  const result = executeStRegexScripts(card, content);
+  const sandboxScripts = getSandboxRegexScripts(card);
+  if (sandboxScripts.length === 0) return '';
+  const result = executeStRegexScripts(
+    { extensions: { regex_scripts: sandboxScripts } },
+    content,
+  );
   if (!result.matched || !result.html) return '';
   return sanitizeSandboxHtml(result.html, { allowScripts: true });
 }
@@ -141,6 +180,7 @@ export function applyCardDisplayRegexScripts(card: CharacterCard | null, content
     if (typeof script.findRegex !== 'string' || typeof script.replaceString !== 'string') continue;
     if (!script.replaceString || /<script\b/i.test(script.replaceString)) continue;
     if (script.findRegex === '<StatusPlaceHolderImpl/>' || script.findRegex.includes('GameStart')) continue;
+    if (isSandboxUiSource(stripCodeFence(script.replaceString))) continue;
     if (script.findRegex.includes('UpdateVariable')) continue;
 
     const replacement = sanitizeHtmlFragment(script.replaceString);
@@ -151,6 +191,62 @@ export function applyCardDisplayRegexScripts(card: CharacterCard | null, content
     }
   }
   return output;
+}
+
+type DisplayPart = {
+  type: 'text' | 'html';
+  content: string;
+};
+
+const DISPLAY_HTML_OPEN = '\uE000XRP_HTML_';
+const DISPLAY_HTML_CLOSE = '_XRP_HTML\uE001';
+
+function applyCardDisplayRegexScriptsToParts(card: CharacterCard | null, content: string): DisplayPart[] {
+  const htmlParts: string[] = [];
+  let output = content;
+
+  for (const script of getRegexScripts(card)) {
+    if (script?.disabled || script?.promptOnly || !script?.markdownOnly) continue;
+    if (typeof script.findRegex !== 'string' || typeof script.replaceString !== 'string') continue;
+    if (!script.replaceString || /<script\b/i.test(script.replaceString)) continue;
+    if (script.findRegex === '<StatusPlaceHolderImpl/>' || script.findRegex.includes('GameStart')) continue;
+    if (isSandboxUiSource(stripCodeFence(script.replaceString))) continue;
+    if (script.findRegex.includes('UpdateVariable')) continue;
+
+    const replacement = sanitizeHtmlFragment(script.replaceString);
+    const regex = parseFindRegex(script.findRegex);
+    if (!regex) continue;
+
+    regex.lastIndex = 0;
+    output = output.replace(regex, (...args: any[]) => {
+      const match = args[0] as string;
+      const captures = args.slice(1, -2).map(value => String(value ?? ''));
+      const expanded = replacement.replace(/\$(\$|&|`|'|\d{1,2})/g, (token, key) => {
+        if (key === '$') return '$';
+        if (key === '&') return match;
+        if (key === '`' || key === "'") return '';
+        const index = Number(key);
+        return Number.isFinite(index) && index > 0 ? (captures[index - 1] || '') : token;
+      });
+      const index = htmlParts.push(expanded) - 1;
+      return `${DISPLAY_HTML_OPEN}${index}${DISPLAY_HTML_CLOSE}`;
+    });
+  }
+
+  const parts: DisplayPart[] = [];
+  const markerRegex = new RegExp(`${DISPLAY_HTML_OPEN}(\\d+)${DISPLAY_HTML_CLOSE}`, 'g');
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = markerRegex.exec(output)) !== null) {
+    const before = output.slice(cursor, match.index);
+    if (before.trim()) parts.push({ type: 'text', content: before });
+    const html = htmlParts[Number(match[1])];
+    if (html?.trim()) parts.push({ type: 'html', content: html });
+    cursor = match.index + match[0].length;
+  }
+  const rest = output.slice(cursor);
+  if (rest.trim() || parts.length === 0) parts.push({ type: 'text', content: rest });
+  return parts;
 }
 
 // --- GROUP 25: Text cleaning & inline decorator utilities ---
@@ -229,12 +325,18 @@ export function renderCardFormattedContent(card: CharacterCard | null, content: 
     .replace(/<\/?initvar>/gi, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-  const formatted = applyCardDisplayRegexScripts(card, normalized)
+  const cleaned = normalized
     .replace(/<UpdateVariable(?:variable)?\b[^>]*>[\s\S]*?<\/UpdateVariable(?:variable)?>/gi, '')
     .trim();
+  const parts = applyCardDisplayRegexScriptsToParts(card, cleaned);
 
-  if (/<(?:style|div|span|details|summary|img)\b/i.test(formatted)) {
-    return <div className="card-regex-html" dangerouslySetInnerHTML={{ __html: sanitizeHtmlFragment(formatted) }} />;
-  }
-  return renderInlineDecorators(formatted);
+  return parts.map((part, index) => part.type === 'html' ? (
+    <div
+      key={`html-${index}`}
+      className="card-regex-html"
+      dangerouslySetInnerHTML={{ __html: part.content }}
+    />
+  ) : (
+    <React.Fragment key={`text-${index}`}>{renderInlineDecorators(part.content)}</React.Fragment>
+  ));
 }

@@ -554,27 +554,38 @@ pub async fn list_worldbooks(
     .fetch_all(&state.pool)
     .await?;
 
-    // Check which world books have character cards
-    let cc_rows: Vec<String> = sqlx::query_scalar("SELECT world_book_id FROM character_cards")
-        .fetch_all(&state.pool)
-        .await?;
+    // Check which world books have character cards and fetch card names/avatars
+    let cc_rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT world_book_id, name, avatar FROM character_cards",
+    )
+    .fetch_all(&state.pool)
+    .await?;
 
-    let cc_set: std::collections::HashSet<String> = cc_rows.into_iter().collect();
+    let cc_map: std::collections::HashMap<String, (String, String)> =
+        cc_rows.into_iter().map(|(wid, name, avatar)| (wid, (name, avatar))).collect();
     let count_map: std::collections::HashMap<String, i64> = count_rows.into_iter().collect();
 
     let items: Vec<serde_json::Value> = rows
         .iter()
         .map(|(id, name, desc, fmt, created, updated)| {
-            serde_json::json!({
+            let mut val = serde_json::json!({
                 "id": id,
                 "name": name,
                 "description": desc,
                 "original_format": fmt,
                 "entry_count": count_map.get(id).copied().unwrap_or(0),
-                "has_character_card": cc_set.contains(id),
+                "has_character_card": cc_map.contains_key(id),
                 "created_at": created,
                 "updated_at": updated,
-            })
+            });
+            if let Some((cc_name, cc_avatar)) = cc_map.get(id) {
+                val["character_card_name"] = serde_json::json!(cc_name);
+                val["character_card_avatar"] = serde_json::json!(cc_avatar);
+            } else {
+                val["character_card_name"] = serde_json::json!(null);
+                val["character_card_avatar"] = serde_json::json!(null);
+            }
+            val
         })
         .collect();
 

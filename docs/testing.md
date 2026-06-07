@@ -13,6 +13,7 @@
 - [Agent 边界](agent-boundaries.md)
 - [长期记忆](long-context-memory.md)
 - [内容包规范](content-packages.md)
+- [角色卡渲染运行时](card-rendering-runtime.md)
 - [Artifact Renderer](artifact-renderer.md)
 
 ---
@@ -64,7 +65,7 @@
 
 **工具：** Rust 集成测试 + 自定义场景脚本。
 
-**覆盖范围：** 以下九个风险域。
+**覆盖范围：** 以下十个风险域。
 
 ### 4. 性能基准
 
@@ -163,7 +164,7 @@ Artifact iframe 沙箱安全、资源受控、不污染主 DOM。
 | 测试 | 方法 | 通过标准 |
 |---|---|---|
 | iframe 无法访问主 DOM | artifact 内执行 `window.parent.document`。 | 抛出安全错误或返回 null。 |
-| iframe 无法访问存储 | artifact 内执行 `localStorage.setItem`。 | 被沙箱阻止。 |
+| LLM artifact 无法访问存储 | artifact 内执行 `localStorage.setItem`。 | 被沙箱阻止或被平台 shim 拒绝。角色卡 sandbox 例外，见 `card-rendering-runtime.md`。 |
 | iframe 无法发起网络请求 | artifact 内执行 `fetch('https://evil.com')`。 | CSP 阻止，请求失败。 |
 | DOM 节点超限 | artifact 渲染超过 1000 个 DOM 节点。 | 截断渲染，显示提示。 |
 | JS 大小超限 | artifact JS 超过 200KB。 | 拒绝加载，显示静态预览。 |
@@ -195,6 +196,21 @@ SSE 连接稳定、事件完整、断线可恢复。
 | 连接中断恢复 | 模拟 SSE 连接在轮次中间断开。 | 客户端可通过 `GET /messages` 拉取已完成的完整消息。 |
 | 大消息分块 | 发送触发长文本输出的输入。 | 消息分多个 `message_delta` 事件推送，无丢失或乱序。 |
 | 并发会话隔离 | 同时在两个会话发送消息。 | 各自的 SSE 流互不干扰，消息归属正确会话。 |
+
+### 域 10：角色卡 Sandbox 渲染
+
+复杂角色卡的 HTML app 能在 iframe 中可用渲染，同时保留宿主会话能力和性能边界。详细运行时约束见 [角色卡渲染运行时](card-rendering-runtime.md)。
+
+| 测试 | 方法 | 通过标准 |
+|---|---|---|
+| 空会话开局渲染 | 新建绑定复杂卡的空会话。 | 首屏显示 `first_mes` 或 `【GameStart】` 驱动的卡作者 HTML app，不黑屏、不只显示附件占位。 |
+| 开场白选择 | 会话开始前在右侧栏切换主开场/备选开场并应用。 | 聊天区 opening preview 随选择更新；已有正式消息后入口禁用。 |
+| 当前会话读档 | 卡内点击当前会话存档。 | 宿主不阻止卡自己的 click handler，卡内界面能进入对应状态。 |
+| 跨会话读档 | 卡内点击同世界其他会话存档。 | 宿主导航到目标 `/chat/<sessionId>`，目标会话正确打开。 |
+| 普通按钮隔离 | 点击非 `load-save` 的卡内按钮。 | 宿主不误拦截，卡作者脚本按自身逻辑执行。 |
+| 流式输出降级 | 生成过程中收到 assistant token 增量。 | 流式阶段只渲染文本，不反复创建复杂 iframe。 |
+| 离屏挂载控制 | 长会话中存在多条复杂卡消息并滚动。 | 离屏 iframe 不持续触发 resize 风暴，靠近视口再挂载。 |
+| 共享存档轻量化 | 同世界存在多条历史会话。 | 注入 sandbox 的 save index/payload 不包含完整历史消息，初始化不卡顿。 |
 
 ---
 
@@ -298,6 +314,8 @@ TraceAssert(trace_id)
 | 内容包导入（10MB ZIP） | < 5s | 解压 + 校验 + 写入。 |
 | Artifact iframe 创建 | < 100ms | 从创建到 `ready` 事件。 |
 | Artifact 快照保存 | < 50ms | 保存 iframe 静态 HTML。 |
+| 角色卡 opening preview 挂载 | < 300ms | 从空会话进入到 iframe 发出 `ready`，不含图片网络加载。 |
+| 角色卡按钮切换响应 | < 100ms | 点击卡内页签/按钮到宿主高度稳定，关注相对回归。 |
 | SSE 连接建立 | < 50ms | 从请求到首个事件。 |
 | 长会话 500 轮后页面滚动 | 60fps | 使用虚拟列表，DOM 节点数不随消息数增长。 |
 
@@ -315,7 +333,7 @@ TraceAssert(trace_id)
 |---|---|---|---|
 | 单元测试 | 每次提交 | < 10s | 逻辑正确性。 |
 | 集成测试 | 每次 PR | < 60s | API 和数据库链路。 |
-| 场景测试 | 每次 PR | < 5min | 八大风险域。 |
+| 场景测试 | 每次 PR | < 5min | 十个风险域。 |
 | 长会话测试 | 每日/手动 | < 30min | 100-1000 轮回归。 |
 | 性能基准 | 每次 PR | < 2min | 关键路径延迟。 |
 
@@ -343,6 +361,7 @@ TraceAssert(trace_id)
 | Agent 越权测试 | 所有权限矩阵中的禁止场景被 Runtime 正确拦截。 |
 | 状态提交测试 | low/medium/high 三级风险的提交行为符合规范。 |
 | Artifact 隔离测试 | iframe 沙箱阻止所有禁止行为，资源预算被严格执行。 |
+| 角色卡 sandbox 测试 | 空会话开局、开场白选择、读档跳转、普通按钮和流式降级均符合运行时规范。 |
 | 流式输出测试 | SSE 事件序列完整、增量文本可拼接、断线可恢复。 |
 | 性能基准无回归 | 关键路径延迟不超基线 20%。 |
 | Mock Provider 覆盖所有 Agent 类型 | Parser、Master、NPC、Writer、Director、State（Compression）Agent 都有对应 mock 响应。 |

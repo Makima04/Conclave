@@ -149,16 +149,47 @@
   cursor: pointer;
   font-size: 13px;
   background: var(--panel);
+  color: var(--text-2);
+  transition: color var(--transition), border-color var(--transition), background var(--transition);
+}
+
+.agent-actions button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.edit-btn {
+  color: var(--text-2);
+}
+
+.edit-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .cooldown-btn:hover {
+  color: var(--warn);
   background: rgba(184,154,91,0.12);
   border-color: var(--warn);
 }
 
 .restore-btn:hover {
+  color: var(--success);
   background: rgba(91,138,94,0.12);
   border-color: var(--success);
+}
+
+.agent-actions .delete-btn {
+  color: var(--danger);
+  border-color: rgba(201, 37, 70, 0.38);
+}
+
+.agent-actions .delete-btn:hover {
+  color: #fff;
+  background: rgba(201, 37, 70, 0.22);
+  border-color: var(--danger);
 }
 
 .agents-btn {
@@ -218,6 +249,14 @@
   cursor: pointer;
   font-size: 14px;
   background: var(--panel);
+  color: var(--text-2);
+  transition: color var(--transition), border-color var(--transition), background var(--transition);
+}
+
+.modal-actions button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .modal-actions button:first-child {
@@ -230,4 +269,3 @@
   border-color: var(--accent);
   color: var(--accent);
 }
-

@@ -348,7 +348,7 @@ Agent Graph Pack 可以在 `config.json` 中声明所需权限。平台在导入
 
 ## Plugin Pack — 能力包
 
-Plugin Pack 为平台扩展新节点类型、工具、检索器或渲染组件。V1 只做高层定义，详细规范留待 [插件系统规范](plugin-system.md)（待补）。
+Plugin Pack 为平台扩展新节点类型、工具、检索器或渲染组件。V1 只做高层定义，详细规范留待插件系统规范（待补）。
 
 ### 目录结构
 

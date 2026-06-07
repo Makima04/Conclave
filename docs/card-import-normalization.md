@@ -1,8 +1,8 @@
 # 卡片导入标准化规范
 
-> 定义 SillyTavern 等外部角色卡如何在导入期转换为平台原生卡包。运行时不应无限兼容外部生态；复杂兼容、修复和转译应尽量前移到导入流程。
+> 定义 SillyTavern 等外部角色卡如何在导入期转换为平台原生卡包。复杂兼容、修复和转译应尽量前移到导入流程；当前运行时仍保留受控 sandbox 兼容层，详见 [角色卡渲染运行时](card-rendering-runtime.md)。
 
-`Card Import` · `SillyTavern Migration` · `Conclave Card Package` · `Normalization` · `Deprecated Runtime Compatibility`
+`Card Import` · `SillyTavern Migration` · `Conclave Card Package` · `Normalization` · `Controlled Runtime Compatibility`
 
 ---
 
@@ -10,6 +10,7 @@
 - [架构首页](index.md)
 - [内容包规范](content-packages.md)
 - [Artifact Renderer 规范](artifact-renderer.md)
+- [角色卡渲染运行时](card-rendering-runtime.md)
 
 ---
 
@@ -50,9 +51,9 @@ Conclave Card Package
 
 ---
 
-## Deprecated：运行时无限兼容 ST Sandbox
+## 运行时 ST Sandbox：受控兼容，不是无限兼容
 
-以下方案标记为 **Deprecated**，只能作为临时兜底，不作为长期主路径：
+以下方案不再视为产品主路径，但当前作为复杂卡可用性的受控兼容层存在：
 
 ```text
 每次渲染消息时
@@ -62,7 +63,7 @@ Conclave Card Package
   -> 根据 runtimeError 继续打补丁
 ```
 
-废弃原因：
+风险：
 
 - 前端运行时会逐步变成半个 SillyTavern，维护边界失控。
 - 每张复杂卡都可能引入新的浏览器 API、ST 扩展 API、存储模型或脚本语法。
@@ -70,14 +71,14 @@ Conclave Card Package
 - 沙盒兼容层越厚，安全审计越困难。
 - 卡片 JS bundle 可能包含浏览器/语法兼容问题，应该在导入期转译，而不是在会话中失败。
 
-允许保留的用途：
+允许用途：
 
-- 导入标准化失败时的临时预览。
+- 导入标准化失败时的可用渲染。
 - 迁移工具开发阶段的对照渲染。
-- 高级用户显式选择“原始 ST 沙盒模式”。
+- HTML app 类型 `ConclaveCardPackage` 的运行容器。
 - 收集缺口报告，反哺导入器规则。
 
-运行时 ST sandbox 必须被视为 fallback，而不是产品主路径。
+运行时兼容层必须有边界：只新增通用 shim，不为单张卡无限补私有协议。共享存档、开场白选择和性能策略见 [角色卡渲染运行时](card-rendering-runtime.md)。
 
 ---
 
@@ -310,9 +311,9 @@ LLM 只用于语义理解和补全，不用于执行或安全判断。
 
 ## 运行时要求
 
-运行时不再以 ST 兼容为核心。运行时只负责：
+长期目标是运行时不以 ST 兼容为核心。当前运行时负责：
 
-- 渲染 `Conclave Card Package` 中声明的 UI。
+- 渲染 `Conclave Card Package` 中声明的 UI，包括 HTML app iframe。
 - 提供平台变量存储。
 - 执行平台 action bridge。
 - 隔离 HTML app。
@@ -321,10 +322,11 @@ LLM 只用于语义理解和补全，不用于执行或安全判断。
 运行时允许的外部兼容：
 
 - 只读预览原始卡。
-- 临时 fallback sandbox。
-- 用户显式开启的兼容模式。
+- 受控 sandbox 兼容层。
+- ST 常见存储和 TavernHelper/MVU shim。
+- 宿主级共享存档桥接。
 
-运行时不应新增：
+运行时兼容层不应新增：
 
 - 针对单张卡的解析器。
 - 为某张卡补的专用 API。
@@ -421,4 +423,3 @@ LLM 只用于语义理解和补全，不用于执行或安全判断。
 8. 生成 import-report。
 9. 前端运行时改为优先加载平台卡包。
 10. 将 ST runtime sandbox 标记为 fallback，并默认不作为主路径。
-

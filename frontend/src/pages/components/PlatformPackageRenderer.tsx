@@ -1,10 +1,11 @@
 import React, { useRef, useEffect, useMemo, useState } from 'react';
 import type { ConclaveCardPackage, PackageUi } from '../../api/types';
-import { buildSandboxDocument } from '../sandbox-document';
+import { buildSandboxDocument, type SandboxRuntimeContext } from '../sandbox-document';
 
 interface PlatformPackageRendererProps {
   pkg: ConclaveCardPackage;
   variables?: Record<string, unknown>;
+  runtime?: SandboxRuntimeContext;
   onAction?: (actionId: string, payload?: unknown) => void;
 }
 
@@ -16,14 +17,14 @@ interface PlatformPackageRendererProps {
  * - Schema: falls back to schema-based rendering
  * - RawPreview: shows raw content
  */
-export function PlatformPackageRenderer({ pkg, variables, onAction }: PlatformPackageRendererProps) {
+export function PlatformPackageRenderer({ pkg, variables, runtime, onAction }: PlatformPackageRendererProps) {
   const { ui } = pkg;
 
   switch (ui.type) {
     case 'html_app':
-      return <HtmlAppRenderer ui={ui} pkg={pkg} variables={variables} onAction={onAction} />;
+      return <HtmlAppRenderer ui={ui} pkg={pkg} variables={variables} runtime={runtime} onAction={onAction} />;
     case 'html_fragment':
-      return <HtmlFragmentRenderer ui={ui} pkg={pkg} variables={variables} onAction={onAction} />;
+      return <HtmlFragmentRenderer ui={ui} pkg={pkg} variables={variables} runtime={runtime} onAction={onAction} />;
     case 'text':
       return <TextRenderer content={ui.html || ''} />;
     case 'raw_preview':
@@ -34,10 +35,26 @@ export function PlatformPackageRenderer({ pkg, variables, onAction }: PlatformPa
   }
 }
 
-function HtmlAppRenderer({ ui, pkg, variables, onAction }: { ui: PackageUi; pkg: ConclaveCardPackage; variables?: Record<string, unknown>; onAction?: (id: string, payload?: unknown) => void }) {
+function HtmlAppRenderer({ ui, pkg, variables, runtime, onAction }: { ui: PackageUi; pkg: ConclaveCardPackage; variables?: Record<string, unknown>; runtime?: SandboxRuntimeContext; onAction?: (id: string, payload?: unknown) => void }) {
+  const shellRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [mounted, setMounted] = useState(false);
   const [height, setHeight] = useState(640);
-  const htmlContent = useMemo(() => buildSandboxDocument(buildIframeSrc(ui), variables || {}), [ui, variables]);
+  const htmlSource = useMemo(() => buildIframeSrc(ui), [ui]);
+  const htmlContent = useMemo(() => mounted ? buildSandboxDocument(htmlSource, variables || {}, runtime) : '', [mounted, htmlSource, variables, runtime]);
+
+  useEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        setMounted(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: '900px 0px' });
+    observer.observe(shell);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const iframe = iframeRef.current;
@@ -48,7 +65,11 @@ function HtmlAppRenderer({ ui, pkg, variables, onAction }: { ui: PackageUi; pkg:
       if (e.data?.type === 'sandbox-resize') {
         const next = Number(e.data.height);
         if (Number.isFinite(next)) {
-          setHeight(Math.max(360, Math.min(1800, next)));
+          setHeight(current => {
+            const clamped = Math.max(360, Math.min(1800, next));
+            return Math.abs(clamped - current) < 8 ? current : clamped;
+          });
+          onAction?.('sandboxResize', { height: next });
         }
       } else if (e.data?.type === 'state_change' && onAction) {
         onAction('state_change', e.data.changes);
@@ -69,16 +90,20 @@ function HtmlAppRenderer({ ui, pkg, variables, onAction }: { ui: PackageUi; pkg:
   }, [onAction]);
 
   return (
-    <div className="platform-package-renderer html-app">
-      <iframe
-        ref={iframeRef}
-        srcDoc={htmlContent}
-        sandbox="allow-scripts"
-        className="package-iframe"
-        title={pkg.manifest.name}
-        referrerPolicy="no-referrer"
-        style={{ height }}
-      />
+    <div ref={shellRef} className="platform-package-renderer html-app">
+      {mounted ? (
+        <iframe
+          ref={iframeRef}
+          srcDoc={htmlContent}
+          sandbox="allow-scripts"
+          className="package-iframe"
+          title={pkg.manifest.name}
+          referrerPolicy="no-referrer"
+          style={{ height }}
+        />
+      ) : (
+        <div className="package-iframe-placeholder" style={{ height }} />
+      )}
     </div>
   );
 }
@@ -109,12 +134,28 @@ ${js}
 </html>`;
 }
 
-function HtmlFragmentRenderer({ ui, pkg, variables, onAction }: { ui: PackageUi; pkg: ConclaveCardPackage; variables?: Record<string, unknown>; onAction?: (id: string, payload?: unknown) => void }) {
+function HtmlFragmentRenderer({ ui, pkg, variables, runtime, onAction }: { ui: PackageUi; pkg: ConclaveCardPackage; variables?: Record<string, unknown>; runtime?: SandboxRuntimeContext; onAction?: (id: string, payload?: unknown) => void }) {
   // Use sandbox iframe for html_fragment too, so Vue runtime, bridge APIs
   // (TavernHelper, eventOn, etc.), and sandbox isolation are all available.
+  const shellRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [mounted, setMounted] = useState(false);
   const [height, setHeight] = useState(640);
-  const htmlContent = useMemo(() => buildSandboxDocument(buildIframeSrc(ui), variables || {}), [ui, variables]);
+  const htmlSource = useMemo(() => buildIframeSrc(ui), [ui]);
+  const htmlContent = useMemo(() => mounted ? buildSandboxDocument(htmlSource, variables || {}, runtime) : '', [mounted, htmlSource, variables, runtime]);
+
+  useEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        setMounted(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: '900px 0px' });
+    observer.observe(shell);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const iframe = iframeRef.current;
@@ -125,7 +166,11 @@ function HtmlFragmentRenderer({ ui, pkg, variables, onAction }: { ui: PackageUi;
       if (e.data?.type === 'sandbox-resize') {
         const next = Number(e.data.height);
         if (Number.isFinite(next)) {
-          setHeight(Math.max(360, Math.min(1800, next)));
+          setHeight(current => {
+            const clamped = Math.max(360, Math.min(1800, next));
+            return Math.abs(clamped - current) < 8 ? current : clamped;
+          });
+          onAction?.('sandboxResize', { height: next });
         }
       } else if (e.data?.type === 'state_change' && onAction) {
         onAction('state_change', e.data.changes);
@@ -146,16 +191,20 @@ function HtmlFragmentRenderer({ ui, pkg, variables, onAction }: { ui: PackageUi;
   }, [onAction]);
 
   return (
-    <div className="platform-package-renderer html-fragment">
-      <iframe
-        ref={iframeRef}
-        srcDoc={htmlContent}
-        sandbox="allow-scripts"
-        className="package-iframe"
-        title={pkg.manifest.name}
-        referrerPolicy="no-referrer"
-        style={{ height, border: 'none' }}
-      />
+    <div ref={shellRef} className="platform-package-renderer html-fragment">
+      {mounted ? (
+        <iframe
+          ref={iframeRef}
+          srcDoc={htmlContent}
+          sandbox="allow-scripts"
+          className="package-iframe"
+          title={pkg.manifest.name}
+          referrerPolicy="no-referrer"
+          style={{ height, border: 'none' }}
+        />
+      ) : (
+        <div className="package-iframe-placeholder" style={{ height }} />
+      )}
     </div>
   );
 }

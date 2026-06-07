@@ -11,6 +11,15 @@ import type { useStreamRecovery } from './useStreamRecovery';
 
 type RecoveryApi = ReturnType<typeof useStreamRecovery>;
 
+export type SandboxSubmissionState = {
+  status: 'pending' | 'streaming' | 'finalizing' | 'error';
+  sourceMessageId: string | null;
+  userMessage: string;
+  assistantMessage: string;
+  error: string | null;
+  updatedAt: number;
+};
+
 export function useMessageStream({
   sessionId,
   messages,
@@ -87,7 +96,10 @@ export function useMessageStream({
   const [editContent, setEditContent] = useState('');
   const [input, setInput] = useState('');
   const [sandboxActionLog, setSandboxActionLog] = useState<Array<{ time: number; action: string; payload: any }>>([]);
+  const [sandboxSubmission, setSandboxSubmission] = useState<SandboxSubmissionState | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const sandboxDraftRef = useRef('');
+  const sandboxSubmitRef = useRef<{ content: string; time: number } | null>(null);
 
   // --- derived ---
   const inputLocked = streaming || recovering || memoryPending;
@@ -147,13 +159,27 @@ export function useMessageStream({
 
   // --- send / stream ---
 
-  async function handleSend(overrideContent?: string) {
+  async function handleSend(overrideContent?: string, options?: { sandboxSourceMessageId?: string | null }) {
     const content = overrideContent ?? input.trim();
     if (!content || streaming || recovering || memoryPending || !sessionId) return;
+    const sandboxSourceMessageId = options?.sandboxSourceMessageId || null;
+    sandboxDraftRef.current = '';
     setFailedContent(null);
     setStreamError(null);
     streamHadErrorRef.current = false;
     setMemoryBusy(false);
+    if (sandboxSourceMessageId) {
+      setSandboxSubmission({
+        status: 'pending',
+        sourceMessageId: sandboxSourceMessageId,
+        userMessage: content,
+        assistantMessage: '',
+        error: null,
+        updatedAt: Date.now(),
+      });
+    } else {
+      setSandboxSubmission(null);
+    }
 
     if (configDirty) {
       await saveConfig();
@@ -169,7 +195,9 @@ export function useMessageStream({
       variant_index: -1,
       created_at: new Date().toISOString(),
     };
-    setMessages(prev => [...prev, userMsg]);
+    if (!sandboxSourceMessageId) {
+      setMessages(prev => [...prev, userMsg]);
+    }
     setInput('');
     setStreaming(true);
     streamingRef.current = true;
@@ -198,6 +226,11 @@ export function useMessageStream({
               setStreamText(prev => {
                 const next = prev + message.data.content;
                 streamTextRef.current = next;
+                if (sandboxSourceMessageId) {
+                  setSandboxSubmission(current => current?.sourceMessageId === sandboxSourceMessageId
+                    ? { ...current, status: 'streaming', assistantMessage: next, error: null, updatedAt: Date.now() }
+                    : current);
+                }
                 return next;
               });
             }
@@ -205,6 +238,11 @@ export function useMessageStream({
           case 'stream_error':
             streamHadErrorRef.current = true;
             setStreamError(message.data.error || '生成出现错误，正在重试...');
+            if (sandboxSourceMessageId) {
+              setSandboxSubmission(current => current?.sourceMessageId === sandboxSourceMessageId
+                ? { ...current, status: 'error', error: message.data.error || '生成出现错误，正在重试...', updatedAt: Date.now() }
+                : current);
+            }
             break;
           case 'state_update':
             break;
@@ -229,10 +267,18 @@ export function useMessageStream({
               variant_index: -1,
               created_at: new Date().toISOString(),
             };
-            setMessages(prev => [...prev, assistantMsg]);
+            if (!sandboxSourceMessageId) {
+              setMessages(prev => [...prev, assistantMsg]);
+            }
+            if (sandboxSourceMessageId) {
+              setSandboxSubmission(current => current?.sourceMessageId === sandboxSourceMessageId
+                ? { ...current, status: 'finalizing', assistantMessage: messageContent, error: null, updatedAt: Date.now() }
+                : current);
+            }
             setStreamText('');
             streamTextRef.current = '';
             setMemoryBusy(true);
+            void loadMessages();
             break;
           }
           case 'turn_ready':
@@ -241,6 +287,9 @@ export function useMessageStream({
             setStreaming(false);
             streamingRef.current = false;
             clearPending();
+            void loadMessages().then(() => {
+              setSandboxSubmission(null);
+            });
             loadSessionState();
             break;
         }
@@ -254,6 +303,11 @@ export function useMessageStream({
         setAgentStatuses([]);
         clearPending();
         setFailedContent(content);
+        if (sandboxSourceMessageId) {
+          setSandboxSubmission(current => current?.sourceMessageId === sandboxSourceMessageId
+            ? { ...current, status: 'error', error: error.message || '发送失败', updatedAt: Date.now() }
+            : current);
+        }
       },
       () => {
         // Safety net: always clear streaming state
@@ -279,6 +333,9 @@ export function useMessageStream({
           void loadMessages();
           setStreamText('');
           streamTextRef.current = '';
+        }
+        if (!streamHadErrorRef.current && sandboxSourceMessageId) {
+          setSandboxSubmission(null);
         }
       },
       config.stream,
@@ -338,8 +395,21 @@ export function useMessageStream({
 
   // --- sandbox action routing ---
 
+  function sendFromSandbox(content: string, sourceMessageId?: string | number | null) {
+    const text = content.trim();
+    if (!text) return;
+    const now = Date.now();
+    const last = sandboxSubmitRef.current;
+    if (last && last.content === text && now - last.time < 1200) return;
+    sandboxSubmitRef.current = { content: text, time: now };
+    handleSend(text, { sandboxSourceMessageId: sourceMessageId == null ? null : String(sourceMessageId) });
+  }
+
   function handleSandboxAction(event: SandboxCardAction, canApplyOpening: boolean, setShowVariableDebug?: (value: boolean) => void) {
-    setSandboxActionLog(prev => [{ time: Date.now(), action: event.action, payload: event.payload }, ...prev].slice(0, 20));
+    setSandboxActionLog(prev => [{ time: Date.now(), action: event.action, payload: event.payload }, ...prev].slice(0, 80));
+    if (event.action === 'diagnostic' || event.action === 'sandboxResize' || event.action === 'runtimeError' || event.action === 'missingApi') {
+      return;
+    }
     if (event.action === 'openStatusPanel') {
       setShowVariableDebug?.(true);
       return;
@@ -358,6 +428,10 @@ export function useMessageStream({
       }
       return;
     }
+    if (event.action === 'submitText') {
+      sendFromSandbox(String(event.payload?.message || ''), event.payload?.sourceMessageId);
+      return;
+    }
     if (event.action === 'submitFreeStart' || event.action === 'formSubmit') {
       const values = event.payload && typeof event.payload === 'object'
         ? Object.entries(event.payload)
@@ -365,7 +439,7 @@ export function useMessageStream({
             .map(([key, value]) => `${key}: ${String(value).trim()}`)
         : [];
       if (values.length > 0) {
-        setInput(prev => prev || values.join('\n'));
+        sendFromSandbox(values.join('\n'), event.payload?.sourceMessageId);
       }
       return;
     }
@@ -377,11 +451,23 @@ export function useMessageStream({
         return;
       }
       if (message) {
+        sandboxDraftRef.current = message;
         setInput(message);
       }
       return;
     }
     if (event.action === 'triggerSlash') {
+      const command = String(event.payload?.command || '').trim();
+      const sendMatch = command.match(/^\/?(?:send|继续书写)\s+([\s\S]+)$/i);
+      if (sendMatch?.[1]?.trim()) {
+        sendFromSandbox(sendMatch[1].trim(), event.payload?.sourceMessageId);
+        return;
+      }
+      const draft = sandboxDraftRef.current.trim() || input.trim();
+      if (command && draft) {
+        sendFromSandbox(draft, event.payload?.sourceMessageId);
+        return;
+      }
       console.debug('Card sandbox slash command:', event.payload);
       return;
     }
@@ -518,6 +604,7 @@ export function useMessageStream({
     editContent,
     setEditContent,
     sandboxActionLog,
+    sandboxSubmission,
     inputLocked,
     // actions
     handleSend,

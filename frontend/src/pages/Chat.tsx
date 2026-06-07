@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import * as api from '../api/client';
 import {
   cleanCardDisplayText,
   hasComplexCardUi,
@@ -9,14 +10,18 @@ import {
 import { buildPlatformCardSchema } from './card-schema-builders';
 import { MessageContent } from './components/MessageContent';
 import '../styles/chat.css';
-import { InspectorSidebar } from './components/InspectorSidebar';
+import { ToolRail } from './components/ToolRail';
+import { ToolDrawer } from './components/ToolDrawer';
+import { InputPanel } from './components/InputPanel';
+import type { InspectorTab } from './components/InspectorSidebar';
+import type { Message, Session } from '../api/types';
+import type { SandboxRuntimeContext, SandboxRuntimeMessage, SandboxRuntimeSubmission, SandboxSharedSave } from './sandbox-document';
 import { useChatSession } from './hooks/useChatSession';
 import { useStreamRecovery } from './hooks/useStreamRecovery';
 import { useMessageStream } from './hooks/useMessageStream';
 
 export default function Chat() {
   const navigate = useNavigate();
-
   // --- hook: session lifecycle ---
   const session = useChatSession();
   const {
@@ -55,7 +60,7 @@ export default function Chat() {
   });
   const {
     streaming, input, setInput, regeneratingId, regenerateErrors, rawViewIds,
-    copiedMsgId, editingId, editContent, setEditContent, sandboxActionLog, inputLocked,
+    copiedMsgId, editingId, editContent, setEditContent, sandboxActionLog, sandboxSubmission, inputLocked,
     handleSend, handleKeyDown, handleApplyGreeting, handleSandboxAction,
     handleRetry, handleRegenerate, handleSwitchVariant, handleEdit,
     handleSaveEdit, handleCancelEdit, handleDelete, getVariants, toggleRawView,
@@ -64,30 +69,133 @@ export default function Chat() {
   const selectedGreetingText = selectedGreetingText_;
 
   // --- local UI state ---
-  const [inspectorOpen, setInspectorOpen] = useState(window.innerWidth > 900);
-  const [inspectorTab, setInspectorTab] = useState<'params' | 'worldbook' | 'preset' | 'agents' | 'render' | 'user' | 'debug'>('params');
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerTab, setDrawerTab] = useState<InspectorTab>('params');
   const [paramsEditing, setParamsEditing] = useState(false);
   const [userEditing, setUserEditing] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const emptyVariables = React.useMemo(() => ({}), []);
+  const [peerSharedSaves, setPeerSharedSaves] = useState<SandboxSharedSave[]>([]);
 
   // --- derived ---
-  const cardHasStatusRenderer = hasStatusRenderer(characterCard);
-  const cardHasComplexUi = hasComplexCardUi(characterCard);
-  const cardHasGameStart = isGameStartCard(characterCard);
-  const openingLocked = messages.some(msg => msg.turn_number > 0);
+  const cardHasStatusRenderer = React.useMemo(() => hasStatusRenderer(characterCard), [characterCard]);
+  const cardHasComplexUi = React.useMemo(() => hasComplexCardUi(characterCard), [characterCard]);
+  const cardHasGameStart = React.useMemo(() => isGameStartCard(characterCard), [characterCard]);
+  const openingLocked = React.useMemo(() => messages.some(msg => msg.turn_number > 0), [messages]);
   const canApplyOpening = !openingLocked;
-  const debugPlatformSchema = buildPlatformCardSchema(characterCard, characterCard?.first_mes || '\u3010GameStart\u3011');
+  const debugPlatformSchema = React.useMemo(
+    () => buildPlatformCardSchema(characterCard, characterCard?.first_mes || ''),
+    [characterCard],
+  );
   const flatVariables = React.useMemo(
     () => sessionState?.variables ? flattenVariables(sessionState.variables) : [],
     [sessionState?.variables],
   );
-  const activeWorldBook = worldBooks.find(book => book.id === activeWorldBookId) || null;
-  const activePreset = config.active_preset_id
-    ? presets.find(preset => preset.id === config.active_preset_id) || null
-    : null;
+  const activeWorldBook = React.useMemo(
+    () => worldBooks.find(book => book.id === activeWorldBookId) || null,
+    [worldBooks, activeWorldBookId],
+  );
+  const activePreset = React.useMemo(
+    () => config.active_preset_id
+      ? presets.find(preset => preset.id === config.active_preset_id) || null
+      : null,
+    [presets, config.active_preset_id],
+  );
   const activePresetMissing = Boolean(config.active_preset_id && !activePreset);
+  const greetingOptions = React.useMemo(() => {
+    if (!characterCard) return [];
+    const options: Array<{ value: number; label: string }> = [];
+    if (characterCard.first_mes) {
+      options.push({ value: -1, label: greetingLabel(characterCard.first_mes, '主开场白') });
+    }
+    characterCard.alternate_greetings.forEach((greeting, index) => {
+      options.push({ value: index, label: greetingLabel(greeting, `可选开场白 ${index + 1}`) });
+    });
+    return options;
+  }, [characterCard, greetingLabel]);
+  const sandboxRuntimeMessages = React.useMemo(
+    () => messages.map(buildSandboxRuntimeMessage),
+    [messages, sessionState?.variables, emptyVariables, userPersona.name, characterCard?.name],
+  );
+  const sandboxRuntimeById = React.useMemo(
+    () => new Map(sandboxRuntimeMessages.map(message => [String(message.id), message])),
+    [sandboxRuntimeMessages],
+  );
+  const runtimeSharedSaves = React.useMemo(() => {
+    if (!sessionId || !characterCard) return peerSharedSaves;
+    const now = new Date().toISOString();
+    const currentSession: Session = {
+      id: sessionId,
+      title: sessionTitle || '自动存档',
+      mode: sessionMode,
+      config,
+      current_turn: messages.length,
+      title_source: 'auto',
+      status: 'idle',
+      world_pack_id: activeWorldBookId || characterCard.world_book_id || null,
+      created_at: messages[0]?.created_at || now,
+      updated_at: messages[messages.length - 1]?.created_at || now,
+    };
+    return [
+      buildSharedSave(currentSession, messages),
+      ...peerSharedSaves.filter(save => save.sessionId !== sessionId),
+    ];
+  }, [activeWorldBookId, characterCard, config, messages, peerSharedSaves, sessionId, sessionMode, sessionState?.variables, sessionTitle, userPersona.name]);
+  const sandboxContextById = React.useMemo(
+    () => new Map(messages.map(message => {
+      const currentMessage = sandboxRuntimeById.get(message.id)
+        || buildSandboxRuntimeMessage(message, sandboxRuntimeMessages.length);
+      return [message.id, {
+        messages: sandboxRuntimeMessages,
+        currentMessage,
+        currentMessageId: message.id,
+        sharedSaves: runtimeSharedSaves,
+      } satisfies SandboxRuntimeContext];
+    })),
+    [messages, sandboxRuntimeMessages, sandboxRuntimeById, runtimeSharedSaves],
+  );
+  const openingPreviewContent = characterCard?.first_mes || '【GameStart】';
+  const sandboxSubmissionRuntime = React.useMemo<SandboxRuntimeSubmission | null>(() => {
+    if (!sandboxSubmission) return null;
+    return {
+      status: sandboxSubmission.status,
+      sourceMessageId: sandboxSubmission.sourceMessageId,
+      userMessage: sandboxSubmission.userMessage,
+      assistantMessage: sandboxSubmission.assistantMessage,
+      error: sandboxSubmission.error,
+      updatedAt: sandboxSubmission.updatedAt,
+    };
+  }, [sandboxSubmission]);
+  const sandboxSubmissionSourceId = sandboxSubmission?.sourceMessageId || null;
+  const isSandboxInlineStreaming = Boolean(sandboxSubmission);
+  const openingPreviewRuntime = React.useMemo(
+    () => buildEmptySessionPreviewRuntime(openingPreviewContent),
+    [openingPreviewContent, runtimeSharedSaves, sessionState?.variables, characterCard?.name, sandboxSubmissionRuntime],
+  );
 
   // --- local helpers ---
+  const handleRailClick = React.useCallback((tab: InspectorTab) => {
+    setDrawerTab(tab);
+    setDrawerOpen(prev => drawerTab === tab ? !prev : true);
+  }, [drawerTab]);
+
+  const handleCloseDrawer = React.useCallback(() => setDrawerOpen(false), []);
+
+  const handleCardSandboxAction = React.useCallback((event: any, sourceMessageId?: string | null) => {
+    const payload = event?.payload && typeof event.payload === 'object' ? event.payload : {};
+    const scopedEvent = sourceMessageId && !payload.sourceMessageId
+      ? { ...event, payload: { ...payload, sourceMessageId } }
+      : event;
+    if (event?.action === 'loadSaveSession') {
+      const targetSessionId = String(event.payload?.sessionId || '');
+      if (targetSessionId && targetSessionId !== sessionId) {
+        navigate(`/chat/${targetSessionId}`);
+      }
+      return;
+    }
+    handleSandboxAction(scopedEvent, canApplyOpening, setShowVariableDebug);
+  }, [canApplyOpening, handleSandboxAction, navigate, sessionId, setShowVariableDebug]);
+
   function flattenVariables(value: any, prefix = ''): Array<{ key: string; value: any }> {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
     const rows: Array<{ key: string; value: any }> = [];
@@ -102,6 +210,130 @@ export default function Chat() {
     return rows;
   }
 
+  function buildSandboxRuntimeMessage(msg: Message, index: number): SandboxRuntimeMessage {
+    const runtimeVariables = sessionState?.variables || emptyVariables;
+    const roleName = msg.role === 'user'
+      ? (userPersona.name || '你')
+      : msg.turn_number === 0 && characterCard
+        ? characterCard.name
+        : '助手';
+    const messageVariants = getVariants(msg);
+    const openingSwipes = msg.turn_number === 0 && characterCard
+      ? [characterCard.first_mes, ...characterCard.alternate_greetings].filter(Boolean)
+      : [];
+    const swipes = messageVariants.length > 0 ? messageVariants : openingSwipes;
+    const comparableContent = cleanComparableMessageText(msg.content);
+    const matchedOpeningIndex = openingSwipes.findIndex(swipe => cleanComparableMessageText(swipe) === comparableContent);
+    const activeSwipeIndex = msg.variant_index >= 0
+      ? msg.variant_index
+      : matchedOpeningIndex >= 0
+        ? matchedOpeningIndex
+        : swipes.length;
+
+    return {
+      id: msg.id,
+      message_id: msg.id,
+      swipe_id: activeSwipeIndex,
+      swipes,
+      role: msg.role,
+      name: roleName,
+      message: msg.content,
+      content: msg.content,
+      created_at: msg.created_at,
+      send_date: msg.created_at,
+      turn_number: msg.turn_number,
+      is_user: msg.role === 'user',
+      is_system: msg.role === 'system',
+      data: {
+        stat_data: runtimeVariables,
+        display_data: runtimeVariables,
+        variables: runtimeVariables,
+        index,
+      },
+      variables: runtimeVariables,
+    };
+  }
+
+  function cleanComparableMessageText(content: string): string {
+    return cleanCardDisplayText(content)
+      .replace(/\s+/g, '')
+      .trim();
+  }
+
+  function buildSandboxRuntime(current: Message): SandboxRuntimeContext {
+    const base = sandboxContextById.get(current.id) || {
+      messages: sandboxRuntimeMessages,
+      currentMessage: buildSandboxRuntimeMessage(current, sandboxRuntimeMessages.length),
+      currentMessageId: current.id,
+      sharedSaves: runtimeSharedSaves,
+    };
+    return withSandboxSubmission(base);
+  }
+
+  function buildStreamingSandboxRuntime(content: string): SandboxRuntimeContext {
+    const runtimeVariables = sessionState?.variables || emptyVariables;
+    const streamingMessage: SandboxRuntimeMessage = {
+      id: 'streaming',
+      message_id: 'streaming',
+      role: 'assistant',
+      name: '助手',
+      message: content,
+      content,
+      is_user: false,
+      data: {
+        stat_data: runtimeVariables,
+        display_data: runtimeVariables,
+        variables: runtimeVariables,
+      },
+      variables: runtimeVariables,
+    };
+
+    return {
+      messages: [...sandboxRuntimeMessages, streamingMessage],
+      currentMessage: streamingMessage,
+      currentMessageId: 'streaming',
+      sharedSaves: runtimeSharedSaves,
+      submission: sandboxSubmissionRuntime,
+    };
+  }
+
+  function buildEmptySessionPreviewRuntime(content: string): SandboxRuntimeContext {
+    const runtimeVariables = sessionState?.variables || emptyVariables;
+    const previewMessage: SandboxRuntimeMessage = {
+      id: 'opening-preview',
+      message_id: 'opening-preview',
+      swipe_id: 0,
+      swipes: [],
+      role: 'assistant',
+      name: characterCard?.name || '助手',
+      message: content,
+      content,
+      turn_number: 0,
+      is_user: false,
+      data: {
+        stat_data: runtimeVariables,
+        display_data: runtimeVariables,
+        variables: runtimeVariables,
+      },
+      variables: runtimeVariables,
+    };
+
+    return {
+      messages: [previewMessage],
+      currentMessage: previewMessage,
+      currentMessageId: previewMessage.id,
+      sharedSaves: runtimeSharedSaves,
+      submission: sandboxSubmissionRuntime,
+    };
+  }
+
+  function withSandboxSubmission(runtime: SandboxRuntimeContext): SandboxRuntimeContext {
+    if (!sandboxSubmissionRuntime) return runtime;
+    const currentId = runtime.currentMessageId ?? runtime.currentMessage?.message_id ?? runtime.currentMessage?.id ?? null;
+    if (sandboxSubmissionSourceId && String(currentId) !== sandboxSubmissionSourceId) return runtime;
+    return { ...runtime, submission: sandboxSubmissionRuntime };
+  }
+
   function formatVariableValue(value: any): string {
     if (typeof value === 'string') return value;
     if (typeof value === 'number' || typeof value === 'boolean') return String(value);
@@ -113,6 +345,46 @@ export default function Chat() {
     const text = value.trim();
     if (text.length <= max) return text;
     return `${text.slice(0, max)}...`;
+  }
+
+  function extractSavePreview(sessionMessages: Message[], fallback: string): string {
+    const candidate = [...sessionMessages].reverse().find(message => message.role === 'assistant') || sessionMessages[0];
+    const text = cleanCardDisplayText(candidate?.content || fallback || '').replace(/\s+/g, ' ').trim();
+    return shortText(text, 180);
+  }
+
+  function buildSharedSave(targetSession: Session, sessionMessages: Message[]): SandboxSharedSave {
+    const saveId = `xrp-session-${targetSession.id}`;
+    const runId = targetSession.id;
+    const personaName = targetSession.config?.user_persona?.name || userPersona.name || characterCard?.name || '未命名主角';
+    const firstAssistant = sessionMessages.find(message => message.role === 'assistant');
+    const lastMessage = sessionMessages[sessionMessages.length - 1];
+    const updatedAt = targetSession.updated_at || lastMessage?.created_at || new Date().toISOString();
+    const createdAt = targetSession.created_at || firstAssistant?.created_at || updatedAt;
+    const meta = {
+      saveId,
+      runId,
+      sessionId: targetSession.id,
+      kind: 'autosave',
+      label: targetSession.title || '自动存档',
+      createdAt,
+      updatedAt,
+      messageIndex: Math.max(0, sessionMessages.length - 1),
+      messageCount: sessionMessages.length,
+      playerProfile: { name: personaName },
+      characterName: characterCard?.name || targetSession.title || '',
+      location: '',
+      gameTime: '',
+      preview: extractSavePreview(sessionMessages, targetSession.title),
+      version: 1,
+    };
+    return {
+      saveId,
+      sessionId: targetSession.id,
+      runId,
+      meta,
+      payload: { saveId, runId, sessionId: targetSession.id, meta, version: 1 },
+    };
   }
 
   function startRename() {
@@ -137,8 +409,9 @@ export default function Chat() {
 
   // --- effects ---
   useEffect(() => {
+    if (isSandboxInlineStreaming) return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamText]);
+  }, [messages, streamText, isSandboxInlineStreaming]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -155,407 +428,370 @@ export default function Chat() {
     return () => { stopRecovery(); };
   }, [sessionId]);
 
+  useEffect(() => {
+    const worldBookId = activeWorldBookId || characterCard?.world_book_id;
+    if (!sessionId || !worldBookId || !characterCard) {
+      setPeerSharedSaves([]);
+      return;
+    }
+    let cancelled = false;
+    async function loadSharedSaves() {
+      try {
+        const sessionData = await api.listSessions({ worldPackId: worldBookId, limit: 50 });
+        const relevantSessions = (sessionData.items || []).filter(item => item.world_pack_id === worldBookId);
+        const saves = await Promise.all(relevantSessions.map(async item => {
+          const sessionMessages = item.id === sessionId
+            ? messages
+            : (await api.listMessages(item.id).catch(() => ({ items: [] }))).items;
+          return buildSharedSave(item, sessionMessages || []);
+        }));
+        if (!cancelled) setPeerSharedSaves(saves);
+      } catch (err) {
+        console.error('Failed to load shared card saves:', err);
+        if (!cancelled) setPeerSharedSaves([]);
+      }
+    }
+    loadSharedSaves();
+    return () => { cancelled = true; };
+  }, [activeWorldBookId, characterCard?.id, characterCard?.world_book_id, sessionId, userPersona.name]);
+
   return (
-    <div className={`chat-layout${inspectorOpen ? ' inspector-open' : ''}`}>
-    <div className="chat-main">
-    <div className="chat">
-      <div className="chat-header">
-        <button className="back-btn" onClick={() => navigate('/')}>返回</button>
-        <div className="header-user-entry" onClick={() => { setInspectorTab('user'); setInspectorOpen(true); }}>
-          {userPersona.name || '默认用户'}
-        </div>
-        {editingTitle ? (
-          <input
-            ref={titleInputRef}
-            className="title-edit-input"
-            value={titleInput}
-            onChange={e => setTitleInput(e.target.value)}
-            onBlur={commitRename}
-            onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setEditingTitle(false); }}
-            autoFocus
-          />
-        ) : (
-          <h2 className="title-clickable" onClick={startRename} title="点击重命名">{sessionTitle || '未命名会话'}</h2>
-        )}
-        <div className="header-spacer" />
-        <button
-          className={`config-toggle ${inspectorOpen ? 'active' : ''}`}
-          onClick={() => setInspectorOpen(!inspectorOpen)}
-        >
-          ☰
-        </button>
-      </div>
+    <div className="chat-layout">
+      {/* LEFT: Tool rail */}
+      <ToolRail
+        activeTab={drawerOpen ? drawerTab : null}
+        onTabClick={handleRailClick}
+        sessionMode={sessionMode}
+        sessionId={sessionId}
+      />
 
-      {characterCard && (
-        <div className="chat-card-panel">
-          <div className="chat-card-avatar">
-            {characterCard.avatar && characterCard.avatar !== 'none'
-              ? <img src={characterCard.avatar} alt={characterCard.name} />
-              : <span>{characterCard.name.charAt(0)}</span>
-            }
-          </div>
-          <div className="chat-card-main">
-            <div className="chat-card-header">
-              <div>
-                <div className="chat-card-name">{characterCard.name}</div>
-                {(characterCard.creator || characterCard.character_version) && (
-                  <div className="chat-card-meta">
-                    {[characterCard.creator, characterCard.character_version && `v${characterCard.character_version}`]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </div>
-                )}
-              </div>
-              {canApplyOpening && (characterCard.first_mes || characterCard.alternate_greetings.length > 0) && (
-                <div className="chat-card-greeting-controls">
-                  {characterCard.alternate_greetings.length > 0 && (
-                    <select
-                      className="chat-card-greeting-select"
-                      value={selectedGreetingIndex}
-                      onChange={e => setSelectedGreetingIndex(Number(e.target.value))}
-                      disabled={inputLocked}
-                    >
-                      {characterCard.first_mes && (
-                        <option value={-1}>{greetingLabel(characterCard.first_mes, '主开场白')}</option>
-                      )}
-                      {characterCard.alternate_greetings.map((greeting, index) => (
-                        <option key={index} value={index}>
-                          {greetingLabel(greeting, `可选开场白 ${index + 1}`)}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  <button
-                    className="chat-card-greeting-btn"
-                    disabled={inputLocked || !selectedGreetingText()}
-                    onClick={() => handleApplyGreeting(canApplyOpening)}
-                  >
-                    {cardHasGameStart && selectedGreetingIndex === -1 ? '打开角色卡首页' : '应用开场白'}
-                  </button>
-                </div>
-              )}
-            </div>
-            {characterCard.tags.length > 0 && (
-              <div className="chat-card-tags">
-                {characterCard.tags.slice(0, 8).map((tag, index) => (
-                  <span key={`${tag}-${index}`}>{tag}</span>
-                ))}
-              </div>
-            )}
-            {!cardHasComplexUi && (characterCard.description || characterCard.personality || characterCard.scenario) && (
-              <div className="chat-card-summary">
-                {characterCard.description && <p>{shortText(characterCard.description)}</p>}
-                {characterCard.personality && <p>{shortText(characterCard.personality)}</p>}
-                {characterCard.scenario && <p>{shortText(characterCard.scenario)}</p>}
-              </div>
+      {/* LEFT DRAWER: expandable settings panel */}
+      <ToolDrawer
+        open={drawerOpen}
+        activeTab={drawerTab}
+        onClose={handleCloseDrawer}
+        sessionId={sessionId}
+        config={config}
+        setConfig={setConfig}
+        configDirty={configDirty}
+        characterCard={characterCard}
+        providers={providers}
+        worldBooks={worldBooks}
+        presets={presets}
+        activeWorldBookId={activeWorldBookId}
+        sessionResourceSaving={sessionResourceSaving}
+        renderMode={renderMode}
+        userPersona={userPersona}
+        userPresets={userPresets}
+        sessionMode={sessionMode}
+        messages={messages}
+        sandboxActionLog={sandboxActionLog}
+        streaming={streaming}
+        recovering={recovering}
+        memoryPending={memoryPending}
+        stateUpdating={stateUpdating}
+        flatVariables={flatVariables}
+        activeWorldBook={activeWorldBook}
+        activePreset={activePreset}
+        activePresetMissing={activePresetMissing}
+        cardHasStatusRenderer={cardHasStatusRenderer}
+        cardHasComplexUi={cardHasComplexUi}
+        cardHasGameStart={cardHasGameStart}
+        debugPlatformSchema={debugPlatformSchema}
+        paramsEditing={paramsEditing}
+        setParamsEditing={setParamsEditing}
+        userEditing={userEditing}
+        setUserEditing={setUserEditing}
+        saveConfig={saveConfig}
+        updateConfig={updateConfig}
+        updateRenderMode={updateRenderMode}
+        updateUserPersona={updateUserPersona}
+        updateUserSettingMergeStrategy={updateUserSettingMergeStrategy}
+        updateSessionWorldBook={updateSessionWorldBook}
+        updateSessionPreset={updateSessionPreset}
+        applyUserPersonaPreset={applyUserPersonaPreset}
+        applyGlobalDefaultsToSession={applyGlobalDefaultsToSession}
+        saveCurrentSessionAsGlobalDefaults={saveCurrentSessionAsGlobalDefaults}
+        loadSessionResources={loadSessionResources}
+      />
+
+      {/* CENTER: Immersive render zone */}
+      <main className="render-zone">
+        {/* Thin top bar - only essential info */}
+        <div className="render-topbar">
+          <div className="render-topbar-left">
+            {editingTitle ? (
+              <input
+                ref={titleInputRef}
+                className="title-edit-input"
+                value={titleInput}
+                onChange={e => setTitleInput(e.target.value)}
+                onBlur={commitRename}
+                onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setEditingTitle(false); }}
+                autoFocus
+              />
+            ) : (
+              <span className="render-topbar-title" onClick={startRename} title="点击重命名">
+                {sessionTitle || '未命名会话'}
+              </span>
             )}
           </div>
         </div>
-      )}
 
-      {sessionState?.variables && !cardHasStatusRenderer && flatVariables.length > 0 && (
-        <details
-          className={`status-panel ${cardHasComplexUi ? 'debug' : ''}`}
-          open={!cardHasComplexUi || showVariableDebug}
-          onToggle={(event) => {
-            if (cardHasComplexUi) setShowVariableDebug(event.currentTarget.open);
-          }}
-        >
-          <summary className="status-panel-header">
-            <span>{cardHasComplexUi ? `变量调试 (${flatVariables.length})` : '状态变量'}</span>
-            <button className="status-refresh-btn" onClick={(event) => { event.preventDefault(); loadSessionState(); }}>刷新</button>
-          </summary>
-          {(!cardHasComplexUi || showVariableDebug) && (
-            <div className="status-grid">
-              {flatVariables.slice(0, cardHasComplexUi ? 12 : 24).map(item => (
-                <div className="status-var" key={item.key}>
-                  <span className="status-var-key">{item.key}</span>
-                  <span className="status-var-value">{formatVariableValue(item.value)}</span>
-                </div>
-              ))}
+        {/* Messages list */}
+        <div className="messages">
+          {characterCard && (
+            messages.length === 0
+            || (isSandboxInlineStreaming && sandboxSubmissionSourceId === 'opening-preview')
+          ) && (
+            <div className="message assistant opening-preview">
+              <div className="message-role">{characterCard.name}</div>
+              <div className="message-content">
+                <MessageContent
+                  content={openingPreviewContent}
+                  card={characterCard}
+                  variables={sessionState?.variables || emptyVariables}
+                  runtime={openingPreviewRuntime}
+                  onSandboxAction={(event) => handleCardSandboxAction(event, 'opening-preview')}
+                  renderMode={renderMode}
+                />
+              </div>
             </div>
           )}
-        </details>
-      )}
-
-      <div className="messages">
-        {messages.map(msg => {
-          const isRaw = rawViewIds.has(msg.id);
-          const isEditing = editingId === msg.id;
-          const roleLabel = msg.role === 'user'
-            ? '你'
-            : msg.turn_number === 0 && characterCard
-              ? characterCard.name
-              : '助手';
-          return (
-            <div key={msg.id} className={`message ${msg.role}`}>
-              <div className="message-role">{roleLabel}</div>
-              {isEditing ? (
-                <div className="edit-area">
-                  <textarea
-                    className="edit-textarea"
-                    value={editContent}
-                    onChange={e => setEditContent(e.target.value)}
-                    rows={4}
-                    autoFocus
-                  />
-                  <div className="edit-actions">
-                    <button className="action-btn" onClick={() => handleSaveEdit(msg.id)}>保存</button>
-                    <button className="action-btn" onClick={handleCancelEdit}>取消</button>
+          {messages.map(msg => {
+            const isRaw = rawViewIds.has(msg.id);
+            const isEditing = editingId === msg.id;
+            const roleLabel = msg.role === 'user'
+              ? '你'
+              : msg.turn_number === 0 && characterCard
+                ? characterCard.name
+                : '助手';
+            return (
+              <div key={msg.id} className={`message ${msg.role}`}>
+                <div className="message-role">{roleLabel}</div>
+                {isEditing ? (
+                  <div className="edit-area">
+                    <textarea
+                      className="edit-textarea"
+                      value={editContent}
+                      onChange={e => setEditContent(e.target.value)}
+                      rows={4}
+                      autoFocus
+                    />
+                    <div className="edit-actions">
+                      <button className="action-btn" onClick={() => handleSaveEdit(msg.id)}>保存</button>
+                      <button className="action-btn" onClick={handleCancelEdit}>取消</button>
+                    </div>
                   </div>
-                </div>
-              ) : (
-                <div className="message-content">
-                  {msg.role === 'assistant' ? (
-                    isRaw ? (
-                      <pre className="msg-raw">{msg.content}</pre>
+                ) : (
+                  <div className="message-content">
+                    {msg.role === 'assistant' ? (
+                      isRaw ? (
+                        <pre className="msg-raw">{msg.content}</pre>
+                      ) : (
+                        <MessageContent
+                          content={msg.content}
+                          card={characterCard}
+                          variables={sessionState?.variables || emptyVariables}
+                          runtime={buildSandboxRuntime(msg)}
+                          onSandboxAction={(event) => handleCardSandboxAction(event, msg.id)}
+                          renderMode={renderMode}
+                        />
+                      )
                     ) : (
-                      <MessageContent
-                        content={msg.content}
-                        card={characterCard}
-                        variables={sessionState?.variables || {}}
-                        onSandboxAction={(event) => handleSandboxAction(event, canApplyOpening, setShowVariableDebug)}
-                        renderMode={renderMode}
-                      />
-                    )
-                  ) : (
-                    cleanCardDisplayText(msg.content)
-                  )}
-                </div>
-              )}
-              {!isEditing && msg.role === 'user' && (
-                <div className="message-actions">
-                  {failedContent === msg.content && (
-                    <span className="send-failed-badge">发送失败</span>
-                  )}
-                  <button
-                    className="action-btn"
-                    onClick={() => handleEdit(msg.id, msg.content)}
-                    title="编辑"
-                  >
-                    编辑
-                  </button>
-                  {failedContent === msg.content && (
-                    <button
-                      className="action-btn retry-btn"
-                      onClick={handleRetry}
-                      disabled={inputLocked}
-                      title="重新发送"
-                    >
-                      重新发送
-                    </button>
-                  )}
-                  <button
-                    className="action-btn delete-btn"
-                    onClick={() => handleDelete(msg.id)}
-                    title="删除"
-                  >
-                    删除
-                  </button>
-                </div>
-              )}
-              {!isEditing && msg.role === 'assistant' && (() => {
-                const variants = getVariants(msg);
-                const total = variants.length + 1;
-                const activeIndex = msg.variant_index;
-                const displayPos = activeIndex === -1 ? total : activeIndex + 1;
-                return (
+                      cleanCardDisplayText(msg.content)
+                    )}
+                  </div>
+                )}
+                {!isEditing && msg.role === 'user' && (
                   <div className="message-actions">
-                    {regenerateErrors[msg.id] && (
-                      <span className="send-failed-badge">{regenerateErrors[msg.id]}</span>
+                    {failedContent === msg.content && (
+                      <span className="send-failed-badge">发送失败</span>
                     )}
                     <button
                       className="action-btn"
-                      onClick={() => toggleRawView(msg.id)}
-                      title={isRaw ? '预览' : '源码'}
-                    >
-                      {isRaw ? '预览' : '源码'}
-                    </button>
-                    <button
-                      className="action-btn"
-                      onClick={() => handleCopyMsg(msg.id, msg.content)}
-                      title="复制"
-                    >
-                      {copiedMsgId === msg.id ? '已复制' : '复制'}
-                    </button>
-                    <button
-                      className="action-btn regenerate-btn"
-                      onClick={() => handleRegenerate(msg.id)}
-                      disabled={!!regeneratingId || inputLocked}
-                      title="重新生成"
-                    >
-                      {regeneratingId === msg.id ? '生成中...' : '重新生成'}
-                    </button>
-                    <button
-                      className="action-btn"
                       onClick={() => handleEdit(msg.id, msg.content)}
-                      disabled={!!regeneratingId || inputLocked}
                       title="编辑"
                     >
                       编辑
                     </button>
+                    {failedContent === msg.content && (
+                      <button
+                        className="action-btn retry-btn"
+                        onClick={handleRetry}
+                        disabled={inputLocked}
+                        title="重新发送"
+                      >
+                        重新发送
+                      </button>
+                    )}
                     <button
                       className="action-btn delete-btn"
                       onClick={() => handleDelete(msg.id)}
-                      disabled={!!regeneratingId || inputLocked}
                       title="删除"
                     >
                       删除
                     </button>
-                    {total > 1 && (
-                      <div className="variant-nav">
-                        <button
-                          className="action-btn variant-btn"
-                          onClick={() => handleSwitchVariant(msg.id, activeIndex === -1 ? variants.length - 1 : activeIndex - 1)}
-                          disabled={activeIndex === 0 || !!regeneratingId || inputLocked}
-                          title="上一个版本"
-                        >
-                          {'<'}
-                        </button>
-                        <span className="variant-count">{displayPos} / {total}</span>
-                        <button
-                          className="action-btn variant-btn"
-                          onClick={() => handleSwitchVariant(msg.id, activeIndex >= variants.length - 1 ? -1 : activeIndex + 1)}
-                          disabled={activeIndex === -1 || !!regeneratingId || inputLocked}
-                          title="下一个版本"
-                        >
-                          {'>'}
-                        </button>
-                      </div>
-                    )}
                   </div>
-                );
-              })()}
+                )}
+                {!isEditing && msg.role === 'assistant' && (() => {
+                  const variants = getVariants(msg);
+                  const total = variants.length + 1;
+                  const activeIndex = msg.variant_index;
+                  const displayPos = activeIndex === -1 ? total : activeIndex + 1;
+                  return (
+                    <div className="message-actions">
+                      {regenerateErrors[msg.id] && (
+                        <span className="send-failed-badge">{regenerateErrors[msg.id]}</span>
+                      )}
+                      <button
+                        className="action-btn"
+                        onClick={() => toggleRawView(msg.id)}
+                        title={isRaw ? '预览' : '源码'}
+                      >
+                        {isRaw ? '预览' : '源码'}
+                      </button>
+                      <button
+                        className="action-btn"
+                        onClick={() => handleCopyMsg(msg.id, msg.content)}
+                        title="复制"
+                      >
+                        {copiedMsgId === msg.id ? '已复制' : '复制'}
+                      </button>
+                      <button
+                        className="action-btn regenerate-btn"
+                        onClick={() => handleRegenerate(msg.id)}
+                        disabled={!!regeneratingId || inputLocked}
+                        title="重新生成"
+                      >
+                        {regeneratingId === msg.id ? '生成中...' : '重新生成'}
+                      </button>
+                      <button
+                        className="action-btn"
+                        onClick={() => handleEdit(msg.id, msg.content)}
+                        disabled={!!regeneratingId || inputLocked}
+                        title="编辑"
+                      >
+                        编辑
+                      </button>
+                      <button
+                        className="action-btn delete-btn"
+                        onClick={() => handleDelete(msg.id)}
+                        disabled={!!regeneratingId || inputLocked}
+                        title="删除"
+                      >
+                        删除
+                      </button>
+                      {total > 1 && (
+                        <div className="variant-nav">
+                          <button
+                            className="action-btn variant-btn"
+                            onClick={() => handleSwitchVariant(msg.id, activeIndex === -1 ? variants.length - 1 : activeIndex - 1)}
+                            disabled={activeIndex === 0 || !!regeneratingId || inputLocked}
+                            title="上一个版本"
+                          >
+                            {'<'}
+                          </button>
+                          <span className="variant-count">{displayPos} / {total}</span>
+                          <button
+                            className="action-btn variant-btn"
+                            onClick={() => handleSwitchVariant(msg.id, activeIndex >= variants.length - 1 ? -1 : activeIndex + 1)}
+                            disabled={activeIndex === -1 || !!regeneratingId || inputLocked}
+                            title="下一个版本"
+                          >
+                            {'>'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+            );
+          })}
+          {agentStatuses.length > 0 && !isSandboxInlineStreaming && (
+            <div className="message assistant streaming">
+              <div className="message-role">进度</div>
+              <div className="message-content agent-status-list">
+                {agentStatuses.map((s, i) => (
+                  <div key={`${s.agent_type}-${i}`} className="agent-status-item">
+                    <span className="agent-status-dot" />
+                    <span>{s.label} 正在工作中...</span>
+                  </div>
+                ))}
+              </div>
             </div>
-          );
-        })}
-        {agentStatuses.length > 0 && (
-          <div className="message assistant streaming">
-            <div className="message-role">进度</div>
-            <div className="message-content agent-status-list">
-              {agentStatuses.map((s, i) => (
-                <div key={`${s.agent_type}-${i}`} className="agent-status-item">
-                  <span className="agent-status-dot" />
-                  <span>{s.label} 正在工作中...</span>
-                </div>
-              ))}
+          )}
+          {streamError && streaming && !isSandboxInlineStreaming && (
+            <div className="message assistant streaming">
+              <div className="message-role">助手</div>
+              <div className="message-content">
+                <span className="stream-error-indicator">{streamError}</span>
+              </div>
             </div>
-          </div>
-        )}
-        {streamError && streaming && (
-          <div className="message assistant streaming">
-            <div className="message-role">助手</div>
-            <div className="message-content">
-              <span className="stream-error-indicator">{streamError}</span>
+          )}
+          {streamText && !isSandboxInlineStreaming && (
+            <div className="message assistant streaming">
+              <div className="message-role">助手</div>
+              <div className="message-content">
+                <MessageContent
+                  content={streamText}
+                  card={characterCard}
+                  variables={sessionState?.variables || emptyVariables}
+                  runtime={buildStreamingSandboxRuntime(streamText)}
+                  onSandboxAction={(event) => handleCardSandboxAction(event, 'streaming')}
+                  renderMode="text"
+                />
+              </div>
             </div>
-          </div>
-        )}
-        {streamText && (
-          <div className="message assistant streaming">
-            <div className="message-role">助手</div>
-            <div className="message-content">
-              <MessageContent
-                content={streamText}
-                card={characterCard}
-                variables={sessionState?.variables || {}}
-                onSandboxAction={(event) => handleSandboxAction(event, canApplyOpening, setShowVariableDebug)}
-                renderMode={renderMode}
-              />
+          )}
+          {memoryPending && !isSandboxInlineStreaming && (
+            <div className="message assistant streaming">
+              <div className="message-role">进度</div>
+              <div className="message-content">
+                <span className="recovering-indicator">正在整理记忆...</span>
+              </div>
             </div>
-          </div>
-        )}
-        {memoryPending && (
-          <div className="message assistant streaming">
-            <div className="message-role">进度</div>
-            <div className="message-content">
-              <span className="recovering-indicator">正在整理记忆...</span>
+          )}
+          {stateUpdating && !memoryPending && !isSandboxInlineStreaming && (
+            <div className="message assistant streaming">
+              <div className="message-role">进度</div>
+              <div className="message-content">
+                <span className="recovering-indicator">正在更新变量...</span>
+              </div>
             </div>
-          </div>
-        )}
-        {stateUpdating && !memoryPending && (
-          <div className="message assistant streaming">
-            <div className="message-role">进度</div>
-            <div className="message-content">
-              <span className="recovering-indicator">正在更新变量...</span>
+          )}
+          {(streaming || recovering) && !isSandboxInlineStreaming && !streamText && agentStatuses.length === 0 && !streamError && !memoryPending && !stateUpdating && (
+            <div className="message assistant streaming">
+              <div className="message-role">助手</div>
+              <div className="message-content">
+                <span className="recovering-indicator">正在处理中...</span>
+              </div>
             </div>
-          </div>
-        )}
-        {(streaming || recovering) && !streamText && agentStatuses.length === 0 && !streamError && !memoryPending && !stateUpdating && (
-          <div className="message assistant streaming">
-            <div className="message-role">助手</div>
-            <div className="message-content">
-              <span className="recovering-indicator">正在处理中...</span>
-            </div>
-          </div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+      </main>
 
-      <div className="input-area">
-        <textarea
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={memoryPending ? '正在整理记忆...' : recovering ? '等待后端响应中...' : '输入消息...'}
-          rows={3}
-          disabled={inputLocked}
-        />
-        <button onClick={() => handleSend()} disabled={inputLocked || !input.trim()}>
-          {memoryPending ? '整理中...' : streaming ? '发送中...' : recovering ? '等待中...' : '发送'}
-        </button>
-      </div>
-    </div>
-    </div>{/* .chat-main */}
+      {/* RIGHT: Input panel */}
+      <InputPanel
+        input={input}
+        setInput={setInput}
+        handleSend={handleSend}
+        handleKeyDown={handleKeyDown}
+        inputLocked={inputLocked}
+        streaming={streaming}
+        recovering={recovering}
+        memoryPending={memoryPending}
+        sessionTitle={sessionTitle}
+        characterName={characterCard?.name || ''}
+        canApplyOpening={canApplyOpening}
+        selectedGreetingIndex={selectedGreetingIndex}
+        greetingOptions={greetingOptions}
+        onSelectGreeting={setSelectedGreetingIndex}
+        onApplyGreeting={() => handleApplyGreeting(canApplyOpening)}
+      />
 
-    <InspectorSidebar
-      inspectorOpen={inspectorOpen}
-      inspectorTab={inspectorTab}
-      setInspectorTab={setInspectorTab}
-      setInspectorOpen={setInspectorOpen}
-      paramsEditing={paramsEditing}
-      setParamsEditing={setParamsEditing}
-      userEditing={userEditing}
-      setUserEditing={setUserEditing}
-      sessionId={sessionId}
-      config={config}
-      setConfig={setConfig}
-      configDirty={configDirty}
-      characterCard={characterCard}
-      providers={providers}
-      worldBooks={worldBooks}
-      presets={presets}
-      activeWorldBookId={activeWorldBookId}
-      sessionResourceSaving={sessionResourceSaving}
-      renderMode={renderMode}
-      userPersona={userPersona}
-      userPresets={userPresets}
-      sessionMode={sessionMode}
-      messages={messages}
-      sandboxActionLog={sandboxActionLog}
-      streaming={streaming}
-      recovering={recovering}
-      memoryPending={memoryPending}
-      stateUpdating={stateUpdating}
-      flatVariables={flatVariables}
-      activeWorldBook={activeWorldBook}
-      activePreset={activePreset}
-      activePresetMissing={activePresetMissing}
-      cardHasStatusRenderer={cardHasStatusRenderer}
-      cardHasComplexUi={cardHasComplexUi}
-      cardHasGameStart={cardHasGameStart}
-      debugPlatformSchema={debugPlatformSchema}
-      saveConfig={saveConfig}
-      updateConfig={updateConfig}
-      updateRenderMode={updateRenderMode}
-      updateUserPersona={updateUserPersona}
-      updateUserSettingMergeStrategy={updateUserSettingMergeStrategy}
-      updateSessionWorldBook={updateSessionWorldBook}
-      updateSessionPreset={updateSessionPreset}
-      applyUserPersonaPreset={applyUserPersonaPreset}
-      applyGlobalDefaultsToSession={applyGlobalDefaultsToSession}
-      saveCurrentSessionAsGlobalDefaults={saveCurrentSessionAsGlobalDefaults}
-      loadSessionResources={loadSessionResources}
-    />
     </div>
   );
 }

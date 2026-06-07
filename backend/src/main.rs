@@ -1,11 +1,11 @@
 mod config;
 mod db;
 mod error;
+mod importer;
 mod memory;
 mod provider;
 mod routes;
 mod runtime;
-mod trace;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -24,7 +24,8 @@ use tracing_subscriber::EnvFilter;
 use crate::config::AppConfig;
 use crate::error::AppError;
 use crate::routes::{
-    agents, charactercards, health, messages, presets, proposals, providers, sessions, worldbooks,
+    agents, card_import, charactercards, health, messages, presets, proposals, providers, sessions,
+    worldbooks,
 };
 
 #[tokio::main]
@@ -67,6 +68,7 @@ async fn create_app(config: AppConfig) -> Router {
         config: config.clone(),
         active_turns: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         session_locks: Arc::new(dashmap::DashMap::new()),
+        import_drafts: Arc::new(dashmap::DashMap::new()),
     });
 
     // Spawn background job worker (compression, recompression)
@@ -222,6 +224,34 @@ async fn create_app(config: AppConfig) -> Router {
         .route(
             "/api/charactercards/{id}",
             axum::routing::patch(charactercards::update_character_card),
+        )
+        .route(
+            "/api/charactercards/{id}/run-import",
+            post(card_import::run_import_for_card),
+        )
+        .route(
+            "/api/charactercards/import",
+            post(card_import::import_character_card),
+        )
+        .route(
+            "/api/charactercards/import/{import_id}/confirm",
+            post(card_import::confirm_import),
+        )
+        .route(
+            "/api/charactercards/import/{import_id}/llm-assist",
+            post(card_import::request_llm_assist),
+        )
+        .route(
+            "/api/charactercards/import/{import_id}/report",
+            get(card_import::get_import_report),
+        )
+        .route(
+            "/api/charactercards/import/{import_id}/raw-preview",
+            post(card_import::get_raw_preview),
+        )
+        .route(
+            "/api/charactercards/import/{import_id}/save-failure",
+            post(card_import::save_failure_sample),
         )
         .layer(TraceLayer::new_for_http())
         .layer(DefaultBodyLimit::max(16 * 1024 * 1024))

@@ -1,8 +1,9 @@
 use crate::error::AppError;
 use crate::provider::adapter::ProviderAdapter;
 use crate::provider::openai::OpenAiProvider;
-use crate::provider::types::{ChatMessage, ChatRequest, ChatTool, ChatToolFunction};
+use crate::provider::types::{ChatMessage, ChatRequest, ChatTool, ChatToolFunction, ToolCall};
 use crate::runtime::types::{ContextBundle, StateChangeCandidate, StateChangeProposal};
+use sqlx::{Sqlite, Transaction};
 
 const TOOL_NAME: &str = "update_variables";
 
@@ -21,7 +22,98 @@ struct ToolChange {
     from: Option<serde_json::Value>,
 }
 
-pub async fn propose_variable_tool_changes(
+/// Build the `update_variables` tool schema dynamically from the current session variables.
+/// Different character cards have different variable types/names — this generates the
+/// appropriate schema so the LLM knows exactly what variables exist and their types.
+pub fn build_update_variables_tool(variables: &serde_json::Value) -> ChatTool {
+    let mut properties = serde_json::Map::new();
+
+    if let Some(obj) = variables.as_object() {
+        for (key, value) in obj {
+            properties.insert(key.clone(), variable_to_schema(value));
+        }
+    }
+
+    ChatTool {
+        tool_type: "function".to_string(),
+        function: ChatToolFunction {
+            name: TOOL_NAME.to_string(),
+            description: "提交本轮需要写入角色卡 runtime variables 的精确变更。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "changes": {
+                        "type": "array",
+                        "description": "本轮变量变更列表。每个元素描述一条路径的新值。没有变化时传空数组。",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "要更新的变量路径。支持嵌套，用点号分隔，例如 profile.name。"
+                                },
+                                "target": {
+                                    "type": "string",
+                                    "description": "path 的兼容别名，与 path 二选一。"
+                                },
+                                "value": {
+                                    "description": "变量的新值。必须与变量当前类型匹配。"
+                                },
+                                "to": {
+                                    "description": "value 的兼容别名，与 value 二选一。"
+                                },
+                                "from": {
+                                    "description": "当前原值（用于冲突检测）。尽量填写。"
+                                }
+                            },
+                            "required": ["path"]
+                        }
+                    },
+                    "variable_definitions": {
+                        "type": "object",
+                        "description": "当前角色卡变量定义（只读参考）",
+                        "properties": properties
+                    }
+                },
+                "required": ["changes"]
+            }),
+        },
+    }
+}
+
+/// Convert a variable value to a JSON Schema type descriptor for the tool definition.
+fn variable_to_schema(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Number(n) => {
+            if n.is_i64() || n.is_u64() {
+                serde_json::json!({ "type": "integer", "example": n })
+            } else {
+                serde_json::json!({ "type": "number", "example": n })
+            }
+        }
+        serde_json::Value::Bool(b) => serde_json::json!({ "type": "boolean", "example": b }),
+        serde_json::Value::String(s) => serde_json::json!({ "type": "string", "example": s }),
+        serde_json::Value::Array(arr) => {
+            if arr.len() >= 2 {
+                serde_json::json!({
+                    "type": "array",
+                    "description": format!("[当前值, 说明] — 只更新第0项"),
+                    "example": arr
+                })
+            } else {
+                serde_json::json!({ "type": "array", "example": arr })
+            }
+        }
+        serde_json::Value::Object(_) => serde_json::json!({ "type": "object" }),
+        serde_json::Value::Null => serde_json::json!({}),
+    }
+}
+
+/// Single-agent mode: call LLM with dynamic `update_variables` tool, return proposal.
+/// Uses the same dynamic tool schema as the DAG-based State Agent.
+pub async fn propose_variable_changes(
     provider: &OpenAiProvider,
     model: &str,
     user_input: &str,
@@ -80,6 +172,7 @@ pub async fn propose_variable_tool_changes(
         tool_calls: None,
     });
 
+    let tool = build_update_variables_tool(&variables);
     let request = ChatRequest {
         model: model.to_string(),
         messages,
@@ -88,7 +181,7 @@ pub async fn propose_variable_tool_changes(
         max_tokens: Some(4096),
         frequency_penalty: None,
         presence_penalty: None,
-        tools: Some(vec![update_variables_tool()]),
+        tools: Some(vec![tool]),
         tool_choice: Some(serde_json::json!({
             "type": "function",
             "function": { "name": TOOL_NAME }
@@ -96,35 +189,140 @@ pub async fn propose_variable_tool_changes(
         stream: false,
     };
 
-    tracing::debug!("Variable tool agent: sending tool-call request");
+    tracing::debug!("Variable tool agent: sending tool-call request (single-agent)");
     let response = provider
         .chat_completion(request)
         .await
         .map_err(|e| AppError::Provider(e.to_string()))?;
 
-    let Some(tool_call) = response
+    let tool_calls = response
         .choices
         .first()
-        .and_then(|choice| choice.message.tool_calls.as_ref())
-        .and_then(|calls| calls.iter().find(|call| call.function.name == TOOL_NAME))
-    else {
-        tracing::warn!("Variable tool agent returned no update_variables tool call");
+        .and_then(|choice| choice.message.tool_calls.as_deref());
+
+    let Some(calls) = tool_calls else {
+        tracing::warn!("Variable tool agent returned no tool calls");
         return Ok(None);
     };
 
-    let args: ToolArguments = serde_json::from_str(&tool_call.function.arguments)
-        .map_err(|e| AppError::Provider(format!("Variable tool arguments parse failed: {}", e)))?;
-
-    let changes = normalize_changes(args.changes, &variables);
-    if changes.is_empty() {
+    let changes = extract_tool_call(calls, &variables);
+    let Some(changes) = changes else {
         return Ok(None);
-    }
+    };
 
     Ok(Some(StateChangeProposal {
-        proposed_by: "state_agent".to_string(),
+        proposed_by: "variable_tool_agent".to_string(),
         risk: "low".to_string(),
         changes,
     }))
+}
+
+/// Extract tool call arguments from a State Agent LLM response.
+/// Returns the parsed changes if the response contains an `update_variables` tool call.
+pub fn extract_tool_call(
+    tool_calls: &[ToolCall],
+    variables: &serde_json::Value,
+) -> Option<Vec<StateChangeCandidate>> {
+    let call = tool_calls
+        .iter()
+        .find(|call| call.function.name == TOOL_NAME)?;
+
+    let args: ToolArguments = match serde_json::from_str(&call.function.arguments) {
+        Ok(args) => args,
+        Err(e) => {
+            tracing::warn!("Failed to parse update_variables arguments: {}", e);
+            return None;
+        }
+    };
+
+    let changes = normalize_changes(args.changes, variables);
+    if changes.is_empty() {
+        None
+    } else {
+        Some(changes)
+    }
+}
+
+/// Persist variable changes directly to the database (no LLM validation).
+/// Used when State Agent runs inside the DAG — the LLM already made the decision.
+pub async fn persist_variable_changes(
+    tx: &mut Transaction<'_, Sqlite>,
+    session_id: &str,
+    changes: &[StateChangeCandidate],
+) -> Result<(), AppError> {
+    if changes.is_empty() {
+        return Ok(());
+    }
+
+    let current_state: Option<String> = sqlx::query_scalar(
+        "SELECT state_json FROM state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 1",
+    )
+    .bind(session_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    let mut state_json = current_state
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    for change in changes {
+        set_nested_value(&mut state_json, &change.target, change.to.clone());
+    }
+
+    let max_version: Option<i32> =
+        sqlx::query_scalar("SELECT MAX(version) FROM state_snapshots WHERE session_id = ?")
+            .bind(session_id)
+            .fetch_one(&mut **tx)
+            .await?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO state_snapshots (id, session_id, version, state_json, risk_level, committed_by, created_at) VALUES (?, ?, ?, ?, 'low', 'state_agent_tool', ?)"
+    )
+    .bind(&id)
+    .bind(session_id)
+    .bind(max_version.unwrap_or(0) + 1)
+    .bind(state_json.to_string())
+    .bind(&now)
+    .execute(&mut **tx)
+    .await?;
+
+    tracing::info!(
+        session = session_id,
+        changes = changes.len(),
+        "State Agent tool call: variable changes persisted"
+    );
+    Ok(())
+}
+
+fn set_nested_value(state: &mut serde_json::Value, path: &str, value: serde_json::Value) {
+    if !state.is_object() {
+        *state = serde_json::json!({});
+    }
+    let parts: Vec<&str> = path.split('.').collect();
+    set_nested_recursive(state, &parts, value);
+}
+
+fn set_nested_recursive(current: &mut serde_json::Value, parts: &[&str], value: serde_json::Value) {
+    if parts.is_empty() {
+        return;
+    }
+    if parts.len() == 1 {
+        if let Some(obj) = current.as_object_mut() {
+            obj.insert(parts[0].to_string(), value);
+        }
+        return;
+    }
+    if !current.is_object() {
+        *current = serde_json::json!({});
+    }
+    let next = current
+        .as_object_mut()
+        .expect("object initialized")
+        .entry(parts[0].to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    set_nested_recursive(next, &parts[1..], value);
 }
 
 fn format_variable_rule_reference(context: &ContextBundle) -> Option<String> {
@@ -160,37 +358,6 @@ fn is_variable_rule_entry(entry: &crate::runtime::types::WorldBookContextEntry) 
             && (text.contains("变量更新")
                 || text.contains("变量输出")
                 || text.contains("状态更新")))
-}
-
-fn update_variables_tool() -> ChatTool {
-    ChatTool {
-        tool_type: "function".to_string(),
-        function: ChatToolFunction {
-            name: TOOL_NAME.to_string(),
-            description: "提交本轮需要写入角色卡 runtime variables 的精确变更。".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "changes": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "properties": {
-                                "path": { "type": "string", "description": "变量路径，例如 variables.<user>.精神状态数值.调教值 或 variables.<user>.精神状态数值.调教值[0]" },
-                                "target": { "type": "string", "description": "path 的兼容别名" },
-                                "value": { "description": "新变量值" },
-                                "to": { "description": "value 的兼容别名" },
-                                "from": { "description": "当前原值，用于冲突检测" }
-                            }
-                        }
-                    }
-                },
-                "required": ["changes"]
-            }),
-        },
-    }
 }
 
 fn normalize_changes(
@@ -330,5 +497,68 @@ mod tests {
             ),
             Some(serde_json::json!("0 | 最初"))
         );
+    }
+
+    #[test]
+    fn dynamic_tool_schema_includes_variable_definitions() {
+        let variables = serde_json::json!({
+            "hp": 10,
+            "trust": 3,
+            "name": "浅野堇"
+        });
+        let tool = build_update_variables_tool(&variables);
+        assert_eq!(tool.function.name, "update_variables");
+        let defs = tool.function.parameters
+            .get("properties").unwrap()
+            .get("variable_definitions").unwrap()
+            .get("properties").unwrap();
+        assert!(defs.get("hp").is_some());
+        assert!(defs.get("trust").is_some());
+        assert!(defs.get("name").is_some());
+    }
+
+    #[test]
+    fn dynamic_tool_schema_handles_empty_variables() {
+        let variables = serde_json::json!({});
+        let tool = build_update_variables_tool(&variables);
+        assert_eq!(tool.function.name, "update_variables");
+        let defs = tool.function.parameters
+            .get("properties").unwrap()
+            .get("variable_definitions").unwrap()
+            .get("properties").unwrap();
+        assert!(defs.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn extract_tool_call_parses_arguments() {
+        let variables = serde_json::json!({ "hp": 10, "trust": 3 });
+        let tool_calls = vec![ToolCall {
+            id: Some("call_1".to_string()),
+            tool_type: Some("function".to_string()),
+            function: crate::provider::types::ToolCallFunction {
+                name: "update_variables".to_string(),
+                arguments: r#"{"changes":[{"path":"hp","value":8}]}"#.to_string(),
+            },
+        }];
+        let changes = extract_tool_call(&tool_calls, &variables);
+        assert!(changes.is_some());
+        let changes = changes.unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].target, "variables.hp");
+        assert_eq!(changes[0].to, serde_json::json!(8));
+    }
+
+    #[test]
+    fn extract_tool_call_returns_none_for_no_matching_tool() {
+        let variables = serde_json::json!({ "hp": 10 });
+        let tool_calls = vec![ToolCall {
+            id: Some("call_1".to_string()),
+            tool_type: Some("function".to_string()),
+            function: crate::provider::types::ToolCallFunction {
+                name: "other_tool".to_string(),
+                arguments: "{}".to_string(),
+            },
+        }];
+        assert!(extract_tool_call(&tool_calls, &variables).is_none());
     }
 }

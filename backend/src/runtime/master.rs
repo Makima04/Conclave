@@ -1,8 +1,10 @@
+use super::str_utils::truncate_str;
 use crate::error::AppError;
-use crate::provider::adapter::ProviderAdapter;
 use crate::provider::openai::OpenAiProvider;
 use crate::provider::types::{ChatMessage, ChatRequest};
-use crate::runtime::types::{ContextBundle, MasterPlan, ParsedIntent, SubAgent, TurnState};
+use crate::runtime::types::{
+    AgentType, ContextBundle, MasterPlan, ParsedIntent, SubAgent, TurnState,
+};
 use crate::runtime::{structured_output, turn_state};
 use tracing::instrument;
 
@@ -226,14 +228,16 @@ fn parse_master_plan(text: &str) -> Result<MasterPlan, String> {
 
 fn fallback_plan(active_agents: &[SubAgent], user_input: &str) -> MasterPlan {
     // Find writer agent, or indicate we need to create one
-    let writer = active_agents.iter().find(|a| a.agent_type == "writer");
+    let writer = active_agents
+        .iter()
+        .find(|a| a.agent_type == AgentType::Writer);
 
     let mut calls = Vec::new();
     let mut lifecycle = Vec::new();
 
     // Try to call relevant NPC agents based on simple keyword matching
     for agent in active_agents {
-        if agent.agent_type == "npc" && user_input.contains(&agent.label) {
+        if agent.agent_type == AgentType::Npc && user_input.contains(&agent.label) {
             calls.push(crate::runtime::types::AgentCall {
                 agent_id: agent.id.clone(),
                 task: format!("回应用户: {}", user_input),
@@ -253,7 +257,7 @@ fn fallback_plan(active_agents: &[SubAgent], user_input: &str) -> MasterPlan {
         // No writer exists, create one
         lifecycle.push(crate::runtime::types::LifecycleAction {
             action: "create".to_string(),
-            agent_type: "writer".to_string(),
+            agent_type: AgentType::Writer,
             character_id: None,
             label: "writer".to_string(),
             reason: "fallback: no writer agent".to_string(),
@@ -269,14 +273,160 @@ fn fallback_plan(active_agents: &[SubAgent], user_input: &str) -> MasterPlan {
     }
 }
 
-fn truncate_str(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        s
-    } else {
-        let mut end = max;
-        while !s.is_char_boundary(end) {
-            end -= 1;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::types::SubAgent;
+
+    fn make_sub_agent(id: &str, agent_type: AgentType, label: &str) -> SubAgent {
+        SubAgent {
+            id: id.to_string(),
+            session_id: "test_session".to_string(),
+            agent_type,
+            character_id: None,
+            label: label.to_string(),
+            system_prompt: String::new(),
+            context: String::new(),
+            status: "active".to_string(),
+            last_active_turn: 1,
+            config: serde_json::json!({}),
         }
-        &s[..end]
+    }
+
+    // --- parse_master_plan tests ---
+
+    #[test]
+    fn parse_master_plan_valid_json() {
+        let json = r#"{
+            "calls": [{"agent_id": "npc_1", "task": "respond", "inject_from": []}],
+            "lifecycle": [],
+            "user_auto": false,
+            "final_writer_id": null
+        }"#;
+        let plan = parse_master_plan(json).expect("should parse");
+        assert_eq!(plan.calls.len(), 1);
+        assert_eq!(plan.calls[0].agent_id, "npc_1");
+        assert!(!plan.user_auto);
+        assert!(plan.final_writer_id.is_none());
+    }
+
+    #[test]
+    fn parse_master_plan_from_markdown_code_block() {
+        let json = r#"```json
+{
+    "calls": [],
+    "lifecycle": [],
+    "user_auto": true,
+    "final_writer_id": "writer_1"
+}
+```"#;
+        let plan = parse_master_plan(json).expect("should parse from code block");
+        assert!(plan.calls.is_empty());
+        assert!(plan.user_auto);
+        assert_eq!(plan.final_writer_id, Some("writer_1".to_string()));
+    }
+
+    #[test]
+    fn parse_master_plan_with_lifecycle_actions() {
+        let json = r#"{
+            "calls": [],
+            "lifecycle": [
+                {"action": "create", "agent_type": "npc", "character_id": "bob", "label": "Bob", "reason": "new character", "context": "a blacksmith"},
+                {"action": "cooldown", "character_id": "alice", "reason": "inactive"}
+            ],
+            "user_auto": false,
+            "final_writer_id": null
+        }"#;
+        let plan = parse_master_plan(json).expect("should parse");
+        assert_eq!(plan.lifecycle.len(), 2);
+        assert_eq!(plan.lifecycle[0].action, "create");
+        assert_eq!(plan.lifecycle[0].agent_type, AgentType::Npc);
+        assert_eq!(plan.lifecycle[1].action, "cooldown");
+    }
+
+    #[test]
+    fn parse_master_plan_invalid_json_returns_error() {
+        let result = parse_master_plan("not json at all");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_master_plan_missing_required_field_returns_error() {
+        let json = r#"{"calls": [], "lifecycle": []}"#;
+        // user_auto is missing but has #[serde(default)], so it should parse with defaults
+        let plan = parse_master_plan(json).expect("should parse with defaults");
+        assert!(!plan.user_auto);
+    }
+
+    // --- fallback_plan tests ---
+
+    #[test]
+    fn fallback_plan_no_agents_creates_writer_lifecycle() {
+        let agents: Vec<SubAgent> = vec![];
+        let plan = fallback_plan(&agents, "hello");
+
+        assert!(plan.calls.is_empty());
+        assert_eq!(plan.lifecycle.len(), 1);
+        assert_eq!(plan.lifecycle[0].action, "create");
+        assert_eq!(plan.lifecycle[0].agent_type, AgentType::Writer);
+        assert!(!plan.user_auto);
+    }
+
+    #[test]
+    fn fallback_plan_with_writer_calls_writer() {
+        let writer = make_sub_agent("w1", AgentType::Writer, "writer");
+        let agents = vec![writer];
+        let plan = fallback_plan(&agents, "hello");
+
+        assert_eq!(plan.calls.len(), 1);
+        assert_eq!(plan.calls[0].agent_id, "w1");
+        assert!(plan.lifecycle.is_empty());
+    }
+
+    #[test]
+    fn fallback_plan_keyword_matching_calls_matching_npc() {
+        let npc = make_sub_agent("npc_alice", AgentType::Npc, "Alice");
+        let writer = make_sub_agent("w1", AgentType::Writer, "writer");
+        let agents = vec![npc, writer];
+        let plan = fallback_plan(&agents, "talk to Alice about the quest");
+
+        // NPC Alice should be called because "Alice" matches the label
+        let npc_call = plan.calls.iter().find(|c| c.agent_id == "npc_alice");
+        assert!(npc_call.is_some());
+        assert!(
+            npc_call
+                .unwrap()
+                .task
+                .contains("talk to Alice about the quest")
+        );
+
+        // Writer should inject from NPC output
+        let writer_call = plan.calls.iter().find(|c| c.agent_id == "w1");
+        assert!(writer_call.is_some());
+        assert!(
+            writer_call
+                .unwrap()
+                .inject_from
+                .contains(&"npc_alice".to_string())
+        );
+    }
+
+    #[test]
+    fn fallback_plan_non_matching_npc_not_called() {
+        let npc = make_sub_agent("npc_bob", AgentType::Npc, "Bob");
+        let writer = make_sub_agent("w1", AgentType::Writer, "writer");
+        let agents = vec![npc, writer];
+        let plan = fallback_plan(&agents, "hello Alice");
+
+        // Bob should not be called since "Alice" doesn't match "Bob"
+        let npc_call = plan.calls.iter().find(|c| c.agent_id == "npc_bob");
+        assert!(npc_call.is_none());
+    }
+
+    #[test]
+    fn fallback_plan_always_sets_user_auto_false() {
+        let agents: Vec<SubAgent> = vec![];
+        let plan = fallback_plan(&agents, "anything");
+        assert!(!plan.user_auto);
     }
 }

@@ -1,4 +1,10 @@
-import type { Session, SessionConfig, Message, ProviderConfig, WorldBook, WorldBookDetail, WorldBookEntry, CharacterCard, ParsedWorldBookEntry, Preset, PresetDetail } from './types';
+import type {
+  Session, SessionConfig, Message, ProviderConfig,
+  WorldBook, WorldBookDetail, WorldBookEntry, CharacterCard,
+  ParsedWorldBookEntry, Preset, PresetDetail,
+  ImportDraftResponse, ConfirmImportRequest, ImportReport,
+  LlmAssistRequest, LlmAssistResponse, RawPreviewResponse,
+} from './types';
 import { consumeSseResponse, type ChatSseHandler } from './sse';
 
 const BASE_URL = '/api';
@@ -42,7 +48,7 @@ export async function deleteSession(id: string): Promise<void> {
   await request(`/sessions/${id}`, { method: 'DELETE' });
 }
 
-export async function updateSession(id: string, data: { title?: string; config?: SessionConfig }): Promise<Session> {
+export async function updateSession(id: string, data: { title?: string; config?: SessionConfig; world_pack_id?: string | null }): Promise<Session> {
   return request(`/sessions/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(data),
@@ -385,4 +391,74 @@ export async function updatePresetModule(
 
 export async function deletePresetModule(presetId: string, moduleId: string): Promise<void> {
   await request(`/presets/${presetId}/modules/${moduleId}`, { method: 'DELETE' });
+}
+
+// ─── Card Import API ───
+
+export async function importCharacterCard(file: File): Promise<ImportDraftResponse> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await fetch(`${BASE_URL}/charactercards/import`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: formData,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || 'Import failed');
+  }
+  return res.json();
+}
+
+export async function importCharacterCardJson(data: Record<string, unknown>): Promise<ImportDraftResponse> {
+  return request('/charactercards/import', {
+    method: 'POST',
+    body: JSON.stringify({ data }),
+  });
+}
+
+export async function runImportForCard(cardId: string): Promise<ImportDraftResponse> {
+  return request(`/charactercards/${cardId}/run-import`, {
+    method: 'POST',
+  });
+}
+
+export async function confirmImport(
+  importId: string,
+  options?: ConfirmImportRequest
+): Promise<{ id: string; character_card_id: string; world_pack_id: string }> {
+  return request(`/charactercards/import/${importId}/confirm`, {
+    method: 'POST',
+    body: JSON.stringify(options || {}),
+  });
+}
+
+export async function requestLlmAssist(
+  importId: string,
+  req: LlmAssistRequest
+): Promise<LlmAssistResponse> {
+  return request(`/charactercards/import/${importId}/llm-assist`, {
+    method: 'POST',
+    body: JSON.stringify(req),
+  });
+}
+
+export async function getImportReport(importId: string): Promise<ImportReport> {
+  return request(`/charactercards/import/${importId}/report`);
+}
+
+export async function getRawPreview(importId: string): Promise<RawPreviewResponse> {
+  return request(`/charactercards/import/${importId}/raw-preview`, {
+    method: 'POST',
+  });
+}
+
+export async function saveFailureSample(
+  importId: string,
+  notes?: string
+): Promise<{ sample_id: string }> {
+  return request(`/charactercards/import/${importId}/save-failure`, {
+    method: 'POST',
+    body: JSON.stringify({ user_notes: notes || '' }),
+  });
 }

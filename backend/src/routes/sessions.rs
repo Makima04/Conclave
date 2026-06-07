@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::Arc;
 
 use crate::error::AppError;
@@ -122,6 +122,17 @@ pub struct CreateSession {
 pub struct UpdateSession {
     pub title: Option<String>,
     pub config: Option<SessionConfig>,
+    #[serde(default, deserialize_with = "deserialize_optional_world_pack_id")]
+    pub world_pack_id: Option<Option<String>>,
+}
+
+fn deserialize_optional_world_pack_id<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -285,7 +296,6 @@ pub async fn create_session(
 
 #[derive(Deserialize)]
 pub struct ListParams {
-    pub cursor: Option<String>,
     pub limit: Option<i32>,
 }
 
@@ -349,19 +359,40 @@ pub async fn update_session(
             .unwrap_or_else(|| serde_json::from_str(&row.config).unwrap_or_default()),
     );
     let config_json = serde_json::to_string(&config).unwrap_or_else(|_| "{}".to_string());
+    let world_pack_id_changed = body.world_pack_id.is_some();
+    let world_pack_id = body.world_pack_id.unwrap_or(row.world_pack_id.clone());
+
+    if let Some(ref world_pack_id) = world_pack_id {
+        let exists: Option<String> = sqlx::query_scalar("SELECT id FROM world_books WHERE id = ?")
+            .bind(world_pack_id)
+            .fetch_optional(&state.pool)
+            .await?;
+        if exists.is_none() {
+            return Err(AppError::NotFound("World book not found".to_string()));
+        }
+    }
 
     sqlx::query(
-        "UPDATE sessions SET title = ?, config = ?, title_source = ?, updated_at = ? WHERE id = ?",
+        "UPDATE sessions SET title = ?, config = ?, title_source = ?, world_pack_id = ?, updated_at = ? WHERE id = ?",
     )
     .bind(&title)
     .bind(&config_json)
     .bind(&title_source)
+    .bind(&world_pack_id)
     .bind(&now)
     .bind(&id)
     .execute(&state.pool)
     .await?;
 
-    if row.mode == "multi_agent" {
+    if world_pack_id_changed {
+        if let Err(e) =
+            state_initializer::initialize_session_state_from_world_book(&state.pool, &id).await
+        {
+            tracing::warn!(session = %id, "Failed to initialize session state after world book change: {}", e);
+        }
+    }
+
+    if row.mode == "multi_agent" || world_pack_id_changed {
         sync_user_persona_agent(&state.pool, &id, &config).await?;
     }
 
@@ -373,7 +404,7 @@ pub async fn update_session(
         current_turn: row.current_turn,
         title_source,
         status: row.status,
-        world_pack_id: row.world_pack_id,
+        world_pack_id,
         created_at: row.created_at,
         updated_at: now,
     }))

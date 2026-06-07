@@ -1,5 +1,5 @@
+use super::str_utils::truncate_str;
 use crate::error::AppError;
-use crate::provider::adapter::ProviderAdapter;
 use crate::provider::openai::OpenAiProvider;
 use crate::provider::types::{ChatMessage, ChatRequest};
 use crate::runtime::structured_output;
@@ -22,7 +22,7 @@ pub async fn run_parser(
         .rev()
         .take(3)
         .rev()
-        .map(|m| format!("[{}] {}", m.role, truncate(&m.content, 200)))
+        .map(|m| format!("[{}] {}", m.role, truncate_str(&m.content, 200)))
         .collect();
 
     let recent_text = if recent.is_empty() {
@@ -89,7 +89,7 @@ JSON格式：
         .map(|c| c.message.content.clone())
         .unwrap_or_default();
 
-    tracing::info!("Parser Agent output: {}", truncate(&text, 200));
+    tracing::info!("Parser Agent output: {}", truncate_str(&text, 200));
 
     let schema_hint = r#"{"intent":"dialogue|action|query|command","action_type":"speak|attack|move|examine","target_characters":["角色名"],"compressed_input":"核心信息","tone":"hostile|friendly|neutral"}"#;
     match structured_output::parse_with_repair(provider, model, &text, parse_intent, schema_hint)
@@ -127,12 +127,5 @@ fn fallback_intent(user_input: &str) -> ParsedIntent {
         target_characters: vec![],
         compressed_input: user_input.to_string(),
         tone: "neutral".to_string(),
-    }
-}
-
-fn truncate(s: &str, max_chars: usize) -> &str {
-    match s.char_indices().nth(max_chars) {
-        Some((idx, _)) => &s[..idx],
-        None => s,
     }
 }

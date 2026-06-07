@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as api from '../api/client';
 import type { ProviderConfig, RenderMode, SessionConfig, UserPersona } from '../api/types';
+import { useProviders } from '../contexts/AppContext';
 import { ModelPicker } from '../settings/modelSelection';
 import {
   applyUserPersonaToConfig,
@@ -14,9 +15,10 @@ import {
   saveUserPersonaPresets,
   type UserPersonaPreset,
 } from '../settings/sessionDefaults';
+import '../styles/settings.css';
 
 export default function Settings() {
-  const [providers, setProviders] = useState<ProviderConfig[]>([]);
+  const { providers, loading, refresh: refreshProviders } = useProviders();
   const [settingsTab, setSettingsTab] = useState<'models' | 'params' | 'agents' | 'render' | 'user'>('models');
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
@@ -24,7 +26,6 @@ export default function Settings() {
   const [model, setModel] = useState('');
   const [isDefault, setIsDefault] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [globalDefaults, setGlobalDefaults] = useState<SessionConfig>(() => loadGlobalSessionDefaults());
   const [defaultsDirty, setDefaultsDirty] = useState(false);
   const [userPresets, setUserPresets] = useState<UserPersonaPreset[]>(() => loadUserPersonaPresets());
@@ -47,21 +48,6 @@ export default function Settings() {
       setUserPresetTitle('');
     }
   }, [selectedUserPresetId]);
-
-  useEffect(() => {
-    loadProviders();
-  }, []);
-
-  async function loadProviders() {
-    try {
-      const data = await api.listProviders();
-      setProviders(data.items);
-    } catch (err) {
-      console.error('Failed to load providers:', err);
-    } finally {
-      setLoading(false);
-    }
-  }
 
   function resetForm() {
     setName('');
@@ -112,7 +98,7 @@ export default function Settings() {
         await api.createProvider({ name, base_url: baseUrl, api_key: apiKey, model, is_default: isDefault });
       }
       resetForm();
-      loadProviders();
+      refreshProviders();
     } catch (err) {
       console.error('Failed to save provider:', err);
     }
@@ -121,7 +107,7 @@ export default function Settings() {
   async function handleSetDefault(id: string) {
     try {
       await api.updateProvider(id, { is_default: true });
-      loadProviders();
+      refreshProviders();
     } catch (err) {
       console.error('Failed to set default:', err);
     }
@@ -131,7 +117,7 @@ export default function Settings() {
     try {
       await api.deleteProvider(id);
       if (editingId === id) resetForm();
-      loadProviders();
+      refreshProviders();
     } catch (err) {
       console.error('Failed to delete provider:', err);
     }

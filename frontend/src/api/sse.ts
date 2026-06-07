@@ -21,12 +21,18 @@ export type TurnNumberPayload = {
   turn_number: number;
 };
 
+export type StateUpdatePayload = {
+  turn_number: number;
+  status: string;
+};
+
 export type KnownChatSseMessage =
   | { event: 'agent_status'; data: AgentStatusPayload }
   | { event: 'message_delta'; data: MessageDeltaPayload }
   | { event: 'stream_error'; data: StreamErrorPayload }
   | { event: 'memory_start'; data: TurnNumberPayload }
   | { event: 'memory_error'; data: StreamErrorPayload }
+  | { event: 'state_update'; data: StateUpdatePayload }
   | { event: 'turn_end'; data: TurnEndPayload }
   | { event: 'turn_ready'; data: TurnNumberPayload };
 
@@ -52,6 +58,7 @@ function toSseMessage(event: string, data: string): ChatSseMessage {
     case 'stream_error':
     case 'memory_start':
     case 'memory_error':
+    case 'state_update':
     case 'turn_end':
     case 'turn_ready':
       return { event, data: parsed } as KnownChatSseMessage;

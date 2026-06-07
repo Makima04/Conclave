@@ -1,5 +1,5 @@
 use crate::runtime::types::AgentCall;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 /// A level in the DAG — agents that can run in parallel (no dependencies between them).
 pub type ExecutionLevel = Vec<AgentCall>;

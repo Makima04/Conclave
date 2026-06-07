@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::error::AppError;
 use crate::routes::messages::AppState;
 use crate::runtime::sub_agent;
-use crate::runtime::types::SubAgent;
+use crate::runtime::types::{AgentType, SubAgent};
 
 #[derive(Serialize)]
 struct AgentResponse {
@@ -33,7 +33,7 @@ fn to_response(agent: &SubAgent) -> AgentResponse {
     AgentResponse {
         id: agent.id.clone(),
         session_id: agent.session_id.clone(),
-        agent_type: agent.agent_type.clone(),
+        agent_type: agent.agent_type.to_string(),
         character_id: agent.character_id.clone(),
         label: agent.label.clone(),
         status: agent.status.clone(),
@@ -41,7 +41,7 @@ fn to_response(agent: &SubAgent) -> AgentResponse {
         context: agent.context.clone(),
         context_preview: preview,
         config: agent.config.clone(),
-        fixed: agent.agent_type == "user",
+        fixed: agent.agent_type == AgentType::User,
     }
 }
 
@@ -71,21 +71,26 @@ pub async fn create_agent_manual(
     Path(session_id): Path<String>,
     Json(body): Json<CreateAgentBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    if body.agent_type == "user" {
+    if body.agent_type == AgentType::User.as_str() {
         return Err(AppError::BadRequest(
             "User Agent is fixed and cannot be created manually".to_string(),
         ));
     }
 
+    let agent_type: AgentType = body
+        .agent_type
+        .parse()
+        .map_err(|_| AppError::BadRequest(format!("Invalid agent type: {}", body.agent_type)))?;
+
     tracing::info!(
         session = %session_id,
-        agent_type = %body.agent_type,
+        agent_type = %agent_type,
         label = ?body.label,
         "Manual agent creation requested"
     );
     let action = crate::runtime::types::LifecycleAction {
         action: "create".to_string(),
-        agent_type: body.agent_type,
+        agent_type,
         character_id: body.character_id,
         label: body.label.unwrap_or_default(),
         reason: "manual".to_string(),
@@ -122,7 +127,7 @@ pub async fn create_agent_manual(
 
     Ok(Json(serde_json::json!({
         "id": agent.id,
-        "agent_type": agent.agent_type,
+        "agent_type": agent.agent_type.to_string(),
         "label": agent.label,
         "status": agent.status,
     })))
@@ -235,7 +240,7 @@ async fn ensure_mutable_lifecycle_agent(
     agent_id: &str,
 ) -> Result<(), AppError> {
     let agent_type = ensure_session_agent(pool, session_id, agent_id).await?;
-    if agent_type == "user" {
+    if agent_type == AgentType::User.as_str() {
         return Err(AppError::BadRequest(
             "User Agent is fixed and cannot be deleted or cooled down".to_string(),
         ));

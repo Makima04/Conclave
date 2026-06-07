@@ -126,7 +126,7 @@ pub async fn apply_proposal(
     }
 
     // Low risk: auto-commit (with policy-filtered changes)
-    let mut filtered_proposal = StateChangeProposal {
+    let filtered_proposal = StateChangeProposal {
         proposed_by: proposal.proposed_by.clone(),
         risk: classified_risk,
         changes: allowed_changes.iter().map(|(_, c)| (*c).clone()).collect(),
@@ -518,35 +518,6 @@ pub async fn reject_proposal(
     }
 
     Ok(())
-}
-
-// --- Backward-compatible wrapper ---
-
-pub async fn apply_state_changes(
-    pool: &SqlitePool,
-    session_id: &str,
-    changes: &[(String, serde_json::Value)],
-) -> Result<i32, AppError> {
-    if changes.is_empty() {
-        return Ok(0);
-    }
-
-    let proposal = StateChangeProposal {
-        proposed_by: "runtime".to_string(),
-        risk: "low".to_string(),
-        changes: changes
-            .iter()
-            .map(|(path, value)| StateChangeCandidate {
-                op: "update".to_string(),
-                target: path.clone(),
-                from: None,
-                to: value.clone(),
-                evidence_turns: vec![],
-            })
-            .collect(),
-    };
-    let result = apply_proposal(pool, session_id, &proposal, 0).await?;
-    Ok(result.version)
 }
 
 use serde::Serialize;

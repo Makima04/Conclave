@@ -32,19 +32,3 @@ pub async fn save_summary(
 
     Ok(id)
 }
-
-pub async fn get_latest_summary(
-    pool: &SqlitePool,
-    session_id: &str,
-    summary_type: &str,
-) -> Result<Option<String>, AppError> {
-    let summary: Option<String> = sqlx::query_scalar(
-        "SELECT content FROM turn_summaries WHERE session_id = ? AND summary_type = ? ORDER BY turn_number DESC LIMIT 1"
-    )
-    .bind(session_id)
-    .bind(summary_type)
-    .fetch_optional(pool)
-    .await?;
-
-    Ok(summary)
-}

@@ -9,18 +9,6 @@ use crate::routes::messages::AppState;
 // ── Response types ──
 
 #[derive(Serialize)]
-pub struct WorldBookResponse {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub original_format: String,
-    pub entry_count: i64,
-    pub has_character_card: bool,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Serialize)]
 pub struct WorldBookDetailResponse {
     pub id: String,
     pub name: String,

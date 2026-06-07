@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod card_import;
 pub mod charactercards;
 pub mod health;
 pub mod messages;

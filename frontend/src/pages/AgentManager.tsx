@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import * as api from '../api/client';
 import type { SubAgent } from '../api/client';
-import type { ProviderConfig } from '../api/types';
+import { useProviders } from '../contexts/AppContext';
 import { describeModelRef, ModelPicker } from '../settings/modelSelection';
+import '../styles/agent-manager.css';
 
 const STATUS_COLORS: Record<string, string> = {
   active: '#5B8A5E',
@@ -23,8 +24,8 @@ function sortAgents(a: SubAgent, b: SubAgent) {
 export default function AgentManager() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
+  const { providers } = useProviders();
   const [agents, setAgents] = useState<SubAgent[]>([]);
-  const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -46,17 +47,7 @@ export default function AgentManager() {
       return;
     }
     loadAgents();
-    loadProviders();
   }, [sessionId]);
-
-  async function loadProviders() {
-    try {
-      const data = await api.listProviders();
-      setProviders(data.items || []);
-    } catch (err) {
-      console.error('Failed to load providers:', err);
-    }
-  }
 
   async function loadAgents() {
     if (!sessionId) return;

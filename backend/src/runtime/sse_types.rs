@@ -26,8 +26,9 @@ pub enum SseEvent {
     MemoryStart {
         turn_number: i32,
     },
-    MemoryError {
-        error: String,
+    StateUpdate {
+        turn_number: i32,
+        status: String,
     },
     TurnReady {
         turn_number: i32,

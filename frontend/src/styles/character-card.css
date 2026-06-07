@@ -1,0 +1,406 @@
+/* ===== Character Card Page Styles ===== */
+/* ── Character Card Page (Redesigned) ── */
+
+.cc-page {
+  max-width: 720px;
+  margin: 0 auto;
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+/* Banner */
+.cc-banner {
+  background: linear-gradient(135deg, #1A0B12 0%, #2D0F1E 40%, #15081F 100%);
+  padding: 16px 24px 48px;
+  position: relative;
+}
+
+.cc-banner-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.cc-back-btn {
+  background: rgba(255,255,255,0.15);
+  color: white;
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.cc-back-btn:hover { background: rgba(255,255,255,0.25); }
+
+.cc-link-btn {
+  background: rgba(255,255,255,0.15);
+  color: white;
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.cc-link-btn:hover { background: rgba(255,255,255,0.25); }
+
+.cc-spec-badge {
+  background: rgba(255,255,255,0.2);
+  color: white;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  align-self: center;
+}
+
+/* Profile */
+.cc-profile {
+  display: flex;
+  gap: 20px;
+  align-items: flex-end;
+  padding: 0 24px;
+  margin-top: -36px;
+  margin-bottom: 20px;
+}
+
+.cc-avatar-large {
+  width: 96px;
+  height: 96px;
+  border-radius: 16px;
+  background: var(--accent);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  font-weight: 700;
+  flex-shrink: 0;
+  overflow: hidden;
+  border: 4px solid var(--bg);
+  box-shadow: var(--shadow-md);
+}
+.cc-avatar-large img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cc-profile-info { flex: 1; padding-bottom: 4px; }
+
+.cc-name-large {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--ink);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.3;
+}
+.cc-name-large:hover .cc-edit-hint { opacity: 1; }
+.cc-edit-hint {
+  font-size: 14px;
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+
+.cc-meta-row {
+  display: flex;
+  gap: 14px;
+  margin-top: 4px;
+}
+.cc-meta-item {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.cc-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.cc-tag {
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* Personality bar */
+.cc-personality-bar {
+  margin: 0 24px 16px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: var(--shadow-sm);
+}
+.cc-personality-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.cc-personality-text {
+  font-size: 14px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Section label */
+.cc-section-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 10px;
+}
+
+/* First message */
+.cc-first-mes-section {
+  margin: 0 24px 20px;
+}
+
+.cc-first-mes-bubble {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px 12px 12px 4px;
+  padding: 14px 16px;
+  box-shadow: var(--shadow-sm);
+}
+
+.cc-mes-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.cc-mes-content {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  flex: 1;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* Alternate greetings */
+.cc-greetings-section {
+  margin: 0 24px 20px;
+}
+
+.cc-greetings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cc-greeting-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.cc-greeting-card:hover { border-color: var(--accent); box-shadow: var(--shadow-sm); }
+.cc-greeting-card.expanded { border-color: var(--accent); background: var(--accent-soft); }
+
+.cc-greeting-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.cc-greeting-num {
+  font-weight: 700;
+  color: var(--accent);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.cc-greeting-preview {
+  flex: 1;
+  font-size: 13px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cc-greeting-arrow {
+  font-size: 11px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.cc-greeting-full {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 14px;
+  line-height: 1.7;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* Detail sections */
+.cc-detail-sections {
+  margin: 0 24px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cc-detail-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: border-color var(--transition);
+}
+.cc-detail-card.expanded { border-color: var(--accent); }
+
+.cc-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.cc-detail-header:hover { background: var(--accent-soft); }
+
+.cc-detail-icon { font-size: 16px; flex-shrink: 0; }
+.cc-detail-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  flex: 1;
+}
+.cc-detail-len {
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--surface-0);
+  padding: 1px 8px;
+  border-radius: 10px;
+}
+.cc-detail-arrow {
+  font-size: 11px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.cc-detail-body {
+  padding: 0 14px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.cc-detail-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text);
+  background: var(--surface-0);
+  padding: 12px;
+  border-radius: var(--radius);
+  margin: 12px 0 8px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.cc-detail-edit-btn {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--line);
+  font-size: 13px;
+  padding: 4px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.cc-detail-edit-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+
+.cc-detail-textarea {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  margin-top: 12px;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.cc-detail-textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.cc-detail-edit-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* Extensions */
+.cc-ext-section {
+  margin: 0 24px 24px;
+}
+.cc-ext-text {
+  font-size: 14px;
+  color: var(--muted);
+  background: var(--panel);
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+}
+
+/* Edit inline */
+.cc-edit-inline {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.cc-edit-inline input {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  font-size: 18px;
+  font-weight: 600;
+  background: var(--panel);
+  color: var(--ink);
+}
+.cc-edit-inline input:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.cc-edit-inline button {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+

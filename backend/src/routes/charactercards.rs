@@ -30,6 +30,10 @@ pub struct CharacterCardResponse {
     pub spec: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conclave_package: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_report: Option<serde_json::Value>,
 }
 
 // ── DB row struct ──
@@ -101,6 +105,27 @@ fn row_to_response(row: CharacterCardRow) -> CharacterCardResponse {
         spec: row.spec,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        conclave_package: None,
+        import_report: None,
+    }
+}
+
+/// Fetch the latest import report for a character card and attach it to the response.
+async fn attach_import_data(
+    pool: &sqlx::SqlitePool,
+    card_id: &str,
+    response: &mut CharacterCardResponse,
+) {
+    let result = sqlx::query_as::<_, (String, String)>(
+        "SELECT package_json, report_json FROM import_reports WHERE character_card_id = ?1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(card_id)
+    .fetch_optional(pool)
+    .await;
+
+    if let Ok(Some((package_json, report_json))) = result {
+        response.conclave_package = serde_json::from_str(&package_json).ok();
+        response.import_report = serde_json::from_str(&report_json).ok();
     }
 }
 
@@ -144,7 +169,11 @@ pub async fn get_character_card(
         .await?
         .ok_or_else(|| AppError::NotFound("Character card not found".to_string()))?;
 
-    Ok(Json(row_to_response(row)))
+    let card_id = row.id.clone();
+    let mut response = row_to_response(row);
+    attach_import_data(&state.pool, &card_id, &mut response).await;
+
+    Ok(Json(response))
 }
 
 /// GET /api/worldbooks/{wb_id}/character-card — get character card for a world book
@@ -161,7 +190,11 @@ pub async fn get_card_for_worldbook(
                 AppError::NotFound("No character card for this world book".to_string())
             })?;
 
-    Ok(Json(row_to_response(row)))
+    let card_id = row.id.clone();
+    let mut response = row_to_response(row);
+    attach_import_data(&state.pool, &card_id, &mut response).await;
+
+    Ok(Json(response))
 }
 
 /// PATCH /api/charactercards/{id} — update editable fields

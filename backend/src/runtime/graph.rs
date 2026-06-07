@@ -1,14 +1,19 @@
 use crate::error::AppError;
 use crate::routes::sessions::SessionConfig;
 use crate::runtime::executor::resolve_model_target;
-use crate::runtime::types::{AgentCall, AgentStatusEvent, AgentTrace};
+use crate::runtime::types::{AgentCall, AgentStatusEvent, AgentTrace, AgentType};
 use crate::runtime::{
     compression, context, dag, master, parser, plan_validator, sub_agent, turn_finalizer,
-    turn_state, variable_state_agent,
+    turn_state, variable_tool_agent,
 };
 use sqlx::SqlitePool;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::instrument;
+
+/// Maximum number of sub-agents that can execute concurrently within a single DAG level.
+const MAX_CONCURRENT_AGENTS: usize = 4;
 
 /// Execute one turn using the dynamic Master Agent architecture.
 /// Returns the final narrative text.
@@ -64,7 +69,9 @@ pub async fn execute_multi_agent_turn(
     );
 
     // 4. Run Parser Agent → extract structured intent
-    let parser_agent = active_agents.iter().find(|a| a.agent_type == "parser");
+    let parser_agent = active_agents
+        .iter()
+        .find(|a| a.agent_type == AgentType::Parser);
     let parsed_intent = if session_config.parser_enabled {
         let sub_model = resolve_model(model, &session_config.sub_agent_model);
         let target = resolve_model_target(pool, model, sub_model).await?;
@@ -107,7 +114,9 @@ pub async fn execute_multi_agent_turn(
     // 6. Run Master Agent → execution plan (with full context)
     let master_model = resolve_model(model, &session_config.master_model);
     let master_target = resolve_model_target(pool, model, master_model).await?;
-    let master_agent = active_agents.iter().find(|a| a.agent_type == "master");
+    let master_agent = active_agents
+        .iter()
+        .find(|a| a.agent_type == AgentType::Master);
 
     emit_status(&status_tx, "master", "总控", "working");
     let plan = master::run_master(
@@ -133,11 +142,55 @@ pub async fn execute_multi_agent_turn(
     );
 
     // 6.5. Validate plan against runtime constraints
-    let validated = plan_validator::validate_plan(
+    let mut validated = plan_validator::validate_plan(
         &plan,
         &active_agents,
         session_config.max_active_agents as usize,
     );
+
+    // 6.6. Inject State Agent into the plan if variables exist and Master didn't include one.
+    // State Agent runs after NPC/User, before Writer — uses tool call to update variables.
+    let has_variables = ctx
+        .structured_state
+        .get("variables")
+        .and_then(|v| v.as_object())
+        .map_or(false, |obj| !obj.is_empty());
+    let has_state_in_plan = validated
+        .calls
+        .iter()
+        .any(|c| active_agents.iter().any(|a| a.id == c.agent_id && a.agent_type == AgentType::State));
+
+    if has_variables && !has_state_in_plan {
+        if let Some(state_agent) = active_agents.iter().find(|a| a.agent_type == AgentType::State) {
+            // State Agent depends on all NPC/User agents (reads their outputs to determine changes)
+            let npc_user_ids: Vec<String> = validated
+                .calls
+                .iter()
+                .filter(|c| {
+                    active_agents
+                        .iter()
+                        .find(|a| a.id == c.agent_id)
+                        .map_or(false, |a| {
+                            matches!(a.agent_type, AgentType::Npc | AgentType::User)
+                        })
+                })
+                .map(|c| c.agent_id.clone())
+                .collect();
+
+            tracing::info!(
+                session = session_id,
+                agent_id = %state_agent.id,
+                depends_on = ?npc_user_ids,
+                "Injecting State Agent into DAG"
+            );
+
+            validated.calls.push(AgentCall {
+                agent_id: state_agent.id.clone(),
+                task: "分析以上角色的互动输出和当前变量状态，判断哪些变量需要变化。调用 update_variables 工具提交变更。".to_string(),
+                inject_from: npc_user_ids,
+            });
+        }
+    }
 
     // 7. Execute lifecycle actions
     for action in &validated.lifecycle {
@@ -201,7 +254,7 @@ pub async fn execute_multi_agent_turn(
                 }
             };
 
-            if agent.agent_type == "writer" {
+            if agent.agent_type == AgentType::Writer {
                 writer_called = true;
             }
 
@@ -215,7 +268,12 @@ pub async fn execute_multi_agent_turn(
                 .unwrap_or(sub_model);
             let target = resolve_model_target(pool, model, effective_model).await?;
 
-            emit_status(&status_tx, &agent.agent_type, &agent.label, "working");
+            emit_status(
+                &status_tx,
+                agent.agent_type.as_str(),
+                &agent.label,
+                "working",
+            );
             level_agents.push(agent);
             level_calls.push(call);
             level_targets.push(target);
@@ -224,6 +282,17 @@ pub async fn execute_multi_agent_turn(
         // Build futures after the borrow loop
         let mut futures = Vec::new();
         for i in 0..level_agents.len() {
+            // State Agent gets the update_variables tool; other agents get None
+            let agent_tools = if level_agents[i].agent_type == AgentType::State {
+                let variables = ctx
+                    .structured_state
+                    .get("variables")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                Some(vec![variable_tool_agent::build_update_variables_tool(&variables)])
+            } else {
+                None
+            };
             futures.push(sub_agent::execute_sub_agent(
                 pool,
                 &level_targets[i].provider,
@@ -232,20 +301,77 @@ pub async fn execute_multi_agent_turn(
                 level_calls[i],
                 &state,
                 &ctx,
+                agent_tools,
             ));
         }
 
-        // Execute all agents in this level concurrently
-        let results = futures::future::join_all(futures).await;
+        // Execute all agents in this level with bounded concurrency
+        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_AGENTS));
+        let bounded_futures: Vec<_> = futures
+            .into_iter()
+            .map(|fut| {
+                let sem = semaphore.clone();
+                async move {
+                    let _permit = sem.acquire().await.unwrap();
+                    fut.await
+                }
+            })
+            .collect();
+        let results = futures::future::join_all(bounded_futures).await;
 
         // Process results
         for (i, result) in results.into_iter().enumerate() {
             let agent = level_agents[i];
             let agent_model = &level_targets[i].trace_model;
-            emit_status(&status_tx, &agent.agent_type, &agent.label, "done");
+            emit_status(&status_tx, agent.agent_type.as_str(), &agent.label, "done");
 
             match result {
                 Ok(output) => {
+                    // Process State Agent tool calls to update variables
+                    if agent.agent_type == AgentType::State {
+                        if let Some(ref tool_calls) = output.tool_calls {
+                            let variables = ctx
+                                .structured_state
+                                .get("variables")
+                                .cloned()
+                                .unwrap_or_else(|| serde_json::json!({}));
+                            if let Some(changes) =
+                                variable_tool_agent::extract_tool_call(tool_calls, &variables)
+                            {
+                                tracing::info!(
+                                    session = session_id,
+                                    agent_id = %agent.id,
+                                    changes = changes.len(),
+                                    "State Agent tool call: applying variable changes"
+                                );
+                                match pool.begin().await {
+                                    Ok(mut tx) => {
+                                        match variable_tool_agent::persist_variable_changes(
+                                            &mut tx,
+                                            session_id,
+                                            &changes,
+                                        )
+                                        .await
+                                        {
+                                            Ok(()) => {
+                                                if let Err(e) = tx.commit().await {
+                                                    tracing::warn!("Failed to commit state agent changes: {}", e);
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!("Failed to persist state agent changes: {}", e);
+                                                let _ = tx.rollback().await;
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Failed to begin transaction for state agent: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     sub_agent::touch_agent(pool, &agent.id, turn_number).await;
                     traces.push(build_agent_trace(&output, agent_model));
                     turn_state::set_output(&mut state, &agent.id, output);
@@ -260,7 +386,7 @@ pub async fn execute_multi_agent_turn(
                     // Record error trace
                     traces.push(crate::runtime::types::AgentTrace {
                         agent_id: agent.id.clone(),
-                        agent_type: agent.agent_type.clone(),
+                        agent_type: agent.agent_type.as_str().to_string(),
                         prompt_tokens: 0,
                         completion_tokens: 0,
                         duration_ms: 0,
@@ -285,7 +411,7 @@ pub async fn execute_multi_agent_turn(
     if !writer_called {
         let writers: Vec<_> = active_agents
             .iter()
-            .filter(|a| a.agent_type == "writer")
+            .filter(|a| a.agent_type == AgentType::Writer)
             .collect();
         let writer = if let Some(ref fid) = plan.final_writer_id {
             writers
@@ -314,6 +440,7 @@ pub async fn execute_multi_agent_turn(
                 &call,
                 &state,
                 &ctx,
+                None,
             )
             .await?;
             emit_status(&status_tx, "writer", &writer.label, "done");
@@ -336,7 +463,7 @@ pub async fn execute_multi_agent_turn(
         let writer_outputs: Vec<_> = state
             .agent_outputs
             .values()
-            .filter(|o| o.agent_type == "writer")
+            .filter(|o| o.agent_type == AgentType::Writer)
             .collect();
         if writer_outputs.len() == 1 {
             writer_outputs.first().map(|o| o.text.clone())
@@ -360,52 +487,11 @@ pub async fn execute_multi_agent_turn(
             .join("\n\n")
     });
 
-    // 11. Variable state update: state agent proposes concrete `variables.*` changes.
+    // 11. Post-turn compression: generate memory updates (persisted by caller)
     let sub_model = resolve_model(model, &session_config.sub_agent_model);
-    let state_target = resolve_model_target(pool, model, sub_model).await?;
-    let state_agent = active_agents.iter().find(|a| a.agent_type == "state");
-    let mut state_proposals = Vec::new();
-    if let Some(agent) = state_agent {
-        emit_status(&status_tx, "state", &agent.label, "working");
-        match variable_state_agent::propose_variable_changes(
-            &state_target.provider,
-            &state_target.model,
-            user_input,
-            &narrative,
-            &ctx,
-            Some(agent),
-        )
-        .await
-        {
-            Ok(Some(proposal)) => {
-                tracing::info!(
-                    session = session_id,
-                    turn = turn_number,
-                    changes = proposal.changes.len(),
-                    "State agent proposed variable changes"
-                );
-                state_proposals.push(proposal);
-            }
-            Ok(None) => {
-                tracing::debug!(
-                    session = session_id,
-                    turn = turn_number,
-                    "State agent proposed no variable changes"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    session = session_id,
-                    turn = turn_number,
-                    "State agent variable update failed: {}",
-                    e
-                );
-            }
-        }
-        emit_status(&status_tx, "state", &agent.label, "done");
-    }
-
-    // 12. Post-turn compression: generate memory updates (persisted by caller)
+    let state_agent = active_agents
+        .iter()
+        .find(|a| a.agent_type == AgentType::State);
     let compression_model = if session_config.compression_model.is_empty() {
         sub_model
     } else {
@@ -455,10 +541,6 @@ pub async fn execute_multi_agent_turn(
             None,
             Some(turn_finalizer::CompressionJob {
                 model: compression_model.to_string(),
-                user_input: user_input.to_string(),
-                narrative: narrative.clone(),
-                context: ctx.clone(),
-                state_agent: state_agent.cloned(),
             }),
         )
     };
@@ -472,12 +554,10 @@ pub async fn execute_multi_agent_turn(
     );
 
     Ok(turn_finalizer::TurnCommit {
-        turn_number,
         narrative,
         traces,
         compression: compression_result,
         compression_job,
-        state_proposals,
     })
 }
 
@@ -494,7 +574,7 @@ fn build_agent_trace(output: &crate::runtime::types::AgentOutput, model: &str) -
     );
     AgentTrace {
         agent_id: output.agent_id.clone(),
-        agent_type: output.agent_type.clone(),
+        agent_type: output.agent_type.as_str().to_string(),
         prompt_tokens: output.prompt_tokens,
         completion_tokens: output.completion_tokens,
         duration_ms: output.duration_ms,
@@ -524,5 +604,89 @@ fn emit_status(
             label: label.to_string(),
             status: status.to_string(),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::types::AgentOutput;
+
+    fn make_output(agent_id: &str, agent_type: AgentType, text: &str) -> AgentOutput {
+        AgentOutput {
+            agent_id: agent_id.to_string(),
+            agent_type,
+            text: text.to_string(),
+            tool_calls: None,
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            duration_ms: 200,
+        }
+    }
+
+    #[test]
+    fn build_agent_trace_copies_fields_correctly() {
+        let output = make_output("npc_1", AgentType::Npc, "Hello, traveler!");
+        let trace = build_agent_trace(&output, "gpt-4o");
+
+        assert_eq!(trace.agent_id, "npc_1");
+        assert_eq!(trace.agent_type, "npc");
+        assert_eq!(trace.prompt_tokens, 100);
+        assert_eq!(trace.completion_tokens, 50);
+        assert_eq!(trace.duration_ms, 200);
+        assert_eq!(trace.model, "gpt-4o");
+        assert!(trace.input_summary.contains("npc_1"));
+        assert!(trace.input_summary.contains("100 tokens"));
+        assert!(trace.output_summary.contains("Hello, traveler!"));
+    }
+
+    #[test]
+    fn build_agent_trace_truncates_long_output() {
+        let long_text = "a".repeat(300);
+        let output = make_output("writer_1", AgentType::Writer, &long_text);
+        let trace = build_agent_trace(&output, "model-x");
+
+        // output_summary should be truncated to 200 chars of the text + agent_id prefix
+        assert!(trace.output_summary.len() < long_text.len() + 50);
+        // The summary should contain the first 200 chars of the text
+        assert!(trace.output_summary.contains(&"a".repeat(200)));
+    }
+
+    #[test]
+    fn build_agent_trace_short_output_not_truncated() {
+        let short_text = "Short reply.";
+        let output = make_output("npc_1", AgentType::Npc, short_text);
+        let trace = build_agent_trace(&output, "model");
+
+        assert!(trace.output_summary.contains(short_text));
+    }
+
+    #[test]
+    fn resolve_model_returns_default_when_override_empty() {
+        let result = resolve_model("gpt-4o", "");
+        assert_eq!(result, "gpt-4o");
+    }
+
+    #[test]
+    fn resolve_model_returns_override_when_non_empty() {
+        let result = resolve_model("gpt-4o", "claude-3-opus");
+        assert_eq!(result, "claude-3-opus");
+    }
+
+    #[test]
+    fn emit_status_sends_event_through_channel() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        emit_status(&Some(tx), "writer", "写手", "working");
+
+        let event = rx.try_recv().expect("should receive one event");
+        assert_eq!(event.agent_type, "writer");
+        assert_eq!(event.label, "写手");
+        assert_eq!(event.status, "working");
+    }
+
+    #[test]
+    fn emit_status_none_sender_does_not_panic() {
+        // Should not panic when sender is None
+        emit_status(&None, "parser", "解析器", "done");
     }
 }

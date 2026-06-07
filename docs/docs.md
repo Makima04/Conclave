@@ -65,6 +65,10 @@
 
 定义 Character Pack、World Pack、Agent Graph Pack、Plugin Pack、manifest schema、资源约定、版本规则、导入导出和 SillyTavern 迁移。
 
+### 工程 — [卡片导入标准化规范](card-import-normalization.md)
+
+定义 SillyTavern 等外部角色卡如何在导入期转换为平台原生卡包；运行时 ST sandbox 兼容标记为 deprecated，仅作为失败兜底和迁移对照。
+
 ### 工程 — [Artifact Renderer 规范](artifact-renderer.md)
 
 定义三层渲染模型、UI Schema、Artifact 生命周期、iframe 沙箱、资源预算和快照策略。
@@ -84,10 +88,6 @@
 ### 插件系统规范
 
 定义 manifest、权限、代码沙箱、工具调用、插件节点和安全审核。
-
-### SillyTavern 兼容与迁移规范
-
-定义角色卡、世界书、预设、写作风格和历史上下文如何转换为平台的多 Agent 内容包。
 
 ---
 

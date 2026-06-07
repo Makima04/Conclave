@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import * as api from '../api/client';
+import { useToast } from '../components/Toast';
 import type { CharacterCard } from '../api/types';
+import '../styles/character-card.css';
 
 export default function CharacterCardPage() {
   const { id } = useParams<{ id: string }>();
+  const toast = useToast();
   const [card, setCard] = useState<CharacterCard | null>(null);
   const [loading, setLoading] = useState(true);
   const [expandedGreeting, setExpandedGreeting] = useState<number | null>(null);
@@ -34,7 +37,7 @@ export default function CharacterCardPage() {
       setCard({ ...card, [field]: editValue });
       setEditingSection(null);
     } catch (err) {
-      alert('保存失败');
+      toast.error('保存失败');
     }
   }
 
@@ -68,6 +71,7 @@ export default function CharacterCardPage() {
           <div style={{ display: 'flex', gap: 8 }}>
             <span className="cc-spec-badge">{card.spec}</span>
             <button className="cc-link-btn" onClick={() => navigate('/worldbooks')}>📚 世界书</button>
+            <button className="btn-import-card" onClick={() => navigate('/charactercards/import')}>📦 导入角色卡</button>
           </div>
         </div>
       </div>

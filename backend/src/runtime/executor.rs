@@ -1,6 +1,7 @@
 use super::context;
+use super::str_utils::truncate_str;
 use super::types::{
-    ContextBundle, MemoryProposal, RoleContext, StateChangeProposal, TurnResult,
+    ContextBundle, ContextMessage, MemoryProposal, RoleContext, StateChangeProposal, TurnResult,
     WorldBookContextEntry, WriterDraft,
 };
 use crate::config::AppConfig;
@@ -31,7 +32,6 @@ pub type StreamCommitData = Arc<
             Vec<super::types::AgentTrace>,
             Option<crate::runtime::types::CompressionResult>,
             Option<turn_finalizer::CompressionJob>,
-            Vec<StateChangeProposal>,
         )>,
     >,
 >;
@@ -40,13 +40,10 @@ pub struct StreamTurnResult {
     pub stream: Pin<Box<dyn Stream<Item = Result<StreamChunk, AppError>> + Send>>,
     pub turn_number: i32,
     pub session_id: String,
-    pub model_config_json: String,
     pub title_source: String,
     /// Data from multi-agent turn for the route layer to persist after the stream completes.
     /// None for single-agent streaming.
     pub commit_data: Option<StreamCommitData>,
-    /// Broadcast sender for SSE reconnect. Created and registered by the caller.
-    pub broadcast_tx: Option<broadcast::Sender<SseEvent>>,
 }
 
 fn format_world_book_reference(entries: &[WorldBookContextEntry]) -> Option<String> {
@@ -114,6 +111,7 @@ fn format_role_reference(roles: &[RoleContext]) -> Option<String> {
 fn build_single_agent_messages(
     system_prompt: String,
     context_bundle: &ContextBundle,
+    current_user_input: Option<&str>,
 ) -> Vec<ChatMessage> {
     let mut messages = vec![ChatMessage {
         role: "system".to_string(),
@@ -203,12 +201,42 @@ fn build_single_agent_messages(
         });
     }
 
+    if let Some(input) = current_user_input {
+        messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: input.to_string(),
+            reasoning_content: None,
+            tool_calls: None,
+        });
+    }
+
     messages
+}
+
+fn context_with_current_turn(
+    context_bundle: &ContextBundle,
+    turn_number: i32,
+    user_input: &str,
+    assistant_output: Option<&str>,
+) -> ContextBundle {
+    let mut context_bundle = context_bundle.clone();
+    context_bundle.recent_context.push(ContextMessage {
+        role: "user".to_string(),
+        content: user_input.to_string(),
+        turn_number,
+    });
+    if let Some(output) = assistant_output {
+        context_bundle.recent_context.push(ContextMessage {
+            role: "assistant".to_string(),
+            content: output.to_string(),
+            turn_number,
+        });
+    }
+    context_bundle
 }
 
 #[derive(Debug, sqlx::FromRow)]
 struct SessionRow {
-    id: String,
     mode: String,
     current_turn: i32,
     config: String,
@@ -220,7 +248,6 @@ struct ProviderRow {
     id: String,
     base_url: String,
     api_key: String,
-    model: String,
 }
 
 #[derive(Clone)]
@@ -232,7 +259,7 @@ pub struct ModelTarget {
 
 async fn load_provider(pool: &SqlitePool) -> Result<OpenAiProvider, AppError> {
     let row = sqlx::query_as::<_, ProviderRow>(
-        "SELECT id, base_url, api_key, model FROM provider_configs WHERE is_default = 1 LIMIT 1",
+        "SELECT id, base_url, api_key FROM provider_configs WHERE is_default = 1 LIMIT 1",
     )
     .fetch_optional(pool)
     .await?;
@@ -301,7 +328,7 @@ pub async fn resolve_model_target(
 ) -> Result<ModelTarget, AppError> {
     if let Some((provider_id, model)) = parse_provider_model_ref(model_ref) {
         let row = sqlx::query_as::<_, ProviderRow>(
-            "SELECT id, base_url, api_key, model FROM provider_configs WHERE id = ?",
+            "SELECT id, base_url, api_key FROM provider_configs WHERE id = ?",
         )
         .bind(&provider_id)
         .fetch_optional(pool)
@@ -350,6 +377,12 @@ pub async fn propose_single_agent_variable_changes_for_session(
         session_config.max_context_turns as usize,
     )
     .await?;
+    let context_bundle = context_with_current_turn(
+        &context_bundle,
+        turn_number,
+        user_input,
+        Some(narrative_text),
+    );
 
     propose_single_agent_variable_changes(
         pool,
@@ -386,7 +419,7 @@ async fn propose_single_agent_variable_changes(
     )
     .await?;
 
-    variable_tool_agent::propose_variable_tool_changes(
+    variable_tool_agent::propose_variable_changes(
         &target.provider,
         &target.model,
         user_input,
@@ -407,7 +440,7 @@ pub async fn execute_turn(
     let model = load_provider_model(pool).await?;
 
     let session = sqlx::query_as::<_, SessionRow>(
-        "SELECT id, mode, current_turn, config, title_source FROM sessions WHERE id = ? AND deleted_at IS NULL"
+        "SELECT mode, current_turn, config, title_source FROM sessions WHERE id = ? AND deleted_at IS NULL"
     )
     .bind(session_id)
     .fetch_optional(pool)
@@ -494,7 +527,6 @@ pub async fn execute_turn(
             session_id,
             turn_number,
             &commit.compression,
-            &commit.state_proposals,
         )
         .await;
         turn_finalizer::persist_turn_knowledge(
@@ -562,7 +594,7 @@ pub async fn execute_turn(
         session_config.system_prompt.clone()
     };
 
-    let messages = build_single_agent_messages(system_prompt, &context_bundle);
+    let messages = build_single_agent_messages(system_prompt, &context_bundle, Some(user_input));
 
     let model_for_trace = target.trace_model.clone();
 
@@ -661,13 +693,19 @@ pub async fn execute_turn(
         model: model_for_trace,
     };
 
+    let context_with_turn = context_with_current_turn(
+        &context_bundle,
+        turn_number,
+        user_input,
+        Some(&narrative_text),
+    );
     let variable_proposal = propose_single_agent_variable_changes(
         pool,
         &model,
         &session_config,
         user_input,
         &narrative_text,
-        &context_bundle,
+        &context_with_turn,
     )
     .await
     .map_err(|e| {
@@ -725,8 +763,28 @@ pub async fn execute_turn(
     .await;
 
     if let Some(proposal) = variable_proposal {
-        turn_finalizer::persist_turn_extras(pool, session_id, turn_number, &None, &[proposal])
-            .await;
+        match pool.begin().await {
+            Ok(mut tx) => {
+                match variable_tool_agent::persist_variable_changes(
+                    &mut tx,
+                    session_id,
+                    &proposal.changes,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        if let Err(e) = tx.commit().await {
+                            tracing::warn!("Failed to commit variable changes: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to persist variable changes: {}", e);
+                        let _ = tx.rollback().await;
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("Failed to begin transaction: {}", e),
+        }
     }
 
     info!(
@@ -874,7 +932,7 @@ pub async fn execute_turn_stream(
     let model = load_provider_model(pool).await?;
 
     let session = sqlx::query_as::<_, SessionRow>(
-        "SELECT id, mode, current_turn, config, title_source FROM sessions WHERE id = ? AND deleted_at IS NULL"
+        "SELECT mode, current_turn, config, title_source FROM sessions WHERE id = ? AND deleted_at IS NULL"
     )
     .bind(session_id)
     .fetch_optional(pool)
@@ -922,9 +980,6 @@ pub async fn execute_turn_stream(
             }
         });
 
-        let model_config_json =
-            serde_json::json!({"model": model, "mode": "multi_agent"}).to_string();
-
         // Shared state for commit data extraction after stream completes
         let commit_data: StreamCommitData = std::sync::Arc::new(std::sync::Mutex::new(None));
         let commit_data_clone = commit_data.clone();
@@ -959,7 +1014,7 @@ pub async fn execute_turn_stream(
                 Ok(Ok(commit)) => {
                     // Store commit data for route layer to persist
                     *commit_data_clone.lock().unwrap() =
-                        Some((commit.traces, commit.compression, commit.compression_job, commit.state_proposals));
+                        Some((commit.traces, commit.compression, commit.compression_job));
                     let _ = broadcast_tx_clone.send(SseEvent::MessageDelta {
                         content: commit.narrative.clone(),
                     });
@@ -999,10 +1054,8 @@ pub async fn execute_turn_stream(
             stream: pinned,
             turn_number,
             session_id: session_id.to_string(),
-            model_config_json,
             title_source: session.title_source.clone(),
             commit_data: Some(commit_data),
-            broadcast_tx: Some(broadcast_tx),
         });
     }
 
@@ -1033,7 +1086,7 @@ pub async fn execute_turn_stream(
         session_config.system_prompt.clone()
     };
 
-    let messages = build_single_agent_messages(system_prompt, &context_bundle);
+    let messages = build_single_agent_messages(system_prompt, &context_bundle, Some(user_input));
 
     let request = ChatRequest {
         model: target.model.clone(),
@@ -1058,15 +1111,6 @@ pub async fn execute_turn_stream(
         stream = true,
         "LLM call starting (streaming)"
     );
-
-    let model_config_json = serde_json::json!({
-        "model": target.trace_model,
-        "temperature": session_config.temperature,
-        "top_p": session_config.top_p,
-        "max_tokens": session_config.max_tokens,
-        "max_context_turns": session_config.max_context_turns,
-    })
-    .to_string();
 
     let provider_stream = target
         .provider
@@ -1095,17 +1139,437 @@ pub async fn execute_turn_stream(
         stream: Box::pin(mapped_stream),
         turn_number,
         session_id: session_id.to_string(),
-        model_config_json,
         title_source: session.title_source,
         commit_data: None,
-        broadcast_tx: Some(broadcast_tx),
     })
 }
 
-fn truncate_str(s: &str, max_chars: usize) -> &str {
-    match s.char_indices().nth(max_chars) {
-        Some((idx, _)) => &s[..idx],
-        None => s,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::types::AgentType;
+
+    fn empty_context(recent_context: Vec<ContextMessage>) -> ContextBundle {
+        ContextBundle {
+            task: "Continue the roleplay narrative".to_string(),
+            recent_context,
+            role_contexts: vec![],
+            knowledge_events: vec![],
+            structured_state: serde_json::json!({}),
+            events: vec![],
+            event_visibilities: vec![],
+            foreshadowing: vec![],
+            foreshadow_visibilities: vec![],
+            scene_summary: None,
+            world_book_entries: vec![],
+            preset_modules: vec![],
+        }
+    }
+
+    #[test]
+    fn single_agent_messages_append_current_user_input() {
+        let context = empty_context(vec![
+            ContextMessage {
+                role: "assistant".to_string(),
+                content: "旧回复".to_string(),
+                turn_number: 1,
+            },
+            ContextMessage {
+                role: "user".to_string(),
+                content: "旧输入".to_string(),
+                turn_number: 2,
+            },
+        ]);
+
+        let messages =
+            build_single_agent_messages("system prompt".to_string(), &context, Some("本轮输入"));
+
+        assert_eq!(messages.last().unwrap().role, "user");
+        assert_eq!(messages.last().unwrap().content, "本轮输入");
+    }
+
+    #[test]
+    fn single_agent_messages_can_use_persisted_current_turn_without_duplicate() {
+        let context = empty_context(vec![ContextMessage {
+            role: "user".to_string(),
+            content: "已落库输入".to_string(),
+            turn_number: 3,
+        }]);
+
+        let messages = build_single_agent_messages("system prompt".to_string(), &context, None);
+        let user_messages: Vec<_> = messages
+            .iter()
+            .filter(|message| message.role == "user")
+            .collect();
+
+        assert_eq!(user_messages.len(), 1);
+        assert_eq!(user_messages[0].content, "已落库输入");
+    }
+
+    // --- parse_provider_model_ref tests ---
+
+    #[test]
+    fn parse_provider_model_ref_valid() {
+        let result = parse_provider_model_ref("provider:abc123:gpt-4o");
+        assert_eq!(result, Some(("abc123".to_string(), "gpt-4o".to_string())));
+    }
+
+    #[test]
+    fn parse_provider_model_ref_with_encoded_model() {
+        let result = parse_provider_model_ref("provider:def:deepseek%2Fv3");
+        assert_eq!(result, Some(("def".to_string(), "deepseek/v3".to_string())));
+    }
+
+    #[test]
+    fn parse_provider_model_ref_no_prefix() {
+        assert_eq!(parse_provider_model_ref("gpt-4o"), None);
+    }
+
+    #[test]
+    fn parse_provider_model_ref_empty_provider() {
+        assert_eq!(parse_provider_model_ref("provider::model"), None);
+    }
+
+    #[test]
+    fn parse_provider_model_ref_empty_model() {
+        assert_eq!(parse_provider_model_ref("provider:abc:"), None);
+    }
+
+    // --- percent_decode tests ---
+
+    #[test]
+    fn percent_decode_no_encoding() {
+        assert_eq!(percent_decode("hello"), "hello");
+    }
+
+    #[test]
+    fn percent_decode_slash() {
+        assert_eq!(percent_decode("deepseek%2Fv3"), "deepseek/v3");
+    }
+
+    #[test]
+    fn percent_decode_space() {
+        assert_eq!(percent_decode("hello%20world"), "hello world");
+    }
+
+    #[test]
+    fn percent_decode_multiple() {
+        assert_eq!(percent_decode("a%2Fb%2Fc"), "a/b/c");
+    }
+
+    #[test]
+    fn percent_decode_invalid_percent() {
+        // %ZZ is not valid hex, should keep the % as-is
+        assert_eq!(percent_decode("test%ZZ"), "test%ZZ");
+    }
+
+    // --- hex_value tests ---
+
+    #[test]
+    fn hex_value_digits() {
+        assert_eq!(hex_value(b'0'), Some(0));
+        assert_eq!(hex_value(b'9'), Some(9));
+    }
+
+    #[test]
+    fn hex_value_lowercase() {
+        assert_eq!(hex_value(b'a'), Some(10));
+        assert_eq!(hex_value(b'f'), Some(15));
+    }
+
+    #[test]
+    fn hex_value_uppercase() {
+        assert_eq!(hex_value(b'A'), Some(10));
+        assert_eq!(hex_value(b'F'), Some(15));
+    }
+
+    #[test]
+    fn hex_value_invalid() {
+        assert_eq!(hex_value(b'g'), None);
+        assert_eq!(hex_value(b'z'), None);
+        assert_eq!(hex_value(b'!'), None);
+    }
+
+    // --- is_variable_rule_entry tests ---
+
+    #[test]
+    fn is_variable_rule_entry_state_agent_category() {
+        let entry = WorldBookContextEntry {
+            content: "some content".to_string(),
+            keys: vec!["key1".to_string()],
+            constant: false,
+            priority: 0,
+            visibility: "public".to_string(),
+            category: "state_agent".to_string(),
+        };
+        assert!(is_variable_rule_entry(&entry));
+    }
+
+    #[test]
+    fn is_variable_rule_entry_updatevariable_in_content() {
+        let entry = WorldBookContextEntry {
+            content: "Use UpdateVariable to change values".to_string(),
+            keys: vec!["key1".to_string()],
+            constant: false,
+            priority: 0,
+            visibility: "public".to_string(),
+            category: "global".to_string(),
+        };
+        assert!(is_variable_rule_entry(&entry));
+    }
+
+    #[test]
+    fn is_variable_rule_entry_normal_entry() {
+        let entry = WorldBookContextEntry {
+            content: "The tavern is located in the market district".to_string(),
+            keys: vec!["tavern".to_string()],
+            constant: false,
+            priority: 0,
+            visibility: "public".to_string(),
+            category: "global".to_string(),
+        };
+        assert!(!is_variable_rule_entry(&entry));
+    }
+
+    #[test]
+    fn is_variable_rule_entry_stat_data_with_keyword() {
+        let entry = WorldBookContextEntry {
+            content: "stat_data 变量更新规则".to_string(),
+            keys: vec!["key".to_string()],
+            constant: false,
+            priority: 0,
+            visibility: "public".to_string(),
+            category: "global".to_string(),
+        };
+        assert!(is_variable_rule_entry(&entry));
+    }
+
+    // --- format_world_book_reference tests ---
+
+    #[test]
+    fn format_world_book_reference_empty() {
+        assert!(format_world_book_reference(&[]).is_none());
+    }
+
+    #[test]
+    fn format_world_book_reference_filters_user_category() {
+        let entries = vec![WorldBookContextEntry {
+            content: "user stuff".to_string(),
+            keys: vec![],
+            constant: false,
+            priority: 0,
+            visibility: "public".to_string(),
+            category: "user".to_string(),
+        }];
+        assert!(format_world_book_reference(&entries).is_none());
+    }
+
+    #[test]
+    fn format_world_book_reference_filters_variable_rules() {
+        let entries = vec![WorldBookContextEntry {
+            content: "UpdateVariable rules".to_string(),
+            keys: vec![],
+            constant: false,
+            priority: 0,
+            visibility: "public".to_string(),
+            category: "global".to_string(),
+        }];
+        assert!(format_world_book_reference(&entries).is_none());
+    }
+
+    #[test]
+    fn format_world_book_reference_normal_entries() {
+        let entries = vec![
+            WorldBookContextEntry {
+                content: "The kingdom is at war".to_string(),
+                keys: vec!["kingdom".to_string()],
+                constant: true,
+                priority: 10,
+                visibility: "public".to_string(),
+                category: "global".to_string(),
+            },
+            WorldBookContextEntry {
+                content: "The tavern serves ale".to_string(),
+                keys: vec!["tavern".to_string()],
+                constant: false,
+                priority: 5,
+                visibility: "public".to_string(),
+                category: "global".to_string(),
+            },
+        ];
+        let result = format_world_book_reference(&entries);
+        assert!(result.is_some());
+        let text = result.unwrap();
+        assert!(text.contains("[World Book Reference]"));
+        assert!(text.contains("[Always Active] The kingdom is at war"));
+        assert!(text.contains("The tavern serves ale"));
+    }
+
+    // --- format_role_reference tests ---
+
+    #[test]
+    fn format_role_reference_empty() {
+        assert!(format_role_reference(&[]).is_none());
+    }
+
+    #[test]
+    fn format_role_reference_filters_empty_roles() {
+        let roles = vec![RoleContext {
+            agent_type: AgentType::Npc,
+            label: "".to_string(),
+            character_id: None,
+            context: String::new(),
+        }];
+        assert!(format_role_reference(&roles).is_none());
+    }
+
+    #[test]
+    fn format_role_reference_with_entries() {
+        let roles = vec![
+            RoleContext {
+                agent_type: AgentType::Npc,
+                label: "Alice".to_string(),
+                character_id: Some("alice".to_string()),
+                context: "A brave warrior".to_string(),
+            },
+            RoleContext {
+                agent_type: AgentType::Writer,
+                label: "Narrator".to_string(),
+                character_id: None,
+                context: String::new(),
+            },
+        ];
+        let result = format_role_reference(&roles);
+        assert!(result.is_some());
+        let text = result.unwrap();
+        assert!(text.contains("[Role Reference]"));
+        assert!(text.contains("Alice (npc): A brave warrior"));
+        assert!(text.contains("Narrator (writer)"));
+    }
+
+    // --- context_with_current_turn tests ---
+
+    #[test]
+    fn context_with_current_turn_appends_user_message() {
+        let ctx = empty_context(vec![]);
+        let updated = context_with_current_turn(&ctx, 5, "hello", None);
+
+        assert_eq!(updated.recent_context.len(), 1);
+        assert_eq!(updated.recent_context[0].role, "user");
+        assert_eq!(updated.recent_context[0].content, "hello");
+        assert_eq!(updated.recent_context[0].turn_number, 5);
+    }
+
+    #[test]
+    fn context_with_current_turn_appends_both_messages() {
+        let ctx = empty_context(vec![]);
+        let updated = context_with_current_turn(&ctx, 5, "hello", Some("world"));
+
+        assert_eq!(updated.recent_context.len(), 2);
+        assert_eq!(updated.recent_context[0].role, "user");
+        assert_eq!(updated.recent_context[1].role, "assistant");
+        assert_eq!(updated.recent_context[1].content, "world");
+    }
+
+    #[test]
+    fn context_with_current_turn_preserves_existing_context() {
+        let ctx = empty_context(vec![ContextMessage {
+            role: "user".to_string(),
+            content: "old".to_string(),
+            turn_number: 1,
+        }]);
+        let updated = context_with_current_turn(&ctx, 2, "new", Some("reply"));
+
+        assert_eq!(updated.recent_context.len(), 3);
+        assert_eq!(updated.recent_context[0].content, "old");
+        assert_eq!(updated.recent_context[1].content, "new");
+        assert_eq!(updated.recent_context[2].content, "reply");
+    }
+
+    // --- build_single_agent_messages additional tests ---
+
+    #[test]
+    fn single_agent_messages_start_with_system_prompt() {
+        let context = empty_context(vec![]);
+        let messages = build_single_agent_messages("my prompt".to_string(), &context, Some("hi"));
+
+        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[0].content, "my prompt");
+    }
+
+    #[test]
+    fn single_agent_messages_include_runtime_constraint() {
+        let context = empty_context(vec![]);
+        let messages = build_single_agent_messages("prompt".to_string(), &context, Some("hi"));
+
+        let constraint_msg = messages
+            .iter()
+            .find(|m| m.content.contains("Runtime constraint"));
+        assert!(constraint_msg.is_some());
+    }
+
+    #[test]
+    fn single_agent_messages_include_scene_summary() {
+        let ctx = ContextBundle {
+            scene_summary: Some("A dark forest at midnight".to_string()),
+            ..empty_context(vec![])
+        };
+        let messages = build_single_agent_messages("prompt".to_string(), &ctx, Some("hi"));
+
+        let summary_msg = messages
+            .iter()
+            .find(|m| m.content.contains("A dark forest at midnight"));
+        assert!(summary_msg.is_some());
+    }
+
+    #[test]
+    fn single_agent_messages_include_events() {
+        let ctx = ContextBundle {
+            events: vec!["The dragon attacked".to_string()],
+            ..empty_context(vec![])
+        };
+        let messages = build_single_agent_messages("prompt".to_string(), &ctx, Some("hi"));
+
+        let events_msg = messages
+            .iter()
+            .find(|m| m.content.contains("The dragon attacked"));
+        assert!(events_msg.is_some());
+    }
+
+    #[test]
+    fn single_agent_messages_include_foreshadowing() {
+        let ctx = ContextBundle {
+            foreshadowing: vec!["A storm is coming".to_string()],
+            ..empty_context(vec![])
+        };
+        let messages = build_single_agent_messages("prompt".to_string(), &ctx, Some("hi"));
+
+        let fs_msg = messages
+            .iter()
+            .find(|m| m.content.contains("A storm is coming"));
+        assert!(fs_msg.is_some());
+    }
+
+    #[test]
+    fn single_agent_messages_include_structured_state() {
+        let ctx = ContextBundle {
+            structured_state: serde_json::json!({"hp": 100}),
+            ..empty_context(vec![])
+        };
+        let messages = build_single_agent_messages("prompt".to_string(), &ctx, Some("hi"));
+
+        let state_msg = messages.iter().find(|m| m.content.contains("hp"));
+        assert!(state_msg.is_some());
+    }
+
+    #[test]
+    fn single_agent_messages_no_user_input_when_none() {
+        let context = empty_context(vec![]);
+        let messages = build_single_agent_messages("prompt".to_string(), &context, None);
+
+        // Last message should NOT be a user message (no input provided)
+        let last = messages.last().unwrap();
+        assert_ne!(last.role, "user");
     }
 }
 
@@ -1169,7 +1633,7 @@ pub async fn regenerate_turn(
         session_config.system_prompt.clone()
     };
 
-    let messages = build_single_agent_messages(system_prompt, &context_bundle);
+    let messages = build_single_agent_messages(system_prompt, &context_bundle, None);
 
     let target = resolve_model_target(pool, &model, &model).await?;
     let model_for_trace = target.trace_model.clone();

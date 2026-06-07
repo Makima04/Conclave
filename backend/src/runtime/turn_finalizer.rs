@@ -1,8 +1,5 @@
 use crate::error::AppError;
-use crate::memory::state;
-use crate::runtime::types::{
-    AgentTrace, CompressionResult, ContextBundle, StateChangeProposal, SubAgent,
-};
+use crate::runtime::types::{AgentTrace, CompressionResult};
 use crate::runtime::variable_update;
 use crate::runtime::{compression, knowledge};
 use sqlx::Sqlite;
@@ -14,22 +11,16 @@ use sqlx::Transaction;
 /// but all paths finalize through the same transaction.
 #[derive(Debug, Clone)]
 pub struct TurnCommit {
-    pub turn_number: i32,
     pub narrative: String,
     pub traces: Vec<AgentTrace>,
     pub compression: Option<CompressionResult>,
     pub compression_job: Option<CompressionJob>,
-    pub state_proposals: Vec<StateChangeProposal>,
 }
 
 /// Inputs needed to run post-turn compression after the user-visible narrative is ready.
 #[derive(Debug, Clone)]
 pub struct CompressionJob {
     pub model: String,
-    pub user_input: String,
-    pub narrative: String,
-    pub context: ContextBundle,
-    pub state_agent: Option<SubAgent>,
 }
 
 /// Core transaction: user msg + assistant msg + traces + current_turn.
@@ -165,41 +156,17 @@ pub async fn finalize_turn_with_options(
     Ok(())
 }
 
-/// Post-commit work: compression + state proposals. Non-fatal — errors are logged, not propagated.
+/// Post-commit work: compression. Non-fatal — errors are logged, not propagated.
 pub async fn persist_turn_extras(
     pool: &SqlitePool,
     session_id: &str,
     turn_number: i32,
     compression_result: &Option<CompressionResult>,
-    state_proposals: &[StateChangeProposal],
 ) {
     // Compression
     if let Some(cr) = compression_result {
         if let Err(e) = compression::persist_compression(pool, session_id, turn_number, cr).await {
             tracing::warn!("Failed to persist compression: {}", e);
-        }
-    }
-
-    // State proposals from single-agent path (currently always empty)
-    for proposal in state_proposals {
-        match state::apply_proposal(pool, session_id, proposal, turn_number).await {
-            Ok(result) => {
-                tracing::info!(
-                    turn = turn_number,
-                    session = session_id,
-                    status = %result.status,
-                    version = result.version,
-                    "State proposal applied"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    turn = turn_number,
-                    session = session_id,
-                    "State proposal failed: {}",
-                    e
-                );
-            }
         }
     }
 }
@@ -306,45 +273,6 @@ pub async fn persist_compression_job(
         .await
     {
         tracing::warn!("Failed to set session compressing after job insert: {}", e);
-    }
-}
-
-/// Record a single-agent trace into the traces table (non-transactional helper for regenerate).
-pub async fn record_trace(
-    pool: &SqlitePool,
-    session_id: &str,
-    turn_number: i32,
-    trace: &AgentTrace,
-) {
-    let now = chrono::Utc::now().to_rfc3339();
-    let trace_id = uuid::Uuid::new_v4().to_string();
-    let token_usage = serde_json::json!({
-        "prompt_tokens": trace.prompt_tokens,
-        "completion_tokens": trace.completion_tokens,
-    });
-    let model_config = serde_json::json!({"model": &trace.model}).to_string();
-
-    if let Err(e) = sqlx::query(
-        r#"INSERT INTO traces (id, session_id, turn_number, node_id, node_type, agent_id,
-           input_summary, output_summary, output_type, model_config, token_usage, duration_ms, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'text', ?, ?, ?, ?)"#
-    )
-    .bind(&trace_id)
-    .bind(session_id)
-    .bind(turn_number)
-    .bind(&trace.agent_id)
-    .bind(&trace.agent_type)
-    .bind(&trace.agent_id)
-    .bind(&trace.input_summary)
-    .bind(&trace.output_summary)
-    .bind(&model_config)
-    .bind(token_usage.to_string())
-    .bind(trace.duration_ms)
-    .bind(&now)
-    .execute(pool)
-    .await
-    {
-        tracing::warn!("Failed to record trace: {}", e);
     }
 }
 

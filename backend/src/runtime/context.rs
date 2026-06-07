@@ -1,5 +1,5 @@
 use super::types::{
-    ContextBundle, ContextMessage, KnowledgeEvent, PresetModuleContext, RoleContext,
+    AgentType, ContextBundle, ContextMessage, KnowledgeEvent, PresetModuleContext, RoleContext,
     WorldBookContextEntry,
 };
 use super::user_settings::{self, UserPersonaSettings};
@@ -24,7 +24,10 @@ async fn build_context_inner(
     if let Some(ex_id) = exclude_message_id {
         q = q.bind(ex_id);
     }
-    let rows = q.bind(max_turns as i32).fetch_all(pool).await?;
+    let rows = q
+        .bind((max_turns * 2).max(1) as i32)
+        .fetch_all(pool)
+        .await?;
 
     let recent_messages: Vec<ContextMessage> = rows
         .into_iter()
@@ -49,7 +52,7 @@ async fn build_context_inner(
     .into_iter()
     .filter(|(_, label, _, context)| !label.trim().is_empty() || !context.trim().is_empty())
     .map(|(agent_type, label, character_id, context)| RoleContext {
-        agent_type,
+        agent_type: AgentType::from_db(&agent_type).unwrap_or(AgentType::Writer),
         label,
         character_id,
         context,
@@ -153,14 +156,17 @@ async fn build_context_inner(
         user_settings::merge_context(&user_persona_context, &worldbook_user_context, strategy);
 
     if !merged_user_context.trim().is_empty() {
-        if let Some(user_role) = role_contexts.iter_mut().find(|r| r.agent_type == "user") {
+        if let Some(user_role) = role_contexts
+            .iter_mut()
+            .find(|r| r.agent_type == AgentType::User)
+        {
             if user_role.label.trim().is_empty() || user_role.label == "用户" {
                 user_role.label = user_label;
             }
             user_role.context = merged_user_context;
         } else {
             role_contexts.push(RoleContext {
-                agent_type: "user".to_string(),
+                agent_type: AgentType::User,
                 label: user_label,
                 character_id: Some("user".to_string()),
                 context: merged_user_context,

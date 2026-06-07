@@ -13,6 +13,7 @@ use tokio::sync::broadcast;
 
 use crate::config::AppConfig;
 use crate::error::AppError;
+use crate::importer::types::ImportDraft;
 use crate::runtime::executor;
 use crate::runtime::executor::ActiveTurns;
 use crate::runtime::sse_types::SseEvent;
@@ -59,9 +60,16 @@ fn sse_event_to_axum_event(event: SseEvent) -> Event {
         SseEvent::MemoryStart { turn_number } => Event::default()
             .event("memory_start")
             .data(serde_json::json!({"turn_number": turn_number}).to_string()),
-        SseEvent::MemoryError { error } => Event::default()
-            .event("memory_error")
-            .data(serde_json::json!({"error": error}).to_string()),
+        SseEvent::StateUpdate {
+            turn_number,
+            status,
+        } => Event::default().event("state_update").data(
+            serde_json::json!({
+                "turn_number": turn_number,
+                "status": status
+            })
+            .to_string(),
+        ),
         SseEvent::TurnReady { turn_number } => Event::default()
             .event("turn_ready")
             .data(serde_json::json!({"turn_number": turn_number}).to_string()),
@@ -74,6 +82,8 @@ pub struct AppState {
     pub active_turns: ActiveTurns,
     /// Per-session locks to serialize concurrent send_message requests.
     pub session_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// In-memory store for import drafts (import_id -> ImportDraft).
+    pub import_drafts: Arc<dashmap::DashMap<String, ImportDraft>>,
 }
 
 #[derive(Deserialize)]
@@ -196,7 +206,6 @@ pub async fn apply_opening(
 
 #[derive(Deserialize)]
 pub struct MessageListParams {
-    pub cursor: Option<String>,
     pub limit: Option<i32>,
 }
 
@@ -371,16 +380,24 @@ pub async fn send_message(
             };
 
             // Finalize: user msg + assistant msg + traces + current_turn in one transaction
-            let (commit_traces, commit_compression, compression_job, mut state_proposals) =
+            let (commit_traces, commit_compression, compression_job) =
                 commit_data
                     .as_ref()
                     .and_then(|data| data.lock().ok().and_then(|guard| guard.clone()))
-                    .map(|(traces, compression, job, proposals)| {
-                        (Some(traces), compression, job, proposals)
+                    .map(|(traces, compression, job)| {
+                        (Some(traces), compression, job)
                     })
-                    .unwrap_or((None, None, None, vec![]));
+                    .unwrap_or((None, None, None));
             let is_multi_agent_commit = commit_data.is_some();
             if !is_multi_agent_commit {
+                let _ = broadcast_tx.send(crate::runtime::sse_types::SseEvent::StateUpdate {
+                    turn_number,
+                    status: "processing".to_string(),
+                });
+                let _ = tx.send(Ok(Event::default().event("state_update").data(
+                    serde_json::json!({"turn_number": turn_number, "status": "processing"})
+                        .to_string(),
+                )));
                 match executor::propose_single_agent_variable_changes_for_session(
                     &pool,
                     &session_id_clone,
@@ -390,7 +407,29 @@ pub async fn send_message(
                 )
                 .await
                 {
-                    Ok(Some(proposal)) => state_proposals.push(proposal),
+                    Ok(Some(proposal)) => {
+                        // Persist variable changes directly (State Agent tool call equivalent for single-agent)
+                        match pool.begin().await {
+                            Ok(mut tx) => {
+                                match crate::runtime::variable_tool_agent::persist_variable_changes(
+                                    &mut tx,
+                                    &session_id_clone,
+                                    &proposal.changes,
+                                ).await {
+                                    Ok(()) => {
+                                        if let Err(e) = tx.commit().await {
+                                            tracing::warn!("Failed to commit single-agent variable changes: {}", e);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Failed to persist single-agent variable changes: {}", e);
+                                        let _ = tx.rollback().await;
+                                    }
+                                }
+                            }
+                            Err(e) => tracing::warn!("Failed to begin transaction for variable changes: {}", e),
+                        }
+                    }
                     Ok(None) => {}
                     Err(e) => tracing::warn!(
                         session = %session_id_clone,
@@ -399,6 +438,13 @@ pub async fn send_message(
                         e
                     ),
                 }
+                let _ = broadcast_tx.send(crate::runtime::sse_types::SseEvent::StateUpdate {
+                    turn_number,
+                    status: "done".to_string(),
+                });
+                let _ = tx.send(Ok(Event::default().event("state_update").data(
+                    serde_json::json!({"turn_number": turn_number, "status": "done"}).to_string(),
+                )));
             }
             let traces_ref = commit_traces.as_deref().unwrap_or(&[]);
             let finalize_result: Result<(), String> = async {
@@ -471,7 +517,6 @@ pub async fn send_message(
                         &session_id_clone,
                         turn_number,
                         &Some(cr.clone()),
-                        &state_proposals,
                     )
                     .await;
                     if let Ok(fallback_model) =
@@ -503,16 +548,6 @@ pub async fn send_message(
                     }
                     turn_service::mark_idle(&pool, &session_id_clone).await;
                 } else {
-                    if !state_proposals.is_empty() {
-                        turn_finalizer::persist_turn_extras(
-                            &pool,
-                            &session_id_clone,
-                            turn_number,
-                            &None,
-                            &state_proposals,
-                        )
-                        .await;
-                    }
                     // Insert a background compression job
                     let model = match compression_job {
                         Some(ref j) => j.model.clone(),

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import * as api from '../api/client';
 import type { Preset, Session, WorldBook } from '../api/types';
 import { applyUserPersonaToConfig, loadGlobalSessionDefaults, loadUserPersonaPresets, type UserPersonaPreset } from '../settings/sessionDefaults';
+import '../styles/session-list.css';
 
 export default function SessionList() {
   const [sessions, setSessions] = useState<Session[]>([]);

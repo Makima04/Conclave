@@ -1,9 +1,8 @@
 use crate::error::AppError;
-use crate::provider::adapter::ProviderAdapter;
 use crate::provider::openai::OpenAiProvider;
 use crate::provider::types::{ChatMessage, ChatRequest};
 use crate::runtime::structured_output;
-use crate::runtime::types::{ContextBundle, KnowledgeEvent, RoleContext};
+use crate::runtime::types::{AgentType, ContextBundle, KnowledgeEvent, RoleContext};
 use sqlx::SqlitePool;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
@@ -188,10 +187,18 @@ pub async fn persist_fallback_writer_only(
     persist_knowledge_events(pool, session_id, turn_number, &extraction).await
 }
 
-pub fn visible_to_agent(event: &KnowledgeEvent, agent: &RoleContext, agent_type: &str) -> bool {
+pub fn visible_to_agent(
+    event: &KnowledgeEvent,
+    agent: &RoleContext,
+    agent_type: AgentType,
+) -> bool {
     if matches!(
         agent_type,
-        "writer" | "director" | "master" | "state" | "parser"
+        AgentType::Writer
+            | AgentType::Director
+            | AgentType::Master
+            | AgentType::State
+            | AgentType::Parser
     ) {
         return true;
     }

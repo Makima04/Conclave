@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import * as api from '../api/client';
+import { useToast } from '../components/Toast';
 import type { Preset, PresetDetail, PresetModule } from '../api/types';
+import '../styles/presets.css';
 
 const AGENT_LABELS: Record<string, string> = {
   writer: '写手',
@@ -15,7 +17,10 @@ const AGENT_LABELS: Record<string, string> = {
 };
 
 export default function Presets() {
+  const toast = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
+  const returnTo = (location.state as any)?.from || '/';
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [presets, setPresets] = useState<Preset[]>([]);
@@ -65,7 +70,7 @@ export default function Presets() {
       openPresetDetail(result);
       loadPresets();
     } catch (err: any) {
-      alert('导入失败: ' + (err.message || err));
+      toast.error('导入失败: ' + (err.message || err));
     } finally {
       setImporting(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -98,7 +103,7 @@ export default function Presets() {
       openPresetDetail(detail);
       loadPresets();
     } catch (e: any) {
-      alert('解析失败: ' + (e.message || e));
+      toast.error('解析失败: ' + (e.message || e));
     } finally {
       setParsing(false);
     }
@@ -258,7 +263,7 @@ export default function Presets() {
   return (
     <div className="worldbooks">
       <div className="chat-header">
-        <button className="back-btn" onClick={() => navigate('/')}>&larr;</button>
+        <button className="back-btn" onClick={() => navigate(returnTo)}>&larr;</button>
         <h2 style={{ flex: 1 }}>预设管理</h2>
         <input
           ref={fileInputRef}

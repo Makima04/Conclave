@@ -1,6 +1,93 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Canonical agent types used throughout the runtime.
+/// Variants match the DB string values exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentType {
+    Master,
+    Parser,
+    Npc,
+    User,
+    Writer,
+    Director,
+    State,
+}
+
+impl AgentType {
+    /// Parse from database string value (case-sensitive match on lowercase).
+    pub fn from_db(s: &str) -> Option<Self> {
+        match s {
+            "master" => Some(Self::Master),
+            "parser" => Some(Self::Parser),
+            "npc" => Some(Self::Npc),
+            "user" => Some(Self::User),
+            "writer" => Some(Self::Writer),
+            "director" => Some(Self::Director),
+            "state" => Some(Self::State),
+            _ => None,
+        }
+    }
+
+    /// Convert to database string value.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Master => "master",
+            Self::Parser => "parser",
+            Self::Npc => "npc",
+            Self::User => "user",
+            Self::Writer => "writer",
+            Self::Director => "director",
+            Self::State => "state",
+        }
+    }
+}
+
+impl Default for AgentType {
+    fn default() -> Self {
+        Self::Writer
+    }
+}
+
+impl std::fmt::Display for AgentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for AgentType {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_db(s).ok_or_else(|| format!("Unknown agent type: {}", s))
+    }
+}
+
+// sqlx trait implementations for AgentType ↔ SQLite TEXT
+impl sqlx::Type<sqlx::Sqlite> for AgentType {
+    fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
+        <str as sqlx::Type<sqlx::Sqlite>>::type_info()
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Sqlite> for AgentType {
+    fn decode(
+        value: <sqlx::Sqlite as sqlx::Database>::ValueRef<'r>,
+    ) -> Result<Self, sqlx::error::BoxDynError> {
+        let s = <String as sqlx::Decode<'r, sqlx::Sqlite>>::decode(value)?;
+        AgentType::from_db(&s).ok_or_else(|| format!("Unknown agent type: {}", s).into())
+    }
+}
+
+impl<'q> sqlx::Encode<'q, sqlx::Sqlite> for AgentType {
+    fn encode_by_ref(
+        &self,
+        buf: &mut <sqlx::Sqlite as sqlx::Database>::ArgumentBuffer<'q>,
+    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+        <&str as sqlx::Encode<'q, sqlx::Sqlite>>::encode_by_ref(&self.as_str(), buf)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextBundle {
     pub task: String,
@@ -29,7 +116,7 @@ pub struct ContextBundle {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoleContext {
-    pub agent_type: String,
+    pub agent_type: AgentType,
     pub label: String,
     pub character_id: Option<String>,
     pub context: String,
@@ -282,7 +369,7 @@ pub struct StructuredEvent {
 pub struct SubAgent {
     pub id: String,
     pub session_id: String,
-    pub agent_type: String,
+    pub agent_type: AgentType,
     pub character_id: Option<String>,
     pub label: String,
     pub system_prompt: String,
@@ -317,7 +404,7 @@ pub struct AgentCall {
 pub struct LifecycleAction {
     pub action: String,
     #[serde(default)]
-    pub agent_type: String,
+    pub agent_type: AgentType,
     #[serde(default)]
     pub character_id: Option<String>,
     #[serde(default)]
@@ -331,16 +418,16 @@ pub struct LifecycleAction {
 #[derive(Debug, Clone)]
 pub struct TurnState {
     pub turn_number: i32,
-    pub user_input: String,
     pub agent_outputs: HashMap<String, AgentOutput>,
-    pub final_narrative: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentOutput {
     pub agent_id: String,
-    pub agent_type: String,
+    pub agent_type: AgentType,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<crate::provider::types::ToolCall>>,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub duration_ms: i32,

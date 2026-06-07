@@ -24,6 +24,7 @@
 - [Agent 边界](agent-boundaries.md)
 - [实现优先级](implementation-priority.md)
 - [数据库与 API](database-api.md)
+- [卡片导入标准化](card-import-normalization.md)
 
 ---
 

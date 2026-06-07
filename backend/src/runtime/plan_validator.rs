@@ -1,12 +1,10 @@
-use crate::runtime::types::{AgentCall, LifecycleAction, MasterPlan, SubAgent};
+use crate::runtime::types::{AgentCall, AgentType, LifecycleAction, MasterPlan, SubAgent};
 use tracing;
 
 /// Validated plan output — calls and lifecycle actions that passed all checks.
 pub struct ValidatedPlan {
     pub calls: Vec<AgentCall>,
     pub lifecycle: Vec<LifecycleAction>,
-    pub user_auto: bool,
-    pub warnings: Vec<String>,
 }
 
 /// Validate a MasterPlan against runtime constraints.
@@ -96,7 +94,7 @@ pub fn validate_plan(
         if action.action == "delete" {
             if let Some(ref agent_id) = action.character_id {
                 if let Some(agent) = active_agents.iter().find(|a| &a.id == agent_id) {
-                    if is_permanent_type(&agent.agent_type) {
+                    if is_permanent_type(agent.agent_type) {
                         warnings.push(format!(
                             "Lifecycle delete skipped: agent '{}' ({}) is permanent",
                             agent.label, agent.agent_type
@@ -131,14 +129,16 @@ pub fn validate_plan(
     ValidatedPlan {
         calls: valid_calls,
         lifecycle: valid_lifecycle,
-        user_auto: plan.user_auto,
-        warnings,
     }
 }
 
-fn is_permanent_type(agent_type: &str) -> bool {
+fn is_permanent_type(agent_type: AgentType) -> bool {
     matches!(
         agent_type,
-        "master" | "parser" | "writer" | "director" | "state"
+        AgentType::Master
+            | AgentType::Parser
+            | AgentType::Writer
+            | AgentType::Director
+            | AgentType::State
     )
 }

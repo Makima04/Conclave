@@ -156,6 +156,8 @@ export interface CharacterCard {
   mes_example: string;
   extensions: any;
   spec: string;
+  conclave_package?: ConclaveCardPackage | null;
+  import_report?: ImportReport | null;
   created_at: string;
   updated_at: string;
 }
@@ -209,4 +211,177 @@ export interface PresetModule {
   injection_order: number;
   classification: string;
   reason: string;
+}
+
+// ─── Card Import Normalization Types ───
+
+export type SourceFormat = 'png_ccv3' | 'png_chara' | 'json_v2' | 'json_v3';
+
+export type DiagnosticLevel = 'info' | 'warn' | 'error';
+
+export type ImportStatus = 'success' | 'warning' | 'fallback' | 'blocked';
+
+export type StageStatus = 'success' | 'warning' | 'error' | 'skipped';
+
+export type RuleStatus = 'matched' | 'skipped' | 'failed';
+
+export type UiType = 'schema' | 'html_app' | 'html_fragment' | 'text' | 'raw_preview';
+
+export type ActionKind = 'start' | 'load_save' | 'set_message' | 'set_variable' | 'open_panel' | 'form_submit' | 'unknown';
+
+export type ActionSource = 'html' | 'js' | 'regex';
+
+export type VariableTypeEnum = 'string' | 'number' | 'boolean' | 'object' | 'array';
+
+export type ApiClassification = 'platform_native' | 'browser_shim' | 'unsupported' | 'dangerous';
+
+export type ResourceKind = 'image' | 'audio' | 'video' | 'css_url' | 'js_static' | 'font';
+
+export interface SourceLocation {
+  file: string;
+  offset: number;
+  excerpt: string;
+}
+
+export interface DiagnosticSource {
+  kind: string;
+  script_name?: string;
+  field?: string;
+  offset?: number;
+  selector?: string;
+  excerpt?: string;
+}
+
+export interface RegexDiagnostic {
+  level: DiagnosticLevel;
+  message: string;
+  script_index?: number;
+}
+
+export interface StageResult {
+  id: string;
+  name: string;
+  status: StageStatus;
+  message?: string;
+  started_at?: string;
+  finished_at?: string;
+}
+
+export interface RuleTrace {
+  rule_id: string;
+  stage: string;
+  status: RuleStatus;
+  confidence: number;
+  input_ref?: string;
+  output_ref?: string;
+  diagnostics: string[];
+}
+
+export interface ImportDiagnostic {
+  id: string;
+  stage: string;
+  level: DiagnosticLevel;
+  code: string;
+  message: string;
+  source?: DiagnosticSource;
+  impact?: string;
+  suggestion?: string;
+  rule_id?: string;
+}
+
+export interface PackageManifest {
+  pack_type: string;
+  id: string;
+  name: string;
+  version: string;
+  source: string;
+  source_hash: string;
+  importer_version: string;
+}
+
+export interface Greeting {
+  id: string;
+  label: string;
+  content: string;
+}
+
+export interface PackageUi {
+  type: UiType;
+  html?: string;
+  css: string[];
+  js: string[];
+  entry?: string;
+  assets: string[];
+}
+
+export interface VariableDeclaration {
+  path: string;
+  type: VariableTypeEnum;
+  default_value?: unknown;
+  label?: string;
+  source: string;
+}
+
+export interface ActionDeclaration {
+  id: string;
+  label: string;
+  kind: ActionKind;
+  selector?: string;
+  source: ActionSource;
+}
+
+export interface CompatibilityReport {
+  required_apis: string[];
+  unsupported_apis: string[];
+  warnings: string[];
+}
+
+export interface ConclaveCardPackage {
+  manifest: PackageManifest;
+  greetings: Greeting[];
+  ui: PackageUi;
+  variables: VariableDeclaration[];
+  actions: ActionDeclaration[];
+  compatibility: CompatibilityReport;
+}
+
+export interface ImportReport {
+  id: string;
+  status: ImportStatus;
+  source: string;
+  source_hash: string;
+  stages: StageResult[];
+  rule_traces: RuleTrace[];
+  diagnostics: ImportDiagnostic[];
+  fallback?: string;
+}
+
+export interface ImportDraftResponse {
+  import_id: string;
+  package_draft: ConclaveCardPackage;
+  import_report: ImportReport;
+}
+
+export interface ConfirmImportRequest {
+  degrade_to_schema?: boolean;
+  user_notes?: string;
+  world_book_id?: string;
+}
+
+export interface LlmAssistRequest {
+  type: 'explain_actions' | 'label_variables' | 'suggest_action_kind' | 'summarize_unsupported';
+  params?: Record<string, unknown>;
+}
+
+export interface LlmAssistResponse {
+  type: string;
+  result: unknown;
+}
+
+export interface RawPreviewResponse {
+  html: string;
+}
+
+export interface FailureSampleRequest {
+  user_notes?: string;
 }

@@ -350,9 +350,9 @@ fn is_safe_key(key: &str) -> bool {
         return false;
     }
     let lower = key.to_lowercase();
-    if lower.contains("hidden_")
-        || lower.contains("secret_")
-        || lower.contains("internal_")
+    if lower.starts_with("hidden_")
+        || lower.starts_with("secret_")
+        || lower.starts_with("internal_")
         || lower.starts_with("world_rules")
         || lower.starts_with("meta")
         || lower.starts_with("gm_notes")
@@ -433,5 +433,18 @@ mod tests {
             result.changes[0].target,
             "variables.<user>.精神状态数值.调教值"
         );
+    }
+
+    #[test]
+    fn test_is_safe_key_prefix_not_substring() {
+        // Keys that CONTAIN but don't START WITH sensitive prefixes should be allowed
+        assert!(is_safe_key("data_hidden_room"));
+        assert!(is_safe_key("my_secret_garden"));
+        assert!(is_safe_key("the_internal_logic"));
+
+        // Keys that START WITH sensitive prefixes should still be blocked
+        assert!(!is_safe_key("hidden_location"));
+        assert!(!is_safe_key("secret_npc_name"));
+        assert!(!is_safe_key("internal_state"));
     }
 }

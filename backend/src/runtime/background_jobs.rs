@@ -227,9 +227,7 @@ struct JobRow {
     session_id: String,
     turn_number: i32,
     job_type: String,
-    status: String,
     payload: String,
-    error: Option<String>,
     attempts: i32,
 }
 

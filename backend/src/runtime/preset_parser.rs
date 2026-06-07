@@ -1,3 +1,4 @@
+use super::str_utils::truncate_with_suffix;
 use crate::error::AppError;
 use crate::provider::openai::OpenAiProvider;
 use crate::provider::types::{ChatMessage, ChatRequest};
@@ -165,7 +166,7 @@ async fn classify_batch(
             identifier: identifier.clone(),
             name: name.clone(),
             role: role.clone(),
-            content_preview: truncate_chars(content, MODULE_CONTENT_LIMIT),
+            content_preview: truncate_with_suffix(content, MODULE_CONTENT_LIMIT, "..."),
         })
         .collect();
 
@@ -222,7 +223,7 @@ async fn classify_batch(
     let mut parsed: Vec<LlmClassificationResult> = serde_json::from_str(json_str).map_err(|e| {
         tracing::warn!(
             error = %e,
-            response = %truncate_chars(content, 500),
+            response = %truncate_with_suffix(content, 500, "..."),
             "Failed to parse LLM classification response"
         );
         AppError::Internal(format!("LLM classification parse error: {}", e))
@@ -370,13 +371,6 @@ fn classify_heuristically(combined: &str) -> Vec<String> {
     }
 
     targets
-}
-
-fn truncate_chars(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    s.chars().take(max_chars).collect::<String>() + "..."
 }
 
 fn extract_json_array(text: &str) -> &str {

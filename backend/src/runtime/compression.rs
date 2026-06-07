@@ -1,12 +1,11 @@
+use super::str_utils::truncate_str;
 use crate::error::AppError;
 use crate::memory::{state, summaries};
-use crate::provider::adapter::ProviderAdapter;
 use crate::provider::openai::OpenAiProvider;
 use crate::provider::types::{ChatMessage, ChatRequest};
 use crate::runtime::structured_output;
 use crate::runtime::types::{CompressionResult, ContextBundle, StateChangeProposal, SubAgent};
 use sqlx::SqlitePool;
-use tracing::instrument;
 
 /// Generate compression result without persisting. Caller handles persistence.
 pub async fn generate_compression(
@@ -180,24 +179,6 @@ JSON格式：
         }
     };
 
-    Ok(result)
-}
-
-/// Generate + persist. Convenience wrapper for non-transactional callers.
-#[instrument(skip(pool, provider, context, user_input, narrative_text), fields(session = session_id, turn = turn_number))]
-pub async fn run_compression(
-    pool: &SqlitePool,
-    provider: &OpenAiProvider,
-    model: &str,
-    session_id: &str,
-    turn_number: i32,
-    user_input: &str,
-    narrative_text: &str,
-    context: &ContextBundle,
-) -> Result<CompressionResult, AppError> {
-    let result =
-        generate_compression(provider, model, user_input, narrative_text, context, None).await?;
-    persist_compression(pool, session_id, turn_number, &result).await?;
     Ok(result)
 }
 
@@ -429,13 +410,6 @@ pub async fn persist_compression(
     );
 
     Ok(())
-}
-
-fn truncate_str(s: &str, max_chars: usize) -> &str {
-    match s.char_indices().nth(max_chars) {
-        Some((idx, _)) => &s[..idx],
-        None => s,
-    }
 }
 
 fn compute_content_hash(text: &str) -> String {

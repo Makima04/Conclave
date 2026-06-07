@@ -172,6 +172,12 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .await?;
     tracing::debug!("Migration 012_agent_knowledge.sql applied");
 
+    // Run card_import migration
+    sqlx::raw_sql(include_str!("../migrations/013_card_import.sql"))
+        .execute(pool)
+        .await?;
+    tracing::debug!("Migration 013_card_import.sql applied");
+
     // Add world_books parse columns if missing
     let has_parse_status: bool = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM pragma_table_info('world_books') WHERE name = 'parse_status'",

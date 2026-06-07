@@ -6,11 +6,8 @@ use sqlx::SqlitePool;
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct RecalledEvent {
     pub id: String,
-    pub session_id: String,
     pub turn_number: i32,
     pub characters: String,
-    pub location: Option<String>,
-    pub action: String,
     pub scene_type: String,
     pub importance: i32,
     pub raw_text: String,
@@ -20,8 +17,6 @@ pub struct RecalledEvent {
 #[derive(Debug, Clone)]
 pub struct RecalledContext {
     pub events: Vec<RecalledEvent>,
-    pub query_keywords: Vec<String>,
-    pub recall_mode: String,
 }
 
 /// Main recall entry point
@@ -145,11 +140,7 @@ async fn recall_by_keyword(
         "Context recall completed (keyword mode)"
     );
 
-    Ok(RecalledContext {
-        events: merged,
-        query_keywords: keywords,
-        recall_mode: "keyword".to_string(),
-    })
+    Ok(RecalledContext { events: merged })
 }
 
 /// Embedding-based recall (placeholder — falls back to keyword for now)

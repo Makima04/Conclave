@@ -26,6 +26,7 @@
 - [数据库与 API](database-api.md)
 - [卡片导入标准化](card-import-normalization.md)
 - [角色卡渲染运行时](card-rendering-runtime.md)
+- [角色卡兼容运行时重构架构](card-runtime-refactor-architecture.md)
 
 ---
 
@@ -80,6 +81,14 @@
 复杂角色卡当前以 `ConclaveCardPackage` + iframe sandbox 渲染。运行时提供受控的 TavernHelper/MVU 兼容、宿主消息上下文、共享存档桥接和右侧开场白选择。
 
 详见 [角色卡渲染运行时](card-rendering-runtime.md)。
+
+---
+
+## 角色卡兼容重构（目标架构）
+
+角色卡兼容将从“导入器 + 多处 regex 重放 + 多个宿主补丁”收敛为统一运行时模型：导入器只做原始数据提取和兼容分析，前端成为唯一显示语义执行入口，动态变量采用 canonical state + card projection + runtime-local state 三层模型。
+
+详见 [角色卡兼容运行时重构架构](card-runtime-refactor-architecture.md)。
 
 ---
 

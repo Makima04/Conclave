@@ -64,6 +64,7 @@
 | `getVariables()` | 返回会话变量快照。 |
 | `getAllVariables()` | 返回按 ST 常见作用域组织的变量快照。 |
 | `setVariables(vars)` | 通过 `card-sandbox-action:setVariables` 请求宿主写变量。 |
+| `applyGreeting(index)` | 空会话时同步切换并应用宿主开场白。 |
 | `setChatMessage(...)` | 用于开局/草稿等卡片动作。 |
 | `setChatMessages(...)` | 识别 opening swipe 并映射到宿主开场白切换。 |
 | `triggerSlash(command)` | 支持 `/send` / `继续书写` 等简单命令桥接。 |
@@ -114,6 +115,7 @@ SillyTavern 卡常把存档写进同源 `localStorage` / `IndexedDB`，所以不
 - iframe 懒挂载：使用 `IntersectionObserver`，接近视口再创建。
 - 流式输出强制 `renderMode="text"`：避免 token streaming 时不断重建卡 UI。
 - resize 节流：`ResizeObserver` 通过 `requestAnimationFrame` 合并，高度变化小于 8px 不通知宿主。
+- 消息级 HTML app iframe 展示高度限制在 360-720px，超出内容在 iframe 内滚动，避免长页面卡片撑开聊天流。
 - runtime JSON 缓存：沙盒内 `getChatMessages/getChatMessage` 从预序列化字符串 clone，减少重复 stringify。
 - 点击 telemetry 默认关闭：只有 URL 含 `xrpDebugTelemetry` 才上报普通 UI 点击。
 - 空会话 opening preview runtime memo 化，减少右侧栏状态变化导致 iframe 重建。

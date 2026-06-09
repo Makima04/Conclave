@@ -219,7 +219,28 @@
 }
 .wb-card-actions {
   display: flex;
+  align-items: center;
   gap: 2px;
+}
+.wb-card-parse-btn {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.wb-card-parse-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.wb-card-parse-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 /* ── Empty State ── */
@@ -464,20 +485,23 @@
 }
 
 /* ── Parsed Entries ── */
-.wb-parsed-entry {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 14px 16px;
-  transition: border-color var(--transition);
+.wb-parsed-entry-row {
+  cursor: default;
+  align-items: flex-start;
 }
-.wb-parsed-entry:hover { border-color: var(--border-hi); }
-
-.wb-parsed-entry-header {
+.wb-parsed-entry-row:hover {
+  border-color: var(--border-hi);
+  background: var(--panel);
+}
+.wb-parsed-entry-body {
+  flex: 1;
+  min-width: 0;
+}
+.wb-parsed-entry-main {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 12px;
+  min-width: 0;
 }
 .wb-category-tag {
   font-size: 11px;
@@ -487,6 +511,7 @@
   border-radius: 10px;
   background: var(--accent-soft);
   color: var(--accent);
+  flex-shrink: 0;
 }
 .wb-category-tag.npc { background: rgba(107,163,214,0.15); color: #6ba3d6; }
 .wb-category-tag.lore { background: rgba(184,154,91,0.12); color: var(--warn); }
@@ -498,27 +523,19 @@
   text-transform: uppercase;
   padding: 2px 8px;
   border-radius: 8px;
+  flex-shrink: 0;
 }
 .wb-visibility-tag.public { background: rgba(91,138,94,0.15); color: #6fcf74; }
 .wb-visibility-tag.gm { background: rgba(201,37,70,0.12); color: #f0627a; }
 .wb-visibility-tag.hidden { background: var(--surface-2); color: var(--text-3); }
 
-.wb-parsed-entry-comment {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--ink);
-  margin-bottom: 4px;
-}
-.wb-parsed-entry-content {
-  font-size: 13px;
-  color: var(--text-2);
-  line-height: 1.5;
-  margin-bottom: 6px;
-}
 .wb-parsed-entry-reason {
   font-size: 12px;
   color: var(--text-3);
-  font-style: italic;
+  margin-top: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── Entry Edit Form ── */
@@ -597,6 +614,12 @@
   }
   .wb-entry-row {
     flex-wrap: wrap;
+  }
+  .wb-parsed-entry-main {
+    flex-wrap: wrap;
+  }
+  .wb-parsed-entry-body {
+    flex: 1 1 calc(100% - 20px);
   }
   .wb-entry-label { flex: 1 1 100%; }
   .wb-entry-keys { flex: 1 1 100%; }

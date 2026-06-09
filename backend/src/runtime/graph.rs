@@ -1,7 +1,9 @@
 use crate::error::AppError;
 use crate::routes::sessions::SessionConfig;
 use crate::runtime::executor::resolve_model_target;
-use crate::runtime::types::{AgentCall, AgentStatusEvent, AgentTrace, AgentType};
+use crate::runtime::types::{
+    AgentCall, AgentDebugSnapshot, AgentStatusEvent, AgentTrace, AgentType, SubAgentExecutionDebug,
+};
 use crate::runtime::{
     compression, context, dag, master, parser, plan_validator, sub_agent, turn_finalizer,
     turn_state, variable_tool_agent,
@@ -110,6 +112,7 @@ pub async fn execute_multi_agent_turn(
     // 5. Create turn state + trace accumulator
     let mut state = turn_state::new(turn_number, user_input);
     let mut traces: Vec<AgentTrace> = Vec::new();
+    let mut debug_snapshots: Vec<AgentDebugSnapshot> = Vec::new();
 
     // 6. Run Master Agent → execution plan (with full context)
     let master_model = resolve_model(model, &session_config.master_model);
@@ -152,16 +155,20 @@ pub async fn execute_multi_agent_turn(
     // State Agent runs after NPC/User, before Writer — uses tool call to update variables.
     let has_variables = ctx
         .structured_state
-        .get("variables")
+        .get("_state_agent_writable")
         .and_then(|v| v.as_object())
         .map_or(false, |obj| !obj.is_empty());
-    let has_state_in_plan = validated
-        .calls
-        .iter()
-        .any(|c| active_agents.iter().any(|a| a.id == c.agent_id && a.agent_type == AgentType::State));
+    let has_state_in_plan = validated.calls.iter().any(|c| {
+        active_agents
+            .iter()
+            .any(|a| a.id == c.agent_id && a.agent_type == AgentType::State)
+    });
 
     if has_variables && !has_state_in_plan {
-        if let Some(state_agent) = active_agents.iter().find(|a| a.agent_type == AgentType::State) {
+        if let Some(state_agent) = active_agents
+            .iter()
+            .find(|a| a.agent_type == AgentType::State)
+        {
             // State Agent depends on all NPC/User agents (reads their outputs to determine changes)
             let npc_user_ids: Vec<String> = validated
                 .calls
@@ -286,10 +293,12 @@ pub async fn execute_multi_agent_turn(
             let agent_tools = if level_agents[i].agent_type == AgentType::State {
                 let variables = ctx
                     .structured_state
-                    .get("variables")
+                    .get("_state_agent_writable")
                     .cloned()
                     .unwrap_or_else(|| serde_json::json!({}));
-                Some(vec![variable_tool_agent::build_update_variables_tool(&variables)])
+                Some(vec![variable_tool_agent::build_update_variables_tool(
+                    &variables,
+                )])
             } else {
                 None
             };
@@ -326,13 +335,13 @@ pub async fn execute_multi_agent_turn(
             emit_status(&status_tx, agent.agent_type.as_str(), &agent.label, "done");
 
             match result {
-                Ok(output) => {
+                Ok((output, debug)) => {
                     // Process State Agent tool calls to update variables
                     if agent.agent_type == AgentType::State {
                         if let Some(ref tool_calls) = output.tool_calls {
                             let variables = ctx
                                 .structured_state
-                                .get("variables")
+                                .get("_state_agent_writable")
                                 .cloned()
                                 .unwrap_or_else(|| serde_json::json!({}));
                             if let Some(changes) =
@@ -347,25 +356,32 @@ pub async fn execute_multi_agent_turn(
                                 match pool.begin().await {
                                     Ok(mut tx) => {
                                         match variable_tool_agent::persist_variable_changes(
-                                            &mut tx,
-                                            session_id,
-                                            &changes,
+                                            &mut tx, session_id, &changes,
                                         )
                                         .await
                                         {
                                             Ok(()) => {
                                                 if let Err(e) = tx.commit().await {
-                                                    tracing::warn!("Failed to commit state agent changes: {}", e);
+                                                    tracing::warn!(
+                                                        "Failed to commit state agent changes: {}",
+                                                        e
+                                                    );
                                                 }
                                             }
                                             Err(e) => {
-                                                tracing::warn!("Failed to persist state agent changes: {}", e);
+                                                tracing::warn!(
+                                                    "Failed to persist state agent changes: {}",
+                                                    e
+                                                );
                                                 let _ = tx.rollback().await;
                                             }
                                         }
                                     }
                                     Err(e) => {
-                                        tracing::warn!("Failed to begin transaction for state agent: {}", e);
+                                        tracing::warn!(
+                                            "Failed to begin transaction for state agent: {}",
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -373,6 +389,15 @@ pub async fn execute_multi_agent_turn(
                     }
 
                     sub_agent::touch_agent(pool, &agent.id, turn_number).await;
+                    debug_snapshots.push(build_debug_snapshot(
+                        session_id,
+                        turn_number,
+                        Some(level_idx as i32),
+                        agent,
+                        agent_model,
+                        &output,
+                        debug,
+                    ));
                     traces.push(build_agent_trace(&output, agent_model));
                     turn_state::set_output(&mut state, &agent.id, output);
                 }
@@ -432,7 +457,7 @@ pub async fn execute_multi_agent_turn(
             };
             emit_status(&status_tx, "writer", &writer.label, "working");
             let writer_target = resolve_model_target(pool, model, sub_model).await?;
-            let output = sub_agent::execute_sub_agent(
+            let (output, debug) = sub_agent::execute_sub_agent(
                 pool,
                 &writer_target.provider,
                 &writer_target.model,
@@ -445,6 +470,15 @@ pub async fn execute_multi_agent_turn(
             .await?;
             emit_status(&status_tx, "writer", &writer.label, "done");
             sub_agent::touch_agent(pool, &writer.id, turn_number).await;
+            debug_snapshots.push(build_debug_snapshot(
+                session_id,
+                turn_number,
+                None,
+                writer,
+                &writer_target.trace_model,
+                &output,
+                debug,
+            ));
             traces.push(build_agent_trace(&output, &writer_target.trace_model));
             turn_state::set_output(&mut state, &writer.id, output);
         }
@@ -556,9 +590,52 @@ pub async fn execute_multi_agent_turn(
     Ok(turn_finalizer::TurnCommit {
         narrative,
         traces,
+        debug_snapshots,
         compression: compression_result,
         compression_job,
     })
+}
+
+fn build_debug_snapshot(
+    session_id: &str,
+    turn_number: i32,
+    level_index: Option<i32>,
+    agent: &crate::runtime::types::SubAgent,
+    model: &str,
+    output: &crate::runtime::types::AgentOutput,
+    debug: SubAgentExecutionDebug,
+) -> AgentDebugSnapshot {
+    AgentDebugSnapshot {
+        id: uuid::Uuid::new_v4().to_string(),
+        session_id: session_id.to_string(),
+        turn_number,
+        phase: "sub_agent".to_string(),
+        level_index,
+        agent_id: Some(agent.id.clone()),
+        agent_type: agent.agent_type.as_str().to_string(),
+        agent_label: agent.label.clone(),
+        model: model.to_string(),
+        task: debug.task,
+        system_prompt: debug.system_prompt,
+        user_prompt: debug.user_prompt,
+        injected_from: debug.injected_from,
+        injected_outputs: debug.injected_outputs,
+        preset_modules: debug.preset_modules,
+        worldbook_entries: debug.worldbook_entries,
+        recent_messages: debug.recent_messages,
+        recalled_events: debug.recalled_events,
+        state_slice: debug.state_slice,
+        raw_output: output.text.clone(),
+        tool_calls: output
+            .tool_calls
+            .as_ref()
+            .map(|calls| serde_json::to_value(calls).unwrap_or_else(|_| serde_json::json!([])))
+            .unwrap_or_else(|| serde_json::json!([])),
+        duration_ms: output.duration_ms,
+        prompt_tokens: output.prompt_tokens,
+        completion_tokens: output.completion_tokens,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    }
 }
 
 fn build_agent_trace(output: &crate::runtime::types::AgentOutput, model: &str) -> AgentTrace {

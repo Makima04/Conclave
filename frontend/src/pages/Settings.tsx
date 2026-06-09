@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as api from '../api/client';
-import type { ProviderConfig, RenderMode, SessionConfig, UserPersona } from '../api/types';
+import type { ProviderConfig, RenderMode, RuntimeSettings, SessionConfig, UserPersona } from '../api/types';
 import { useProviders } from '../contexts/AppContext';
 import { ModelPicker } from '../settings/modelSelection';
 import {
@@ -19,7 +19,7 @@ import '../styles/settings.css';
 
 export default function Settings() {
   const { providers, loading, refresh: refreshProviders } = useProviders();
-  const [settingsTab, setSettingsTab] = useState<'models' | 'params' | 'agents' | 'render' | 'user'>('models');
+  const [settingsTab, setSettingsTab] = useState<'models' | 'params' | 'agents' | 'runtime' | 'render' | 'user'>('models');
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
@@ -31,13 +31,22 @@ export default function Settings() {
   const [userPresets, setUserPresets] = useState<UserPersonaPreset[]>(() => loadUserPersonaPresets());
   const [selectedUserPresetId, setSelectedUserPresetId] = useState(() => loadDefaultUserPersonaPresetId());
   const [userPresetTitle, setUserPresetTitle] = useState('');
+  const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettings | null>(null);
+  const [runtimeDirty, setRuntimeDirty] = useState(false);
 
   // Model fetching state
   const [fetchingModels, setFetchingModels] = useState(false);
   const [modelList, setModelList] = useState<string[]>([]);
   const [fetchError, setFetchError] = useState('');
+  const [savingProvider, setSavingProvider] = useState(false);
+  const [submitError, setSubmitError] = useState('');
 
   const navigate = useNavigate();
+  const missingRequiredFields = [
+    !name ? '名称' : null,
+    !baseUrl ? 'Base URL' : null,
+    !model ? '模型名称' : null,
+  ].filter(Boolean) as string[];
 
   useEffect(() => {
     const selected = userPresets.find(p => p.id === selectedUserPresetId);
@@ -49,6 +58,12 @@ export default function Settings() {
     }
   }, [selectedUserPresetId]);
 
+  useEffect(() => {
+    api.getRuntimeSettings()
+      .then(setRuntimeSettings)
+      .catch(err => console.error('Failed to load runtime settings:', err));
+  }, []);
+
   function resetForm() {
     setName('');
     setBaseUrl('');
@@ -58,6 +73,7 @@ export default function Settings() {
     setEditingId(null);
     setModelList([]);
     setFetchError('');
+    setSubmitError('');
   }
 
   function startEdit(p: ProviderConfig) {
@@ -69,6 +85,7 @@ export default function Settings() {
     setIsDefault(p.is_default === 1);
     setModelList([]);
     setFetchError('');
+    setSubmitError('');
   }
 
   async function handleFetchModels() {
@@ -91,6 +108,8 @@ export default function Settings() {
 
   async function handleSubmit() {
     if (!name || !baseUrl || !model) return;
+    setSavingProvider(true);
+    setSubmitError('');
     try {
       if (editingId) {
         await api.updateProvider(editingId, { name, base_url: baseUrl, ...(apiKey ? { api_key: apiKey } : {}), model, is_default: isDefault });
@@ -98,9 +117,12 @@ export default function Settings() {
         await api.createProvider({ name, base_url: baseUrl, api_key: apiKey, model, is_default: isDefault });
       }
       resetForm();
-      refreshProviders();
-    } catch (err) {
+      await refreshProviders();
+    } catch (err: any) {
+      setSubmitError(err?.message || '保存模型失败，请检查配置后重试。');
       console.error('Failed to save provider:', err);
+    } finally {
+      setSavingProvider(false);
     }
   }
 
@@ -126,6 +148,11 @@ export default function Settings() {
   function updateGlobalDefault<K extends keyof SessionConfig>(key: K, value: SessionConfig[K]) {
     setGlobalDefaults(prev => ({ ...prev, [key]: value }));
     setDefaultsDirty(true);
+  }
+
+  function updateRuntimeDefault<K extends keyof RuntimeSettings>(key: K, value: RuntimeSettings[K]) {
+    setRuntimeSettings(prev => ({ ...(prev || { llm_concurrency_limit: 4 }), [key]: value }));
+    setRuntimeDirty(true);
   }
 
   function updateGlobalUserPersona(key: keyof SessionConfig['user_persona'], value: string) {
@@ -158,6 +185,17 @@ export default function Settings() {
   function handleResetDefaults() {
     setGlobalDefaults(resetGlobalSessionDefaults());
     setDefaultsDirty(false);
+  }
+
+  async function handleSaveRuntimeSettings() {
+    if (!runtimeSettings) return;
+    try {
+      const saved = await api.updateRuntimeSettings(runtimeSettings);
+      setRuntimeSettings(saved);
+      setRuntimeDirty(false);
+    } catch (err) {
+      console.error('Failed to save runtime settings:', err);
+    }
   }
 
   function handleSelectUserPreset(id: string) {
@@ -215,6 +253,7 @@ export default function Settings() {
             ['models', '模型', '模型供应商与默认模型'],
             ['params', '参数', '新会话默认采样与提示词'],
             ['agents', 'Agents', '多 Agent 默认调度'],
+            ['runtime', '运行时', '全局 LLM 并发与后台任务'],
             ['render', '渲染', '角色卡默认渲染策略'],
             ['user', 'User', '默认用户设定'],
           ] as const).map(([key, label, desc]) => (
@@ -226,12 +265,35 @@ export default function Settings() {
         </nav>
 
         <div className="settings-content">
-          {settingsTab !== 'models' && (
+          {settingsTab !== 'models' && settingsTab !== 'runtime' && (
             <div className="settings-savebar">
               <span>{defaultsDirty ? '全局默认有未保存改动' : '新建会话会复制当前全局默认'}</span>
               <div>
                 <button onClick={handleSaveDefaults} disabled={!defaultsDirty}>保存全局默认</button>
                 <button className="cancel-btn" onClick={handleResetDefaults}>恢复内置默认</button>
+              </div>
+            </div>
+          )}
+
+          {settingsTab === 'runtime' && (
+            <div className="provider-form">
+              <h3>运行时设置</h3>
+              <p className="form-hint">这些设置直接影响后端当前运行状态，保存后无需新建会话。LLM 并发限制会约束世界书等后台解析任务，避免同时请求过多导致 429 或本地模型排队卡死。</p>
+              <div className="settings-savebar inline">
+                <span>{runtimeDirty ? '运行时设置有未保存改动' : '当前设置已生效'}</span>
+                <button onClick={handleSaveRuntimeSettings} disabled={!runtimeDirty || !runtimeSettings}>保存运行时设置</button>
+              </div>
+              <div className="global-default-grid">
+                <div className="form-field">
+                  <label>LLM 并发上限</label>
+                  <input
+                    type="number"
+                    value={runtimeSettings?.llm_concurrency_limit ?? 4}
+                    min={1}
+                    max={32}
+                    onChange={e => updateRuntimeDefault('llm_concurrency_limit', Number(e.target.value))}
+                  />
+                </div>
               </div>
             </div>
           )}
@@ -279,7 +341,7 @@ export default function Settings() {
               <h3>默认渲染</h3>
               <p className="form-hint">复杂角色卡默认优先保留作者原始 UI；单个会话仍可在会话侧栏覆盖。</p>
               <div className="render-mode-group settings-render-group">
-                {([['auto','Auto','作者原始 UI 优先，失败走平台兜底'],['sandbox','Sandbox','优先执行作者原始沙盒 UI'],['schema','Schema','只用平台 Schema，不执行原始 JS'],['text','Text','纯文本，无 UI 渲染']] as const).map(([mode, label, desc]) => (
+                {([['auto','Auto','按 SillyTavern 原始渲染流程'],['sandbox','Sandbox','仅执行作者原始沙盒 UI'],['schema','Schema','仅显示平台状态面板调试'],['text','Text','纯文本，无 UI 渲染']] as const).map(([mode, label, desc]) => (
                   <label key={mode} className={`render-mode-option${globalDefaults.render_mode === mode ? ' selected' : ''}`}>
                     <input type="radio" name="globalRenderMode" value={mode} checked={globalDefaults.render_mode === mode} onChange={() => updateGlobalDefault('render_mode', mode as RenderMode)} />
                     <div><div className="render-mode-label">{label}</div><div className="render-mode-desc">{desc}</div></div>
@@ -326,10 +388,10 @@ export default function Settings() {
                 <h3>{editingId ? '编辑模型' : '添加模型'}</h3>
                 <p className="form-hint">兼容 OpenAI、OpenRouter、Ollama、vLLM、LM Studio 等 OpenAI 兼容接口</p>
                 <div className="global-default-grid two-col">
-                  <div className="form-field"><label>名称</label><input value={name} onChange={e => setName(e.target.value)} placeholder="如：OpenAI、Ollama 本地" /></div>
-                  <div className="form-field"><label>Base URL</label><input value={baseUrl} onChange={e => { setBaseUrl(e.target.value); setModelList([]); setFetchError(''); }} placeholder="https://api.openai.com/v1" /></div>
+                  <div className="form-field"><label>名称 <span className="required-mark">*</span></label><input value={name} onChange={e => setName(e.target.value)} placeholder="如：OpenAI、Ollama 本地" /></div>
+                  <div className="form-field"><label>Base URL <span className="required-mark">*</span></label><input value={baseUrl} onChange={e => { setBaseUrl(e.target.value); setModelList([]); setFetchError(''); }} placeholder="https://api.openai.com/v1" /></div>
                   <div className="form-field"><label>API Key</label><input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={editingId ? '留空则保留已保存 Key' : 'sk-...（本地模型可留空）'} type="password" /></div>
-                  <div className="form-field"><label>模型名称</label><div className="model-input-row"><input value={model} onChange={e => setModel(e.target.value)} placeholder="gpt-4o-mini" /><button className="fetch-btn" onClick={handleFetchModels} disabled={!baseUrl || fetchingModels}>{fetchingModels ? '获取中...' : '获取模型列表'}</button></div></div>
+                  <div className="form-field"><label>模型名称 <span className="required-mark">*</span></label><div className="model-input-row"><input value={model} onChange={e => setModel(e.target.value)} placeholder="gpt-4o-mini" /><button className="fetch-btn" onClick={handleFetchModels} disabled={!baseUrl || fetchingModels}>{fetchingModels ? '获取中...' : '获取模型列表'}</button></div></div>
                 </div>
                 {fetchError && <p className="fetch-error">{fetchError}</p>}
                 {modelList.length > 0 && (
@@ -341,7 +403,21 @@ export default function Settings() {
                   </div>
                 )}
                 <div className="form-field checkbox"><label><input type="checkbox" checked={isDefault} onChange={e => setIsDefault(e.target.checked)} />设为默认模型</label></div>
-                <div className="form-actions"><button onClick={handleSubmit} disabled={!name || !baseUrl || !model}>{editingId ? '更新' : '添加'}</button>{editingId && <button className="cancel-btn" onClick={resetForm}>取消</button>}</div>
+                {submitError && <p className="submit-error">{submitError}</p>}
+                {missingRequiredFields.length > 0 && (
+                  <p className="submit-hint">请先填写：{missingRequiredFields.join('、')}</p>
+                )}
+                <div className="form-actions">
+                  <button
+                    type="button"
+                    className="primary-btn"
+                    onClick={handleSubmit}
+                    disabled={missingRequiredFields.length > 0 || savingProvider}
+                  >
+                    {savingProvider ? (editingId ? '更新中...' : '添加中...') : (editingId ? '更新模型' : '添加模型')}
+                  </button>
+                  {editingId && <button type="button" className="cancel-btn" onClick={resetForm}>取消</button>}
+                </div>
               </div>
               <div className="provider-list">
                 <h3>已配置模型</h3>

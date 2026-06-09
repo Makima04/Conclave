@@ -36,25 +36,31 @@ export default function ImportWorkbench() {
   const [llmLoading, setLlmLoading] = useState(false);
   const [rawPreviewHtml, setRawPreviewHtml] = useState<string | null>(null);
   const [rawPreviewEvents, setRawPreviewEvents] = useState<Array<{ action: string; payload: unknown }>>([]);
+  const [activeTab, setActiveTab] = useState('section-pipeline');
+
+  const runCardImport = useCallback(async (id: string, cancelledRef?: { current: boolean }) => {
+    setUploading(true);
+    setError(null);
+    setLlmResult(null);
+    setRawPreviewHtml(null);
+    setRawPreviewEvents([]);
+    try {
+      const result = await runImportForCard(id);
+      if (!cancelledRef?.current) setDraft(result);
+    } catch (e: any) {
+      if (!cancelledRef?.current) setError(e.message || 'Import failed');
+    } finally {
+      if (!cancelledRef?.current) setUploading(false);
+    }
+  }, []);
 
   // Auto-load mode: when cardId is present, run import pipeline on mount
   useEffect(() => {
     if (!cardId) return;
-    let cancelled = false;
-    (async () => {
-      setUploading(true);
-      setError(null);
-      try {
-        const result = await runImportForCard(cardId);
-        if (!cancelled) setDraft(result);
-      } catch (e: any) {
-        if (!cancelled) setError(e.message || 'Import failed');
-      } finally {
-        if (!cancelled) setUploading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [cardId]);
+    const cancelledRef = { current: false };
+    runCardImport(cardId, cancelledRef);
+    return () => { cancelledRef.current = true; };
+  }, [cardId, runCardImport]);
 
   const handleFileUpload = useCallback(async (file: File) => {
     setUploading(true);
@@ -127,6 +133,7 @@ export default function ImportWorkbench() {
       const result = await getRawPreview(draft.import_id);
       setRawPreviewHtml(result.html);
       setRawPreviewEvents([]);
+      setActiveTab('section-raw-preview');
     } catch (e: any) {
       setError(e.message || 'Preview failed');
     }
@@ -148,13 +155,6 @@ export default function ImportWorkbench() {
       navigate(-1);
     }
   }, [worldBookId, navigate]);
-
-  const scrollToSection = useCallback((sectionId: string) => {
-    const el = document.getElementById(sectionId);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  }, []);
 
   // In-page nav items
   const navItems: NavItem[] = [
@@ -229,8 +229,8 @@ export default function ImportWorkbench() {
             item.condition === false ? null : (
               <button
                 key={item.id}
-                className="iw-nav-item"
-                onClick={() => scrollToSection(item.id)}
+                className={`iw-nav-item ${activeTab === item.id ? 'active' : ''}`}
+                onClick={() => setActiveTab(item.id)}
               >
                 {item.label}
               </button>
@@ -242,23 +242,27 @@ export default function ImportWorkbench() {
       {/* Results (shown when draft exists) */}
       {draft && (
         <>
-          {/* Pipeline visualization */}
-          <PipelineVisualization stages={draft.import_report.stages} />
+          <main className="iw-tab-panel">
+            {activeTab === 'section-pipeline' && (
+              <PipelineVisualization stages={draft.import_report.stages} />
+            )}
 
-          {/* Rule Traces - paginated */}
-          <RuleTracePanel traces={draft.import_report.rule_traces} />
+            {activeTab === 'section-rule-traces' && (
+              <RuleTracePanel traces={draft.import_report.rule_traces} />
+            )}
 
-          {/* Diagnostics - paginated */}
-          <DiagnosticsPanel diagnostics={draft.import_report.diagnostics} />
+            {activeTab === 'section-diagnostics' && (
+              <DiagnosticsPanel diagnostics={draft.import_report.diagnostics} />
+            )}
 
-          {/* Package Draft - actions paginated */}
-          <PackagePreview packageDraft={draft.package_draft} />
+            {activeTab === 'section-package-draft' && (
+              <>
+                <PackagePreview packageDraft={draft.package_draft} />
+                <LlmAssistPanel result={llmResult} loading={llmLoading} />
+              </>
+            )}
 
-          {/* LLM assist panel */}
-          <LlmAssistPanel result={llmResult} loading={llmLoading} />
-
-          {/* Raw preview panel */}
-          {rawPreviewHtml && (
+            {activeTab === 'section-raw-preview' && rawPreviewHtml && (
             <div className="raw-preview-panel" id="section-raw-preview">
               <h3>原始 ST Sandbox 预览</h3>
               <RawPreviewFrame
@@ -269,7 +273,8 @@ export default function ImportWorkbench() {
                 }}
               />
             </div>
-          )}
+            )}
+          </main>
 
           {/* Action bar */}
           <ActionBar
@@ -280,8 +285,14 @@ export default function ImportWorkbench() {
             onRawPreview={handleRawPreview}
             onSaveFailure={handleSaveFailure}
             onReparse={() => {
-              setDraft(null);
-              setRawPreviewHtml(null);
+              if (cardId) {
+                runCardImport(cardId);
+              } else {
+                setDraft(null);
+                setRawPreviewHtml(null);
+                setRawPreviewEvents([]);
+                setLlmResult(null);
+              }
             }}
           />
         </>

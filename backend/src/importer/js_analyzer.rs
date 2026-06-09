@@ -319,6 +319,7 @@ fn detect_apis(js: &str, file_label: &str) -> Vec<DetectedApi> {
         ("indexedDB", ApiClassification::BrowserShim),
         ("openDatabase", ApiClassification::BrowserShim),
         // Unsupported
+        ("generateRaw", ApiClassification::Unsupported),
         ("eventOn", ApiClassification::Unsupported),
         ("eventOnce", ApiClassification::Unsupported),
         ("eventRemoveListener", ApiClassification::Unsupported),

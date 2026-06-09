@@ -3,12 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import * as api from '../api/client';
 import {
   cleanCardDisplayText,
-  hasComplexCardUi,
+  getTavernHelperScripts,
   hasStatusRenderer,
-  isGameStartCard,
 } from './card-content';
-import { buildPlatformCardSchema } from './card-schema-builders';
 import { MessageContent } from './components/MessageContent';
+import { SessionTavernHelperRuntimeHost } from './components/SessionTavernHelperRuntimeHost';
 import '../styles/chat.css';
 import { ToolRail } from './components/ToolRail';
 import { ToolDrawer } from './components/ToolDrawer';
@@ -19,6 +18,7 @@ import type { SandboxRuntimeContext, SandboxRuntimeMessage, SandboxRuntimeSubmis
 import { useChatSession } from './hooks/useChatSession';
 import { useStreamRecovery } from './hooks/useStreamRecovery';
 import { useMessageStream } from './hooks/useMessageStream';
+import { getParsedGreetings, getParsedOpeningContent } from './st-html-app-runtime';
 
 export default function Chat() {
   const navigate = useNavigate();
@@ -66,7 +66,7 @@ export default function Chat() {
     handleSaveEdit, handleCancelEdit, handleDelete, getVariants, toggleRawView,
     handleCopyMsg, greetingLabel,
   } = stream;
-  const selectedGreetingText = selectedGreetingText_;
+  const selectedGreetingText = selectedGreetingText_();
 
   // --- local UI state ---
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -79,17 +79,16 @@ export default function Chat() {
 
   // --- derived ---
   const cardHasStatusRenderer = React.useMemo(() => hasStatusRenderer(characterCard), [characterCard]);
-  const cardHasComplexUi = React.useMemo(() => hasComplexCardUi(characterCard), [characterCard]);
-  const cardHasGameStart = React.useMemo(() => isGameStartCard(characterCard), [characterCard]);
+  const tavernHelperScripts = React.useMemo(
+    () => getTavernHelperScripts(characterCard),
+    [characterCard?.id, characterCard?.extensions],
+  );
   const openingLocked = React.useMemo(() => messages.some(msg => msg.turn_number > 0), [messages]);
   const canApplyOpening = !openingLocked;
-  const debugPlatformSchema = React.useMemo(
-    () => buildPlatformCardSchema(characterCard, characterCard?.first_mes || ''),
-    [characterCard],
-  );
+  const cardRuntimeVariables = sessionState?.variables || emptyVariables;
   const flatVariables = React.useMemo(
-    () => sessionState?.variables ? flattenVariables(sessionState.variables) : [],
-    [sessionState?.variables],
+    () => Object.keys(cardRuntimeVariables).length ? flattenVariables(cardRuntimeVariables) : [],
+    [cardRuntimeVariables],
   );
   const activeWorldBook = React.useMemo(
     () => worldBooks.find(book => book.id === activeWorldBookId) || null,
@@ -102,24 +101,43 @@ export default function Chat() {
     [presets, config.active_preset_id],
   );
   const activePresetMissing = Boolean(config.active_preset_id && !activePreset);
+  const loadSharedSaves = React.useCallback(async () => {
+    const worldBookId = activeWorldBookId || characterCard?.world_book_id;
+    if (!sessionId || !worldBookId || !characterCard) {
+      return [];
+    }
+    const sessionData = await api.listSessions({ worldPackId: worldBookId, limit: 50 });
+    const relevantSessions = (sessionData.items || []).filter(item => item.world_pack_id === worldBookId);
+    const saves = await Promise.all(relevantSessions.map(async item => {
+      const sessionMessages = item.id === sessionId
+        ? messages
+        : (await api.listMessages(item.id).catch(() => ({ items: [] }))).items;
+      return buildSharedSave(item, sessionMessages || []);
+    }));
+    return saves;
+  }, [activeWorldBookId, characterCard?.id, characterCard?.world_book_id, sessionId, userPersona.name, messages]);
   const greetingOptions = React.useMemo(() => {
     if (!characterCard) return [];
     const options: Array<{ value: number; label: string }> = [];
-    if (characterCard.first_mes) {
-      options.push({ value: -1, label: greetingLabel(characterCard.first_mes, '主开场白') });
-    }
-    characterCard.alternate_greetings.forEach((greeting, index) => {
-      options.push({ value: index, label: greetingLabel(greeting, `可选开场白 ${index + 1}`) });
+    getParsedGreetings(characterCard).forEach((greeting, index) => {
+      options.push({
+        value: index - 1,
+        label: greetingLabel(greeting, index === 0 ? '主开场白' : `可选开场白 ${index}`),
+      });
     });
     return options;
   }, [characterCard, greetingLabel]);
   const sandboxRuntimeMessages = React.useMemo(
     () => messages.map(buildSandboxRuntimeMessage),
-    [messages, sessionState?.variables, emptyVariables, userPersona.name, characterCard?.name],
+    [messages, cardRuntimeVariables, userPersona.name, characterCard?.name],
   );
   const sandboxRuntimeById = React.useMemo(
     () => new Map(sandboxRuntimeMessages.map(message => [String(message.id), message])),
     [sandboxRuntimeMessages],
+  );
+  const hasHtmlAppInternalMessages = React.useMemo(
+    () => messages.some(message => isHtmlAppInternalMessage(message)),
+    [messages],
   );
   const runtimeSharedSaves = React.useMemo(() => {
     if (!sessionId || !characterCard) return peerSharedSaves;
@@ -140,26 +158,28 @@ export default function Chat() {
       buildSharedSave(currentSession, messages),
       ...peerSharedSaves.filter(save => save.sessionId !== sessionId),
     ];
-  }, [activeWorldBookId, characterCard, config, messages, peerSharedSaves, sessionId, sessionMode, sessionState?.variables, sessionTitle, userPersona.name]);
+  }, [activeWorldBookId, characterCard, config, messages, peerSharedSaves, sessionId, sessionMode, cardRuntimeVariables, sessionTitle, userPersona.name]);
   const sandboxContextById = React.useMemo(
     () => new Map(messages.map(message => {
       const currentMessage = sandboxRuntimeById.get(message.id)
         || buildSandboxRuntimeMessage(message, sandboxRuntimeMessages.length);
       return [message.id, {
+        sessionId,
         messages: sandboxRuntimeMessages,
         currentMessage,
         currentMessageId: message.id,
         sharedSaves: runtimeSharedSaves,
       } satisfies SandboxRuntimeContext];
     })),
-    [messages, sandboxRuntimeMessages, sandboxRuntimeById, runtimeSharedSaves],
+    [messages, sandboxRuntimeMessages, sandboxRuntimeById, runtimeSharedSaves, sessionId],
   );
-  const openingPreviewContent = characterCard?.first_mes || '【GameStart】';
+  const openingPreviewContent = selectedGreetingText || getParsedOpeningContent(characterCard);
   const sandboxSubmissionRuntime = React.useMemo<SandboxRuntimeSubmission | null>(() => {
     if (!sandboxSubmission) return null;
     return {
       status: sandboxSubmission.status,
       sourceMessageId: sandboxSubmission.sourceMessageId,
+      generationId: sandboxSubmission.generationId,
       userMessage: sandboxSubmission.userMessage,
       assistantMessage: sandboxSubmission.assistantMessage,
       error: sandboxSubmission.error,
@@ -170,8 +190,15 @@ export default function Chat() {
   const isSandboxInlineStreaming = Boolean(sandboxSubmission);
   const openingPreviewRuntime = React.useMemo(
     () => buildEmptySessionPreviewRuntime(openingPreviewContent),
-    [openingPreviewContent, runtimeSharedSaves, sessionState?.variables, characterCard?.name, sandboxSubmissionRuntime],
+    [openingPreviewContent, runtimeSharedSaves, cardRuntimeVariables, characterCard?.name, sandboxSubmissionRuntime, sessionId],
   );
+  const sessionTavernHelperRuntime = React.useMemo<SandboxRuntimeContext>(() => withSandboxSubmission({
+    sessionId,
+    messages: sandboxRuntimeMessages,
+    currentMessage: sandboxRuntimeMessages[sandboxRuntimeMessages.length - 1] || null,
+    currentMessageId: sandboxRuntimeMessages[sandboxRuntimeMessages.length - 1]?.message_id ?? null,
+    sharedSaves: runtimeSharedSaves,
+  }), [sessionId, sandboxRuntimeMessages, runtimeSharedSaves, sandboxSubmissionRuntime, sandboxSubmissionSourceId]);
 
   // --- local helpers ---
   const handleRailClick = React.useCallback((tab: InspectorTab) => {
@@ -193,8 +220,25 @@ export default function Chat() {
       }
       return;
     }
+    if (event?.action === 'deleteSaveSession') {
+      const targetSessionId = String(event.payload?.sessionId || '');
+      if (!targetSessionId) return;
+      api.deleteSession(targetSessionId)
+        .then(() => {
+          setPeerSharedSaves(prev => prev.filter(save => save.sessionId !== targetSessionId));
+          if (targetSessionId === sessionId) {
+            navigate('/');
+          } else {
+            void loadSharedSaves()
+              .then(saves => setPeerSharedSaves(saves))
+              .catch(err => console.error('Failed to refresh shared card saves:', err));
+          }
+        })
+        .catch(err => console.error('Failed to delete shared card save:', err));
+      return;
+    }
     handleSandboxAction(scopedEvent, canApplyOpening, setShowVariableDebug);
-  }, [canApplyOpening, handleSandboxAction, navigate, sessionId, setShowVariableDebug]);
+  }, [canApplyOpening, handleSandboxAction, loadSharedSaves, navigate, sessionId, setShowVariableDebug]);
 
   function flattenVariables(value: any, prefix = ''): Array<{ key: string; value: any }> {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
@@ -210,8 +254,27 @@ export default function Chat() {
     return rows;
   }
 
+  function parseMessageMetadata(msg: Message): Record<string, any> {
+    if (!msg.metadata) return {};
+    try {
+      const parsed = JSON.parse(msg.metadata);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function isHtmlAppInternalMessage(msg: Message): boolean {
+    return parseMessageMetadata(msg).html_app_internal === true;
+  }
+
   function buildSandboxRuntimeMessage(msg: Message, index: number): SandboxRuntimeMessage {
-    const runtimeVariables = sessionState?.variables || emptyVariables;
+    const chatVariables = cardRuntimeVariables;
+    const metadata = parseMessageMetadata(msg);
+    const messageVariables = metadata.variables && typeof metadata.variables === 'object'
+      ? metadata.variables
+      : {};
+    const runtimeContent = msg.role === 'assistant' && msg.content.trim() === 'false' ? '' : msg.content;
     const roleName = msg.role === 'user'
       ? (userPersona.name || '你')
       : msg.turn_number === 0 && characterCard
@@ -219,10 +282,10 @@ export default function Chat() {
         : '助手';
     const messageVariants = getVariants(msg);
     const openingSwipes = msg.turn_number === 0 && characterCard
-      ? [characterCard.first_mes, ...characterCard.alternate_greetings].filter(Boolean)
+      ? getParsedGreetings(characterCard)
       : [];
     const swipes = messageVariants.length > 0 ? messageVariants : openingSwipes;
-    const comparableContent = cleanComparableMessageText(msg.content);
+    const comparableContent = cleanComparableMessageText(runtimeContent);
     const matchedOpeningIndex = openingSwipes.findIndex(swipe => cleanComparableMessageText(swipe) === comparableContent);
     const activeSwipeIndex = msg.variant_index >= 0
       ? msg.variant_index
@@ -237,20 +300,22 @@ export default function Chat() {
       swipes,
       role: msg.role,
       name: roleName,
-      message: msg.content,
-      content: msg.content,
+      message: runtimeContent,
+      content: runtimeContent,
       created_at: msg.created_at,
       send_date: msg.created_at,
       turn_number: msg.turn_number,
       is_user: msg.role === 'user',
       is_system: msg.role === 'system',
       data: {
-        stat_data: runtimeVariables,
-        display_data: runtimeVariables,
-        variables: runtimeVariables,
+        ...metadata,
+        stat_data: messageVariables,
+        display_data: messageVariables,
+        variables: messageVariables,
+        chat_variables: chatVariables,
         index,
       },
-      variables: runtimeVariables,
+      variables: messageVariables,
     };
   }
 
@@ -271,7 +336,16 @@ export default function Chat() {
   }
 
   function buildStreamingSandboxRuntime(content: string): SandboxRuntimeContext {
-    const runtimeVariables = sessionState?.variables || emptyVariables;
+    const runtimeVariables = cardRuntimeVariables;
+    const syntheticSubmission: SandboxRuntimeSubmission = sandboxSubmissionRuntime || {
+      status: 'streaming',
+      sourceMessageId: 'main-chat',
+      generationId: 'main-chat-streaming',
+      userMessage: '',
+      assistantMessage: content,
+      error: null,
+      updatedAt: Date.now(),
+    };
     const streamingMessage: SandboxRuntimeMessage = {
       id: 'streaming',
       message_id: 'streaming',
@@ -289,16 +363,28 @@ export default function Chat() {
     };
 
     return {
+      sessionId,
       messages: [...sandboxRuntimeMessages, streamingMessage],
       currentMessage: streamingMessage,
       currentMessageId: 'streaming',
       sharedSaves: runtimeSharedSaves,
-      submission: sandboxSubmissionRuntime,
+      submission: syntheticSubmission,
     };
   }
 
   function buildEmptySessionPreviewRuntime(content: string): SandboxRuntimeContext {
-    const runtimeVariables = sessionState?.variables || emptyVariables;
+    const runtimeVariables = cardRuntimeVariables;
+    if (hasHtmlAppInternalMessages) {
+      const currentMessage = sandboxRuntimeMessages[sandboxRuntimeMessages.length - 1];
+      return withSandboxSubmission({
+        sessionId,
+        messages: sandboxRuntimeMessages,
+        currentMessage,
+        currentMessageId: currentMessage?.message_id ?? currentMessage?.id ?? 'opening-preview',
+        sharedSaves: runtimeSharedSaves,
+        submission: sandboxSubmissionRuntime,
+      });
+    }
     const previewMessage: SandboxRuntimeMessage = {
       id: 'opening-preview',
       message_id: 'opening-preview',
@@ -319,6 +405,7 @@ export default function Chat() {
     };
 
     return {
+      sessionId,
       messages: [previewMessage],
       currentMessage: previewMessage,
       currentMessageId: previewMessage.id,
@@ -329,6 +416,9 @@ export default function Chat() {
 
   function withSandboxSubmission(runtime: SandboxRuntimeContext): SandboxRuntimeContext {
     if (!sandboxSubmissionRuntime) return runtime;
+    if (sandboxSubmissionSourceId === 'card-runtime' || sandboxSubmissionSourceId === 'main-chat') {
+      return { ...runtime, submission: sandboxSubmissionRuntime };
+    }
     const currentId = runtime.currentMessageId ?? runtime.currentMessage?.message_id ?? runtime.currentMessage?.id ?? null;
     if (sandboxSubmissionSourceId && String(currentId) !== sandboxSubmissionSourceId) return runtime;
     return { ...runtime, submission: sandboxSubmissionRuntime };
@@ -353,14 +443,69 @@ export default function Chat() {
     return shortText(text, 180);
   }
 
+  function extractAssistantSaveText(content: string): string {
+    const source = String(content || '');
+    const visibleMatch = source.match(/<content\b[^>]*>([\s\S]*?)<\/content>/i)
+      || source.match(/<正文\b[^>]*>([\s\S]*?)<\/正文>/i);
+    const visibleSource = visibleMatch?.[1] || source;
+    return cleanCardDisplayText(visibleSource)
+      .replace(/<context\b[^>]*>[\s\S]*?<\/context>/gi, '')
+      .replace(/<options\b[^>]*>[\s\S]*?<\/options>/gi, '')
+      .replace(/<tucao\b[^>]*>[\s\S]*?<\/tucao>/gi, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
   function buildSharedSave(targetSession: Session, sessionMessages: Message[]): SandboxSharedSave {
     const saveId = `xrp-session-${targetSession.id}`;
     const runId = targetSession.id;
     const personaName = targetSession.config?.user_persona?.name || userPersona.name || characterCard?.name || '未命名主角';
+    const persona = targetSession.config?.user_persona || userPersona;
     const firstAssistant = sessionMessages.find(message => message.role === 'assistant');
     const lastMessage = sessionMessages[sessionMessages.length - 1];
     const updatedAt = targetSession.updated_at || lastMessage?.created_at || new Date().toISOString();
     const createdAt = targetSession.created_at || firstAssistant?.created_at || updatedAt;
+    const chatLog = sessionMessages
+      .filter(message => message.role === 'user' || message.role === 'assistant')
+      .map(message => {
+        const isAssistant = message.role === 'assistant';
+        const rawText = String(message.content || '');
+        return {
+          role: message.role,
+          speaker: message.role === 'user' ? (personaName || 'User') : 'Assistant',
+          text: isAssistant ? extractAssistantSaveText(rawText) : rawText,
+          ...(isAssistant ? { rawText } : {}),
+        };
+      });
+    const statusData = cardRuntimeVariables && typeof cardRuntimeVariables === 'object'
+      ? JSON.parse(JSON.stringify(cardRuntimeVariables))
+      : {};
+    const gameState = {
+      runId,
+      statusData,
+      currentMessageIndex: Math.max(0, chatLog.length - 1),
+      runtimeFlags: {
+        saveKind: 'autosave',
+        playerProfile: {
+          name: personaName,
+          familyName: '',
+          givenName: personaName,
+          gender: '男',
+          personality: persona?.background || '',
+          appearance: persona?.style || '',
+          className: persona?.address || '2年B班',
+          stats: {
+            knowledge: 60,
+            charm: 60,
+            proficiency: 60,
+            kindness: 60,
+            courage: 60,
+          },
+          difficulty: 'normal',
+        },
+        phoneMessages: null,
+      },
+    };
     const meta = {
       saveId,
       runId,
@@ -383,7 +528,16 @@ export default function Chat() {
       sessionId: targetSession.id,
       runId,
       meta,
-      payload: { saveId, runId, sessionId: targetSession.id, meta, version: 1 },
+      payload: {
+        saveId,
+        runId,
+        sessionId: targetSession.id,
+        meta,
+        gameState,
+        chatLog,
+        summaryStore: {},
+        version: 2,
+      },
     };
   }
 
@@ -429,34 +583,29 @@ export default function Chat() {
   }, [sessionId]);
 
   useEffect(() => {
-    const worldBookId = activeWorldBookId || characterCard?.world_book_id;
-    if (!sessionId || !worldBookId || !characterCard) {
-      setPeerSharedSaves([]);
-      return;
-    }
     let cancelled = false;
-    async function loadSharedSaves() {
+    async function refreshSharedSaves() {
       try {
-        const sessionData = await api.listSessions({ worldPackId: worldBookId, limit: 50 });
-        const relevantSessions = (sessionData.items || []).filter(item => item.world_pack_id === worldBookId);
-        const saves = await Promise.all(relevantSessions.map(async item => {
-          const sessionMessages = item.id === sessionId
-            ? messages
-            : (await api.listMessages(item.id).catch(() => ({ items: [] }))).items;
-          return buildSharedSave(item, sessionMessages || []);
-        }));
+        const saves = await loadSharedSaves();
         if (!cancelled) setPeerSharedSaves(saves);
       } catch (err) {
         console.error('Failed to load shared card saves:', err);
         if (!cancelled) setPeerSharedSaves([]);
       }
     }
-    loadSharedSaves();
+    refreshSharedSaves();
     return () => { cancelled = true; };
-  }, [activeWorldBookId, characterCard?.id, characterCard?.world_book_id, sessionId, userPersona.name]);
+  }, [loadSharedSaves]);
 
   return (
     <div className="chat-layout">
+      <SessionTavernHelperRuntimeHost
+        scripts={tavernHelperScripts}
+        variables={cardRuntimeVariables}
+        runtime={sessionTavernHelperRuntime}
+        onAction={(event) => handleCardSandboxAction(event, 'card-runtime')}
+      />
+
       {/* LEFT: Tool rail */}
       <ToolRail
         activeTab={drawerOpen ? drawerTab : null}
@@ -495,9 +644,6 @@ export default function Chat() {
         activePreset={activePreset}
         activePresetMissing={activePresetMissing}
         cardHasStatusRenderer={cardHasStatusRenderer}
-        cardHasComplexUi={cardHasComplexUi}
-        cardHasGameStart={cardHasGameStart}
-        debugPlatformSchema={debugPlatformSchema}
         paramsEditing={paramsEditing}
         setParamsEditing={setParamsEditing}
         userEditing={userEditing}
@@ -542,6 +688,7 @@ export default function Chat() {
         <div className="messages">
           {characterCard && (
             messages.length === 0
+            || hasHtmlAppInternalMessages
             || (isSandboxInlineStreaming && sandboxSubmissionSourceId === 'opening-preview')
           ) && (
             <div className="message assistant opening-preview">
@@ -550,7 +697,7 @@ export default function Chat() {
                 <MessageContent
                   content={openingPreviewContent}
                   card={characterCard}
-                  variables={sessionState?.variables || emptyVariables}
+                  variables={cardRuntimeVariables}
                   runtime={openingPreviewRuntime}
                   onSandboxAction={(event) => handleCardSandboxAction(event, 'opening-preview')}
                   renderMode={renderMode}
@@ -558,7 +705,7 @@ export default function Chat() {
               </div>
             </div>
           )}
-          {messages.map(msg => {
+          {messages.filter(msg => !isHtmlAppInternalMessage(msg)).map(msg => {
             const isRaw = rawViewIds.has(msg.id);
             const isEditing = editingId === msg.id;
             const roleLabel = msg.role === 'user'
@@ -592,7 +739,7 @@ export default function Chat() {
                         <MessageContent
                           content={msg.content}
                           card={characterCard}
-                          variables={sessionState?.variables || emptyVariables}
+                          variables={cardRuntimeVariables}
                           runtime={buildSandboxRuntime(msg)}
                           onSandboxAction={(event) => handleCardSandboxAction(event, msg.id)}
                           renderMode={renderMode}
@@ -737,7 +884,7 @@ export default function Chat() {
                 <MessageContent
                   content={streamText}
                   card={characterCard}
-                  variables={sessionState?.variables || emptyVariables}
+                  variables={cardRuntimeVariables}
                   runtime={buildStreamingSandboxRuntime(streamText)}
                   onSandboxAction={(event) => handleCardSandboxAction(event, 'streaming')}
                   renderMode="text"

@@ -217,6 +217,118 @@ pub struct VariableDeclaration {
     pub source: String,
 }
 
+// ─── State conversion layer ───
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CardStateSchema {
+    pub roots: Vec<StateRootDeclaration>,
+    pub fields: Vec<StateFieldDeclaration>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateRootDeclaration {
+    pub path: String,
+    pub role: StateRootRole,
+    pub source: String,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateRootRole {
+    World,
+    CharacterCollection,
+    Character,
+    Relationship,
+    Inventory,
+    Memory,
+    Summary,
+    UiRuntime,
+    Custom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateFieldDeclaration {
+    pub path: String,
+    pub canonical_path: Option<String>,
+    #[serde(rename = "type")]
+    pub field_type: VariableType,
+    pub default_value: Option<serde_json::Value>,
+    pub role: StateFieldRole,
+    pub writable: bool,
+    pub source: String,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateFieldRole {
+    Time,
+    Location,
+    CharacterName,
+    RelationshipScore,
+    RelationshipStage,
+    InventoryItem,
+    MemoryEntry,
+    SummaryEntry,
+    UiFlag,
+    Custom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CardStateAdapter {
+    pub adapter_version: String,
+    pub source_format: String,
+    pub read_rules: Vec<StateMappingRule>,
+    pub write_rules: Vec<StateMappingRule>,
+    pub variable_rules: Vec<VariableRule>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateMappingRule {
+    pub card_path: String,
+    pub platform_path: String,
+    pub direction: MappingDirection,
+    pub transform: MappingTransform,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MappingDirection {
+    Read,
+    Write,
+    Bidirectional,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MappingTransform {
+    Identity,
+    FirstArrayItem,
+    CollectionById,
+    JsonBlob,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VariableRule {
+    pub path_pattern: String,
+    pub role: StateFieldRole,
+    pub writable: bool,
+    pub update_policy: VariableUpdatePolicy,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VariableUpdatePolicy {
+    AgentTool,
+    DerivedFromMessages,
+    UiOnly,
+    ManualReview,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VariableType {
@@ -235,6 +347,8 @@ pub struct ConclaveCardPackage {
     pub greetings: Vec<Greeting>,
     pub ui: PackageUi,
     pub variables: Vec<VariableDeclaration>,
+    pub state_schema: CardStateSchema,
+    pub state_adapter: CardStateAdapter,
     pub actions: Vec<ActionDeclaration>,
     pub compatibility: CompatibilityReport,
 }
@@ -283,6 +397,16 @@ pub struct CompatibilityReport {
     pub required_apis: Vec<String>,
     pub unsupported_apis: Vec<String>,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub api_mappings: Vec<ApiCompatibilityMapping>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiCompatibilityMapping {
+    pub api: String,
+    pub status: String,
+    pub replacement: String,
+    pub notes: String,
 }
 
 // ─── Import report ───

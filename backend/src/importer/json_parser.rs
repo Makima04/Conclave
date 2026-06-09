@@ -75,10 +75,7 @@ fn parse_v3_json(
         character_version: get_str(data, "character_version"),
         tags: get_arr_str(data, "tags"),
         spec,
-        extensions: data
-            .get("extensions")
-            .cloned()
-            .unwrap_or(serde_json::json!({})),
+        extensions: merge_extensions_with_character_book(data, &json),
         avatar: json
             .get("avatar")
             .and_then(|v| v.as_str())
@@ -142,10 +139,7 @@ fn parse_v2_json(
             .or_else(|| json.get("spec_version").and_then(|v| v.as_str()))
             .unwrap_or("chara_card_v2")
             .to_string(),
-        extensions: data
-            .get("extensions")
-            .cloned()
-            .unwrap_or(serde_json::json!({})),
+        extensions: merge_extensions_with_character_book(data, &json),
         avatar: json
             .get("avatar")
             .and_then(|v| v.as_str())
@@ -163,6 +157,26 @@ fn get_str(obj: &serde_json::Value, key: &str) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string()
+}
+
+fn merge_extensions_with_character_book(
+    data: &serde_json::Value,
+    root: &serde_json::Value,
+) -> serde_json::Value {
+    let mut extensions = data
+        .get("extensions")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let character_book = data
+        .get("character_book")
+        .or_else(|| root.get("character_book"))
+        .cloned();
+    if let Some(book) = character_book {
+        if let Some(obj) = extensions.as_object_mut() {
+            obj.entry("__character_book".to_string()).or_insert(book);
+        }
+    }
+    extensions
 }
 
 fn get_arr_str(obj: &serde_json::Value, key: &str) -> Vec<String> {

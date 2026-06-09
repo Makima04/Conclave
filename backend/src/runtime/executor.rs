@@ -1,8 +1,8 @@
 use super::context;
 use super::str_utils::truncate_str;
 use super::types::{
-    ContextBundle, ContextMessage, MemoryProposal, RoleContext, StateChangeProposal, TurnResult,
-    WorldBookContextEntry, WriterDraft,
+    AgentDebugSnapshot, ContextBundle, ContextMessage, MemoryProposal, RoleContext,
+    StateChangeProposal, TurnResult, WorldBookContextEntry, WriterDraft,
 };
 use crate::config::AppConfig;
 use crate::error::AppError;
@@ -30,6 +30,7 @@ pub type StreamCommitData = Arc<
     std::sync::Mutex<
         Option<(
             Vec<super::types::AgentTrace>,
+            Vec<AgentDebugSnapshot>,
             Option<crate::runtime::types::CompressionResult>,
             Option<turn_finalizer::CompressionJob>,
         )>,
@@ -522,13 +523,8 @@ pub async fn execute_turn(
         );
 
         // Post-commit extras (non-fatal)
-        turn_finalizer::persist_turn_extras(
-            pool,
-            session_id,
-            turn_number,
-            &commit.compression,
-        )
-        .await;
+        turn_finalizer::persist_turn_extras(pool, session_id, turn_number, &commit.compression)
+            .await;
         turn_finalizer::persist_turn_knowledge(
             pool,
             &provider,
@@ -734,7 +730,9 @@ pub async fn execute_turn(
         user_input,
         &narrative_text,
         &[trace],
+        &[],
         false,
+        &serde_json::json!({}),
     )
     .await?;
     tx.commit().await?;
@@ -1014,7 +1012,7 @@ pub async fn execute_turn_stream(
                 Ok(Ok(commit)) => {
                     // Store commit data for route layer to persist
                     *commit_data_clone.lock().unwrap() =
-                        Some((commit.traces, commit.compression, commit.compression_job));
+                        Some((commit.traces, commit.debug_snapshots, commit.compression, commit.compression_job));
                     let _ = broadcast_tx_clone.send(SseEvent::MessageDelta {
                         content: commit.narrative.clone(),
                     });

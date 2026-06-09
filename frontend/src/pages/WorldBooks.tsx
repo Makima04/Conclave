@@ -20,7 +20,6 @@ export default function WorldBooks() {
   const [editingName, setEditingName] = useState(false);
   const [nameValue, setNameValue] = useState('');
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
-  const [parsingMode, setParsingMode] = useState<'single_agent' | 'multi_agent' | null>(null);
   const [viewMode, setViewMode] = useState<'raw' | 'single_agent' | 'multi_agent'>('raw');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -31,6 +30,19 @@ export default function WorldBooks() {
       if (wbId) loadDetail(wbId);
     });
   }, []);
+
+  useEffect(() => {
+    const hasParsingBook = books.some(book => book.parse_status === 'parsing' || book.single_agent_parse_status === 'parsing');
+    const selectedIsParsing = detail?.parse_status === 'parsing' || detail?.single_agent_parse_status === 'parsing';
+    if (!hasParsingBook && !selectedIsParsing) return;
+
+    const timer = window.setInterval(() => {
+      loadBooks();
+      if (selectedId) loadDetail(selectedId, { preserveView: true });
+    }, 2500);
+
+    return () => window.clearInterval(timer);
+  }, [books, detail?.parse_status, detail?.single_agent_parse_status, selectedId]);
 
   async function loadBooks() {
     try {
@@ -43,12 +55,12 @@ export default function WorldBooks() {
     }
   }
 
-  async function loadDetail(id: string) {
+  async function loadDetail(id: string, options: { preserveView?: boolean } = {}) {
     try {
       const d = await api.getWorldBook(id);
       setDetail(d);
       setSelectedId(id);
-      setViewMode('raw');
+      if (!options.preserveView) setViewMode('raw');
     } catch (err) {
       console.error('Failed to load world book detail:', err);
     }
@@ -177,6 +189,8 @@ export default function WorldBooks() {
           setBooks(prev => [{
             id: result.id, name: result.name, description: result.description,
             original_format: result.original_format, entry_count: result.entries.length,
+            parse_status: result.parse_status,
+            single_agent_parse_status: result.single_agent_parse_status,
             has_character_card: result.has_character_card,
             character_card_name: result.character_card_name,
             character_card_avatar: result.character_card_avatar,
@@ -200,6 +214,8 @@ export default function WorldBooks() {
           setBooks(prev => [{
             id: result.id, name: result.name, description: result.description,
             original_format: result.original_format, entry_count: result.entries.length,
+            parse_status: result.parse_status,
+            single_agent_parse_status: result.single_agent_parse_status,
             has_character_card: result.has_character_card,
             character_card_name: result.character_card_name,
             character_card_avatar: result.character_card_avatar,
@@ -270,28 +286,44 @@ export default function WorldBooks() {
 
   async function handleParse() {
     if (!detail) return;
-    setParsingMode('multi_agent');
     try {
-      const result = await api.parseWorldBook(detail.id);
+      await api.parseWorldBook(detail.id);
       setViewMode('multi_agent');
-      setDetail({ ...detail, parse_status: 'done', parsed_entries: result.entries });
+      setDetail({ ...detail, parse_status: 'parsing' });
+      setBooks(prev => prev.map(book => book.id === detail.id ? { ...book, parse_status: 'parsing' } : book));
     } catch (err) {
       toast.error('解析失败: ' + (err instanceof Error ? err.message : '未知错误'));
       setDetail({ ...detail, parse_status: 'error' });
-    } finally { setParsingMode(null); }
+    }
   }
 
   async function handleParseSingleAgent() {
     if (!detail) return;
-    setParsingMode('single_agent');
     try {
-      const result = await api.parseWorldBookSingleAgent(detail.id);
+      await api.parseWorldBookSingleAgent(detail.id);
       setViewMode('single_agent');
-      setDetail({ ...detail, single_agent_parse_status: 'done', single_agent_parsed_entries: result.entries });
+      setDetail({ ...detail, single_agent_parse_status: 'parsing' });
+      setBooks(prev => prev.map(book => book.id === detail.id ? { ...book, single_agent_parse_status: 'parsing' } : book));
     } catch (err) {
       toast.error('解析失败: ' + (err instanceof Error ? err.message : '未知错误'));
       setDetail({ ...detail, single_agent_parse_status: 'error' });
-    } finally { setParsingMode(null); }
+    }
+  }
+
+  async function startBookParse(book: WorldBook, mode: 'single_agent' | 'multi_agent') {
+    try {
+      if (mode === 'single_agent') {
+        await api.parseWorldBookSingleAgent(book.id);
+        setBooks(prev => prev.map(item => item.id === book.id ? { ...item, single_agent_parse_status: 'parsing' } : item));
+        if (detail?.id === book.id) setDetail({ ...detail, single_agent_parse_status: 'parsing' });
+      } else {
+        await api.parseWorldBook(book.id);
+        setBooks(prev => prev.map(item => item.id === book.id ? { ...item, parse_status: 'parsing' } : item));
+        if (detail?.id === book.id) setDetail({ ...detail, parse_status: 'parsing' });
+      }
+    } catch (err) {
+      toast.error('解析启动失败: ' + (err instanceof Error ? err.message : '未知错误'));
+    }
   }
 
   if (loading) return <div className="wb-loading"><div className="wb-spinner" /></div>;
@@ -345,11 +377,11 @@ export default function WorldBooks() {
                 🎭 角色卡工作台
               </button>
             )}
-            <button className="wb-action-btn" onClick={handleParseSingleAgent} disabled={parsingMode !== null}>
-              {parsingMode === 'single_agent' ? '⏳ 解析中...' : detail.single_agent_parse_status === 'done' ? '🔄 重新解析单Agent' : '解析为单Agent'}
+            <button className="wb-action-btn" onClick={handleParseSingleAgent} disabled={detail.single_agent_parse_status === 'parsing'}>
+              {detail.single_agent_parse_status === 'parsing' ? '⏳ 单Agent解析中...' : detail.single_agent_parse_status === 'done' ? '🔄 重新解析单Agent' : '解析为单Agent'}
             </button>
-            <button className="wb-action-btn" onClick={handleParse} disabled={parsingMode !== null}>
-              {parsingMode === 'multi_agent' ? '⏳ 解析中...' : detail.parse_status === 'done' ? '🔄 重新解析多Agent' : '解析为多Agent'}
+            <button className="wb-action-btn" onClick={handleParse} disabled={detail.parse_status === 'parsing'}>
+              {detail.parse_status === 'parsing' ? '⏳ 多Agent解析中...' : detail.parse_status === 'done' ? '🔄 重新解析多Agent' : '解析为多Agent'}
             </button>
           </div>
         </div>
@@ -365,19 +397,7 @@ export default function WorldBooks() {
         {viewMode !== 'raw' ? (
           <div className="wb-entry-list">
             {(viewMode === 'single_agent' ? detail.single_agent_parsed_entries : detail.parsed_entries).map((entry, i) => (
-              <div key={i} className="wb-parsed-entry">
-                <div className="wb-parsed-entry-header">
-                  <span className={`wb-category-tag ${entry.category.startsWith('npc:') ? 'npc' : entry.category}`}>
-                    {entry.category}
-                  </span>
-                  <span className={`wb-visibility-tag ${entry.visibility === 'public' ? 'public' : entry.visibility === 'gm_only' ? 'gm' : 'hidden'}`}>
-                    {entry.visibility}
-                  </span>
-                </div>
-                <div className="wb-parsed-entry-comment">{entry.comment || '(无标签)'}</div>
-                <div className="wb-parsed-entry-content">{entry.content.slice(0, 200)}{entry.content.length > 200 ? '...' : ''}</div>
-                <div className="wb-parsed-entry-reason">💡 {entry.reason}</div>
-              </div>
+              <ParsedEntryRow key={i} entry={entry} />
             ))}
             {(viewMode === 'single_agent' ? detail.single_agent_parsed_entries : detail.parsed_entries).length === 0 && (
               <div className="wb-empty">暂无解析结果</div>
@@ -446,6 +466,22 @@ export default function WorldBooks() {
               <div className="wb-card-footer">
                 <span className="wb-card-date">{new Date(book.created_at).toLocaleDateString()}</span>
                 <div className="wb-card-actions" onClick={e => e.stopPropagation()}>
+                  <button
+                    className="wb-card-parse-btn"
+                    disabled={book.single_agent_parse_status === 'parsing'}
+                    title="解析为单Agent"
+                    onClick={() => startBookParse(book, 'single_agent')}
+                  >
+                    {book.single_agent_parse_status === 'parsing' ? '单解析中' : book.single_agent_parse_status === 'done' ? '重单' : '单'}
+                  </button>
+                  <button
+                    className="wb-card-parse-btn"
+                    disabled={book.parse_status === 'parsing'}
+                    title="解析为多Agent"
+                    onClick={() => startBookParse(book, 'multi_agent')}
+                  >
+                    {book.parse_status === 'parsing' ? '多解析中' : book.parse_status === 'done' ? '重多' : '多'}
+                  </button>
                   <button className="wb-icon-btn" title="导出" onClick={() => handleExport(book)}>📤</button>
                   <button className="wb-icon-btn wb-danger-icon" title="删除" onClick={() => handleDelete(book.id)}>🗑️</button>
                 </div>
@@ -462,6 +498,30 @@ export default function WorldBooks() {
           <p>导入 SillyTavern JSON 或 PNG 文件开始使用</p>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Parsed Entry Row Component ──
+function ParsedEntryRow({ entry }: { entry: ParsedWorldBookEntry }) {
+  const categoryClass = entry.category.startsWith('npc:') ? 'npc' : entry.category;
+  const visibilityClass = entry.visibility === 'public' ? 'public' : entry.visibility === 'gm_only' ? 'gm' : 'hidden';
+  const keysPreview = entry.keys.length > 0 ? entry.keys.join(', ') : entry.constant ? '常驻条目' : '无触发词';
+
+  return (
+    <div className="wb-entry-row wb-parsed-entry-row">
+      <span className={`wb-entry-dot ${entry.enabled ? 'on' : 'off'}`} />
+      <div className="wb-parsed-entry-body">
+        <div className="wb-parsed-entry-main">
+          <span className="wb-entry-label">{entry.comment || '(无标签)'}</span>
+          <span className={`wb-category-tag ${categoryClass}`}>{entry.category}</span>
+          <span className={`wb-visibility-tag ${visibilityClass}`}>{entry.visibility}</span>
+          <span className="wb-entry-keys">{keysPreview}</span>
+          <span className="wb-entry-preview">{entry.content.slice(0, 140)}{entry.content.length > 140 ? '...' : ''}</span>
+          <span className="wb-entry-priority">{entry.priority}</span>
+        </div>
+        {entry.reason && <div className="wb-parsed-entry-reason">理由：{entry.reason}</div>}
+      </div>
     </div>
   );
 }

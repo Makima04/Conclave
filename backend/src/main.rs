@@ -25,7 +25,7 @@ use crate::config::AppConfig;
 use crate::error::AppError;
 use crate::routes::{
     agents, card_import, charactercards, health, messages, presets, proposals, providers, sessions,
-    worldbooks,
+    settings, worldbooks,
 };
 
 #[tokio::main]
@@ -63,12 +63,17 @@ async fn create_app(config: AppConfig) -> Router {
         .await
         .expect("Failed to run migrations");
 
+    let llm_concurrency_limit = settings::load_llm_concurrency_limit(&pool)
+        .await
+        .expect("Failed to load runtime settings");
+
     let app_state = Arc::new(messages::AppState {
         pool: pool.clone(),
         config: config.clone(),
         active_turns: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         session_locks: Arc::new(dashmap::DashMap::new()),
         import_drafts: Arc::new(dashmap::DashMap::new()),
+        llm_limiter: runtime::llm_limiter::LlmConcurrencyLimiter::new(llm_concurrency_limit),
     });
 
     // Spawn background job worker (compression, recompression)
@@ -91,7 +96,15 @@ async fn create_app(config: AppConfig) -> Router {
         .route("/api/sessions/{id}", delete(sessions::delete_session))
         .route("/api/sessions/{id}/messages", post(messages::send_message))
         .route("/api/sessions/{id}/messages", get(messages::list_messages))
+        .route(
+            "/api/sessions/{id}/quiet-generate",
+            post(messages::quiet_generate),
+        )
         .route("/api/sessions/{id}/state", get(messages::get_state))
+        .route(
+            "/api/sessions/{id}/variables",
+            put(messages::update_variables),
+        )
         .route(
             "/api/sessions/{id}/memory/events",
             get(messages::get_memory_events),
@@ -101,6 +114,14 @@ async fn create_app(config: AppConfig) -> Router {
             get(messages::get_foreshadowing),
         )
         .route("/api/sessions/{id}/trace/{turn}", get(messages::get_trace))
+        .route(
+            "/api/sessions/{id}/debug",
+            get(messages::get_debug_overview),
+        )
+        .route(
+            "/api/sessions/{id}/debug/{turn}",
+            get(messages::get_debug_turn),
+        )
         .route(
             "/api/sessions/{id}/messages/{msg_id}/regenerate",
             post(messages::regenerate),
@@ -112,6 +133,10 @@ async fn create_app(config: AppConfig) -> Router {
         .route(
             "/api/sessions/{id}/messages/{msg_id}",
             put(messages::edit_message),
+        )
+        .route(
+            "/api/sessions/{id}/messages/{msg_id}/metadata",
+            put(messages::update_message_metadata),
         )
         .route(
             "/api/sessions/{id}/messages/{msg_id}",
@@ -158,6 +183,11 @@ async fn create_app(config: AppConfig) -> Router {
         .route("/api/providers", get(providers::list_providers))
         .route("/api/providers", post(providers::create_provider))
         .route("/api/providers/fetch-models", post(providers::fetch_models))
+        .route("/api/settings/runtime", get(settings::get_runtime_settings))
+        .route(
+            "/api/settings/runtime",
+            axum::routing::put(settings::update_runtime_settings),
+        )
         .route("/api/providers/{id}", get(providers::get_provider))
         .route(
             "/api/providers/{id}",

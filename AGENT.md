@@ -65,6 +65,7 @@ multi-agent-rp-platform/
     content-packages.md
     card-import-normalization.md
     card-rendering-runtime.md
+    card-runtime-refactor-architecture.md
     artifact-renderer.md
     testing.md
     docs-sync.md
@@ -129,10 +130,11 @@ multi-agent-rp-platform/
 10. `docs/content-packages.md`
 11. `docs/card-import-normalization.md`
 12. `docs/card-rendering-runtime.md`
-13. `docs/artifact-renderer.md`
-14. `docs/testing.md`
-15. `docs/implementation-priority.md`
-16. `docs/docs-sync.md`
+13. `docs/card-runtime-refactor-architecture.md`
+14. `docs/artifact-renderer.md`
+15. `docs/testing.md`
+16. `docs/implementation-priority.md`
+17. `docs/docs-sync.md`
 
 如果要改某个功能，必须先读对应文档：
 
@@ -148,6 +150,7 @@ multi-agent-rp-platform/
 - 改内容包格式、manifest 或导入导出：读 `docs/content-packages.md`
 - 改卡片导入、ST 迁移、导入报告：读 `docs/card-import-normalization.md`
 - 改角色卡渲染、sandbox、共享存档、开场白、iframe 性能：读 `docs/card-rendering-runtime.md`
+- 改角色卡兼容重构、前端 regex 单点执行、统一运行时模型或 canonical state/card projection 变量链路：读 `docs/card-runtime-refactor-architecture.md`
 - 改 Artifact 渲染、沙箱或资源预算：读 `docs/artifact-renderer.md`
 - 改测试场景、性能基准或 Mock Provider：读 `docs/testing.md`
 - 改文档维护规则或索引维护：读 `docs/docs-sync.md`
@@ -166,6 +169,7 @@ multi-agent-rp-platform/
 - 修改内容包格式、manifest 或导入导出：更新 `docs/content-packages.md`
 - 修改卡片导入或 ST 迁移：更新 `docs/card-import-normalization.md`
 - 修改角色卡渲染、sandbox、共享存档、开场白或 iframe 性能：更新 `docs/card-rendering-runtime.md`
+- 修改角色卡兼容架构、前端 regex 真相源、统一运行时模型或动态变量投影链路：更新 `docs/card-runtime-refactor-architecture.md`
 - 修改 Artifact 渲染、沙箱或资源预算：更新 `docs/artifact-renderer.md`
 - 修改测试场景、性能基准或 Mock Provider：更新 `docs/testing.md`
 - 修改实现顺序、阶段目标、MVP 范围或项目进度：更新 `docs/implementation-priority.md`
@@ -426,6 +430,7 @@ Provider Adapter 负责统一接入模型供应商。
 - 内容包规范 → `docs/content-packages.md`
 - 卡片导入标准化规范 → `docs/card-import-normalization.md`
 - 角色卡渲染运行时 → `docs/card-rendering-runtime.md`
+- 角色卡兼容运行时重构架构 → `docs/card-runtime-refactor-architecture.md`
 - Artifact Renderer 规范 → `docs/artifact-renderer.md`
 - 数据库与 API 规范 → `docs/database-api.md`
 - 测试与评测规范 → `docs/testing.md`

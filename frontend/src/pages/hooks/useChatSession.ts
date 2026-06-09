@@ -8,6 +8,7 @@ import type { CharacterCard, Message, Preset, RenderMode, SessionConfig, UserPer
 import { DEFAULT_SESSION_CONFIG } from '../../api/types';
 import { loadGlobalSessionDefaults, loadUserPersonaPresets, normalizeRenderMode, normalizeSessionConfig, saveGlobalSessionDefaults, type UserPersonaPreset } from '../../settings/sessionDefaults';
 import { useProviders } from '../../contexts/AppContext';
+import { getParsedGreetings } from '../st-html-app-runtime';
 
 export function useChatSession() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -57,10 +58,10 @@ export function useChatSession() {
       setSessionTitle(session.title || '未命名会话');
       setSessionMode(session.mode || 'single_agent');
       setActiveWorldBookId(session.world_pack_id || '');
+      setCharacterCard(null);
+      setSelectedGreetingIndex(-1);
       if (session.world_pack_id) {
         loadCharacterCard(session.world_pack_id);
-      } else {
-        setCharacterCard(null);
       }
       if (session.config) {
         const nextConfig = normalizeSessionConfig(session.config);
@@ -261,10 +262,8 @@ export function useChatSession() {
 
   function selectedGreetingText(): string {
     if (!characterCard) return '';
-    if (selectedGreetingIndex >= 0) {
-      return characterCard.alternate_greetings[selectedGreetingIndex] || '';
-    }
-    return characterCard.first_mes || '';
+    const greetings = getParsedGreetings(characterCard);
+    return greetings[selectedGreetingIndex + 1] || greetings[0] || '';
   }
 
   return {

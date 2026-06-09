@@ -77,6 +77,52 @@ export interface Message {
   content: string;
   variants: string;
   variant_index: number;
+  metadata?: string;
+  created_at: string;
+}
+
+export interface DebugMessage {
+  id: string;
+  turn_number: number;
+  role: string;
+  content: string;
+  created_at: string;
+}
+
+export interface DebugTurnSummary {
+  turn_number: number;
+  call_count: number;
+  agent_count: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  total_duration_ms: number;
+}
+
+export interface AgentDebugSnapshot {
+  id: string;
+  session_id: string;
+  turn_number: number;
+  phase: string;
+  level_index: number | null;
+  agent_id: string | null;
+  agent_type: string;
+  agent_label: string;
+  model: string;
+  task: string;
+  system_prompt: string;
+  user_prompt: string;
+  injected_from: string[];
+  injected_outputs: Array<{ agent_id: string; agent_type: string; text: string }>;
+  preset_modules: Array<{ name: string; content: string; role: string; target_agents: string[]; injection_order: number }>;
+  worldbook_entries: Array<{ content: string; keys: string[]; constant: boolean; priority: number; visibility: string; category: string }>;
+  recent_messages: Array<{ role: string; content: string; turn_number: number }>;
+  recalled_events: any[];
+  state_slice: any;
+  raw_output: string;
+  tool_calls: any[];
+  duration_ms: number | null;
+  prompt_tokens: number;
+  completion_tokens: number;
   created_at: string;
 }
 
@@ -92,11 +138,17 @@ export interface ProviderConfig {
   updated_at: string;
 }
 
+export interface RuntimeSettings {
+  llm_concurrency_limit: number;
+}
+
 export interface WorldBook {
   id: string;
   name: string;
   description: string;
   original_format: string;
+  parse_status: string;
+  single_agent_parse_status: string;
   entry_count: number;
   has_character_card: boolean;
   character_card_name?: string;
@@ -326,6 +378,83 @@ export interface VariableDeclaration {
   source: string;
 }
 
+export type StateRootRole =
+  | 'world'
+  | 'character_collection'
+  | 'character'
+  | 'relationship'
+  | 'inventory'
+  | 'memory'
+  | 'summary'
+  | 'ui_runtime'
+  | 'custom';
+
+export type StateFieldRole =
+  | 'time'
+  | 'location'
+  | 'character_name'
+  | 'relationship_score'
+  | 'relationship_stage'
+  | 'inventory_item'
+  | 'memory_entry'
+  | 'summary_entry'
+  | 'ui_flag'
+  | 'custom';
+
+export type MappingDirection = 'read' | 'write' | 'bidirectional';
+
+export type MappingTransform = 'identity' | 'first_array_item' | 'collection_by_id' | 'json_blob';
+
+export type VariableUpdatePolicy = 'agent_tool' | 'derived_from_messages' | 'ui_only' | 'manual_review';
+
+export interface StateRootDeclaration {
+  path: string;
+  role: StateRootRole;
+  source: string;
+  confidence: number;
+}
+
+export interface StateFieldDeclaration {
+  path: string;
+  canonical_path?: string | null;
+  type: VariableTypeEnum;
+  default_value?: unknown;
+  role: StateFieldRole;
+  writable: boolean;
+  source: string;
+  confidence: number;
+}
+
+export interface CardStateSchema {
+  roots: StateRootDeclaration[];
+  fields: StateFieldDeclaration[];
+}
+
+export interface StateMappingRule {
+  card_path: string;
+  platform_path: string;
+  direction: MappingDirection;
+  transform: MappingTransform;
+  confidence: number;
+}
+
+export interface VariableRule {
+  path_pattern: string;
+  role: StateFieldRole;
+  writable: boolean;
+  update_policy: VariableUpdatePolicy;
+  confidence: number;
+}
+
+export interface CardStateAdapter {
+  adapter_version: string;
+  source_format: string;
+  read_rules: StateMappingRule[];
+  write_rules: StateMappingRule[];
+  variable_rules: VariableRule[];
+  warnings: string[];
+}
+
 export interface ActionDeclaration {
   id: string;
   label: string;
@@ -338,6 +467,14 @@ export interface CompatibilityReport {
   required_apis: string[];
   unsupported_apis: string[];
   warnings: string[];
+  api_mappings?: ApiCompatibilityMapping[];
+}
+
+export interface ApiCompatibilityMapping {
+  api: string;
+  status: string;
+  replacement: string;
+  notes: string;
 }
 
 export interface ConclaveCardPackage {
@@ -345,6 +482,8 @@ export interface ConclaveCardPackage {
   greetings: Greeting[];
   ui: PackageUi;
   variables: VariableDeclaration[];
+  state_schema: CardStateSchema;
+  state_adapter: CardStateAdapter;
   actions: ActionDeclaration[];
   compatibility: CompatibilityReport;
 }

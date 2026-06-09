@@ -45,7 +45,7 @@ console.log('\n--- Test 1: Plain string findRegex ---');
 }
 
 // ──────────────────────────────────────────────
-console.log('\n--- Test 2: /pattern/flags regex with group references ---');
+console.log('\n--- Test 2: /pattern/flags regex expands ST capture groups ---');
 {
   const card = {
     extensions: {
@@ -56,7 +56,7 @@ console.log('\n--- Test 2: /pattern/flags regex with group references ---');
   };
   const result = executeStRegexScripts(card, 'email: foo@bar');
   assertEq(result.matched, true, 'matched is true');
-  assert(result.html.includes('bar@foo'), 'output contains swapped "bar@foo"');
+  assert(result.html.includes('bar@foo'), 'output contains expanded replacement text');
   assertEq(result.diagnostics.length, 0, 'no diagnostics');
 }
 
@@ -151,11 +151,11 @@ console.log('\n--- Test 8: parseFindRegex helper ---');
 {
   const re1 = parseFindRegex('/foo\\/bar/i');
   assert(re1 !== null, '/foo\\/bar/i parses successfully');
-  assertEq(re1?.flags, 'gi', 'flags are "gi"');
+  assertEq(re1?.flags, 'i', 'flags are not forced global');
 
   const re2 = parseFindRegex('literal [test]');
   assert(re2 !== null, 'literal string parses');
-  assertEq(re2?.flags, 'g', 'literal gets global flag');
+  assertEq(re2?.flags, '', 'raw regex source does not get forced global flag');
   assert(!re2?.test('a literal [test] here'), 'raw regex semantics do not treat [test] as literal text');
 
   const re3 = parseFindRegex('/[bad/');
@@ -179,6 +179,23 @@ console.log('\n--- Test 9: SillyTavern escaped regex source ---');
   assertEq(result.matched, true, 'escaped regex source matches bracketed text');
   assert(!result.html.includes('[开局]'), 'trigger text is replaced');
   assert(result.html.includes('<div id="app"></div>'), 'replacement HTML is present');
+}
+
+// ──────────────────────────────────────────────
+console.log('\n--- Test 10: Replacement preserves JavaScript dollar-backtick sequences ---');
+{
+  const replacement = String.raw`<script>const re = new RegExp(\`<${'${tag}'}\\b[^>]*>([\\s\\S]*)$\`, 'i');</script>`;
+  const card = {
+    extensions: {
+      regex_scripts: [
+        { findRegex: '\\[开局\\]', replaceString: replacement, disabled: false },
+      ] as RegexScript[],
+    },
+  };
+  const result = executeStRegexScripts(card, '[开局]');
+  assertEq(result.matched, true, 'matched is true');
+  assert(result.html.includes('*)$`') || result.html.includes('*)$\\`'), 'dollar-backtick sequence is preserved');
+  assert(result.html.includes('new RegExp'), 'script replacement is present');
 }
 
 // ──────────────────────────────────────────────

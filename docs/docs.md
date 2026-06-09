@@ -63,10 +63,11 @@
 | 8 | [内容包规范](content-packages.md) | 创作者入口依赖内容包，SillyTavern 迁移也依赖它。 |
 | 9 | [卡片导入标准化规范](card-import-normalization.md) | 理解外部卡如何进入平台卡包。 |
 | 10 | [角色卡渲染运行时](card-rendering-runtime.md) | 理解当前复杂 HTML 卡、sandbox、共享存档和性能边界。 |
-| 11 | [Artifact Renderer 规范](artifact-renderer.md) | 防止 LLM 生成代码污染 DOM 或拖垮长会话性能。 |
-| 12 | [测试与评测规范](testing.md) | 平台核心风险必须能回归验证。 |
-| 13 | [项目实现优先级](implementation-priority.md) | 进入实现前确认先做哪些契约、MVP 和核心 Runtime 能力。 |
-| 14 | [文档维护规则](docs-sync.md) | 理解文档维护规则，防止实现与文档长期漂移。 |
+| 11 | [角色卡兼容运行时重构架构](card-runtime-refactor-architecture.md) | 理解角色卡兼容从导入到动态变量回流的目标收敛方案。 |
+| 12 | [Artifact Renderer 规范](artifact-renderer.md) | 防止 LLM 生成代码污染 DOM 或拖垮长会话性能。 |
+| 13 | [测试与评测规范](testing.md) | 平台核心风险必须能回归验证。 |
+| 14 | [项目实现优先级](implementation-priority.md) | 进入实现前确认先做哪些契约、MVP 和核心 Runtime 能力。 |
+| 15 | [文档维护规则](docs-sync.md) | 理解文档维护规则，防止实现与文档长期漂移。 |
 
 ### 工程 — [数据库与 API 规范](database-api.md)
 
@@ -83,6 +84,10 @@
 ### 工程 — [角色卡渲染运行时](card-rendering-runtime.md)
 
 定义当前复杂角色卡 HTML app 如何在 iframe 中渲染、如何桥接 TavernHelper/MVU、如何提供共享存档、如何处理开场白和性能优化。
+
+### 工程 — [角色卡兼容运行时重构架构](card-runtime-refactor-architecture.md)
+
+定义角色卡从导入、前端 regex 显示语义执行，到 canonical state / card projection / 动态变量回流渲染的目标重构架构。
 
 ### 工程 — [Artifact Renderer 规范](artifact-renderer.md)
 

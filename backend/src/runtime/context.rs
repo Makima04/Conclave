@@ -4,6 +4,7 @@ use super::types::{
 };
 use super::user_settings::{self, UserPersonaSettings};
 use crate::error::AppError;
+use crate::runtime::card_state_adapter;
 use sqlx::SqlitePool;
 
 async fn build_context_inner(
@@ -68,9 +69,23 @@ async fn build_context_inner(
     .fetch_optional(pool)
     .await?;
 
-    let structured_state = state_snapshot
+    let mut structured_state = state_snapshot
         .map(|s: String| serde_json::from_str(&s).unwrap_or(serde_json::json!({})))
         .unwrap_or_else(|| serde_json::json!({}));
+
+    let fallback_variables = structured_state.get("variables").cloned();
+    if let Some(contract) =
+        card_state_adapter::load_session_contract(pool, session_id, fallback_variables.as_ref())
+            .await?
+    {
+        structured_state =
+            card_state_adapter::build_normalized_state(&structured_state, &contract, None);
+        let writable_state =
+            card_state_adapter::tool_state_for_context(&structured_state, Some(&contract));
+        if let Some(obj) = structured_state.as_object_mut() {
+            obj.insert("_state_agent_writable".to_string(), writable_state);
+        }
+    }
 
     let events_rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT content, visibility FROM memory_events WHERE session_id = ? ORDER BY turn_number DESC LIMIT 20"
@@ -240,8 +255,8 @@ async fn load_knowledge_events(
         .collect())
 }
 
-/// Load world book entries for context injection. Prefers parsed entries (multi-agent),
-/// falls back to raw entries (single-agent) if not parsed.
+/// Load world book entries for context injection. Parsed world books use the parsed
+/// contract exclusively; raw entries are only used before a parse result exists.
 async fn load_world_book_entries(
     pool: &SqlitePool,
     wb_id: &str,

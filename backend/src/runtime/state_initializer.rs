@@ -1,11 +1,13 @@
 use crate::error::AppError;
+use crate::runtime::card_state_adapter;
 use sqlx::SqlitePool;
 
-/// Initialize a session's runtime variables from a linked character card/world book.
+/// Initialize a session's runtime state from a linked character card/world book.
 ///
 /// SillyTavern + MVU cards commonly store the initial state in a disabled world
-/// book entry whose comment is "[InitVar]". The chat UI expects these values
-/// under `state_json.variables`.
+/// book entry whose comment is "[InitVar]". The platform treats that as raw card
+/// state, converts it into canonical `platform_state`, then projects it back into
+/// `variables` for card HTML/JS runtimes.
 pub async fn initialize_session_state_from_world_book(
     pool: &SqlitePool,
     session_id: &str,
@@ -39,22 +41,35 @@ pub async fn initialize_session_state_from_world_book(
         return Ok(false);
     };
 
-    let current_state = latest_state(pool, session_id).await?;
-    if has_initialized_variables(&current_state) {
+    let mut current_state = latest_state(pool, session_id).await?;
+    if has_initialized_state(&current_state) {
         return Ok(false);
     }
 
-    let mut next_state = current_state;
-    ensure_object(&mut next_state);
-    if let Some(obj) = next_state.as_object_mut() {
-        obj.insert("variables".to_string(), initial_variables);
-    }
+    let Some(contract) =
+        card_state_adapter::load_session_contract(pool, session_id, Some(&initial_variables))
+            .await?
+    else {
+        ensure_object(&mut current_state);
+        if let Some(obj) = current_state.as_object_mut() {
+            obj.insert("variables".to_string(), initial_variables);
+        }
+        commit_initialized_state(pool, session_id, &current_state).await?;
+        return Ok(true);
+    };
+
+    let next_state = card_state_adapter::build_normalized_state(
+        &current_state,
+        &contract,
+        Some(initial_variables),
+    );
 
     commit_initialized_state(pool, session_id, &next_state).await?;
     tracing::info!(
         session = session_id,
         world_pack_id = %world_pack_id,
-        "Initialized session state from world book InitVar"
+        source = %contract.source,
+        "Initialized session state through card state adapter"
     );
 
     Ok(true)
@@ -74,12 +89,17 @@ pub fn parse_init_variables(content: &str) -> Option<serde_json::Value> {
     }
 }
 
-fn has_initialized_variables(state: &serde_json::Value) -> bool {
+fn has_initialized_state(state: &serde_json::Value) -> bool {
     state
-        .get("variables")
+        .get("platform_state")
         .and_then(|v| v.as_object())
         .map(|obj| !obj.is_empty())
         .unwrap_or(false)
+        || state
+            .get("variables")
+            .and_then(|v| v.as_object())
+            .map(|obj| !obj.is_empty())
+            .unwrap_or(false)
 }
 
 fn ensure_object(value: &mut serde_json::Value) {

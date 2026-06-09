@@ -7,6 +7,7 @@ import type { CharacterCard, Message, SessionConfig } from '../../api/types';
 import type { SandboxCardAction } from '../card-schema-types';
 import type { RenderMode } from '../../api/types';
 import { hasStatusRenderer } from '../card-content';
+import { getParsedGreetings } from '../st-html-app-runtime';
 import type { useStreamRecovery } from './useStreamRecovery';
 
 type RecoveryApi = ReturnType<typeof useStreamRecovery>;
@@ -14,6 +15,7 @@ type RecoveryApi = ReturnType<typeof useStreamRecovery>;
 export type SandboxSubmissionState = {
   status: 'pending' | 'streaming' | 'finalizing' | 'error';
   sourceMessageId: string | null;
+  generationId: string | null;
   userMessage: string;
   assistantMessage: string;
   error: string | null;
@@ -108,10 +110,8 @@ export function useMessageStream({
 
   function selectedGreetingText(): string {
     if (!characterCard) return '';
-    if (selectedGreetingIndex >= 0) {
-      return characterCard.alternate_greetings[selectedGreetingIndex] || '';
-    }
-    return characterCard.first_mes || '';
+    const greetings = getParsedGreetings(characterCard);
+    return greetings[selectedGreetingIndex + 1] || greetings[0] || '';
   }
 
   function greetingLabel(text: string, fallback: string): string {
@@ -157,29 +157,105 @@ export function useMessageStream({
     return `${text.slice(0, max)}...`;
   }
 
+  function isHtmlAppCard(): boolean {
+    return characterCard?.conclave_package?.ui?.type === 'html_app'
+      && Boolean(String(characterCard.conclave_package?.ui?.html || '').trim());
+  }
+
+  function hasHtmlAppTrigger(content: string): boolean {
+    return /(?:^|\n)\s*(?:\[attachment\]|\[开局\]|【GameStart】|【游戏开始】)\s*(?:\n|$)/i.test(content);
+  }
+
+  function prepareOpeningContent(greeting: string): string {
+    let content = greeting.trim();
+    if (isHtmlAppCard() && content && !hasHtmlAppTrigger(content)) {
+      content = `[attachment]\n${content}`;
+    }
+    const cardHasStatus = hasStatusRenderer(characterCard);
+    if (cardHasStatus && !content.includes('<StatusPlaceHolderImpl/>')) {
+      content = `${content.trim()}\n\n<StatusPlaceHolderImpl/>`;
+    }
+    return content;
+  }
+
+  async function ensureOpeningMessageBeforeFirstTurn() {
+    if (!sessionId || !characterCard) return;
+    const hasOpening = messages.some(msg => msg.turn_number === 0 && msg.role === 'assistant');
+    const hasStarted = messages.some(msg => msg.turn_number > 0);
+    if (hasOpening || hasStarted) return;
+    const opening = prepareOpeningContent(selectedGreetingText());
+    if (!opening) return;
+    try {
+      const saved = await api.applyOpeningMessage(sessionId, opening);
+      setMessages(prev => {
+        if (prev.some(msg => msg.turn_number === 0 && msg.role === 'assistant')) return prev;
+        return [saved, ...prev].sort((a, b) => {
+          if (a.turn_number !== b.turn_number) return a.turn_number - b.turn_number;
+          return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+        });
+      });
+    } catch (err) {
+      console.warn('Failed to auto-apply opening before first turn:', err);
+    }
+  }
+
   // --- send / stream ---
 
-  async function handleSend(overrideContent?: string, options?: { sandboxSourceMessageId?: string | null }) {
+  function makeGenerationId(prefix = 'main-chat'): string {
+    const random = Math.random().toString(36).slice(2);
+    return `${prefix}-${Date.now().toString(36)}-${random}`;
+  }
+
+  function refreshPersistedMessages(delays = [0, 800, 2500]) {
+    delays.forEach(delay => {
+      window.setTimeout(() => {
+        void loadMessages();
+      }, delay);
+    });
+  }
+
+  async function handleSend(overrideContent?: string, options?: { sandboxSourceMessageId?: string | null; generationId?: string | null }) {
     const content = overrideContent ?? input.trim();
-    if (!content || streaming || recovering || memoryPending || !sessionId) return;
     const sandboxSourceMessageId = options?.sandboxSourceMessageId || null;
+    const generationId = options?.generationId || (sandboxSourceMessageId ? makeGenerationId('card-gen') : makeGenerationId('main-chat'));
+    const isHtmlAppInternalTurn = Boolean(sandboxSourceMessageId);
+    const turnMetadata = isHtmlAppInternalTurn
+      ? {
+          html_app_internal: true,
+          source: 'html_app',
+          sourceMessageId: sandboxSourceMessageId,
+          generationId,
+        }
+      : undefined;
+    if (!content || streaming || recovering || memoryPending || !sessionId) {
+      if (sandboxSourceMessageId || generationId) {
+        setSandboxSubmission({
+          status: 'error',
+          sourceMessageId: sandboxSourceMessageId,
+          generationId,
+          userMessage: content,
+          assistantMessage: '',
+          error: streaming || recovering || memoryPending ? '当前会话仍在处理上一轮，请稍后重试。' : '发送失败：会话不可用。',
+          updatedAt: Date.now(),
+        });
+      }
+      return;
+    }
+    await ensureOpeningMessageBeforeFirstTurn();
     sandboxDraftRef.current = '';
     setFailedContent(null);
     setStreamError(null);
     streamHadErrorRef.current = false;
     setMemoryBusy(false);
-    if (sandboxSourceMessageId) {
-      setSandboxSubmission({
-        status: 'pending',
-        sourceMessageId: sandboxSourceMessageId,
-        userMessage: content,
-        assistantMessage: '',
-        error: null,
-        updatedAt: Date.now(),
-      });
-    } else {
-      setSandboxSubmission(null);
-    }
+    setSandboxSubmission({
+      status: 'pending',
+      sourceMessageId: sandboxSourceMessageId,
+      generationId,
+      userMessage: content,
+      assistantMessage: '',
+      error: null,
+      updatedAt: Date.now(),
+    });
 
     if (configDirty) {
       await saveConfig();
@@ -188,16 +264,15 @@ export function useMessageStream({
     const userMsg: Message = {
       id: `temp-${Date.now()}`,
       session_id: sessionId,
-      turn_number: messages.length + 1,
+      turn_number: Math.max(0, ...messages.map(message => message.turn_number)) + 1,
       role: 'user',
       content,
       variants: '[]',
       variant_index: -1,
+      metadata: turnMetadata ? JSON.stringify(turnMetadata) : '{}',
       created_at: new Date().toISOString(),
     };
-    if (!sandboxSourceMessageId) {
-      setMessages(prev => [...prev, userMsg]);
-    }
+    setMessages(prev => [...prev, userMsg]);
     setInput('');
     setStreaming(true);
     streamingRef.current = true;
@@ -226,11 +301,9 @@ export function useMessageStream({
               setStreamText(prev => {
                 const next = prev + message.data.content;
                 streamTextRef.current = next;
-                if (sandboxSourceMessageId) {
-                  setSandboxSubmission(current => current?.sourceMessageId === sandboxSourceMessageId
+                setSandboxSubmission(current => current?.generationId === generationId
                     ? { ...current, status: 'streaming', assistantMessage: next, error: null, updatedAt: Date.now() }
                     : current);
-                }
                 return next;
               });
             }
@@ -238,11 +311,9 @@ export function useMessageStream({
           case 'stream_error':
             streamHadErrorRef.current = true;
             setStreamError(message.data.error || '生成出现错误，正在重试...');
-            if (sandboxSourceMessageId) {
-              setSandboxSubmission(current => current?.sourceMessageId === sandboxSourceMessageId
+            setSandboxSubmission(current => current?.generationId === generationId
                 ? { ...current, status: 'error', error: message.data.error || '生成出现错误，正在重试...', updatedAt: Date.now() }
                 : current);
-            }
             break;
           case 'state_update':
             break;
@@ -250,7 +321,8 @@ export function useMessageStream({
             setMemoryBusy(true);
             break;
           case 'memory_error':
-            setStreamError(message.data.error || '记忆整理失败，已允许继续');
+            console.warn('Post-turn state update failed:', message.data.error || '状态整理失败，已允许继续');
+            setMemoryBusy(false);
             break;
           case 'turn_end': {
             if (streamHadErrorRef.current) return;
@@ -265,20 +337,29 @@ export function useMessageStream({
               content: messageContent,
               variants: '[]',
               variant_index: -1,
+              metadata: turnMetadata ? JSON.stringify(turnMetadata) : '{}',
               created_at: new Date().toISOString(),
             };
-            if (!sandboxSourceMessageId) {
-              setMessages(prev => [...prev, assistantMsg]);
-            }
+            setMessages(prev => [...prev, assistantMsg]);
             if (sandboxSourceMessageId) {
-              setSandboxSubmission(current => current?.sourceMessageId === sandboxSourceMessageId
+              setSandboxSubmission(current => current?.generationId === generationId
                 ? { ...current, status: 'finalizing', assistantMessage: messageContent, error: null, updatedAt: Date.now() }
                 : current);
+            } else {
+              setSandboxSubmission({
+                status: 'finalizing',
+                sourceMessageId: 'main-chat',
+                generationId,
+                userMessage: content,
+                assistantMessage: messageContent,
+                error: null,
+                updatedAt: Date.now(),
+              });
             }
             setStreamText('');
             streamTextRef.current = '';
             setMemoryBusy(true);
-            void loadMessages();
+            refreshPersistedMessages([0, 500, 1500]);
             break;
           }
           case 'turn_ready':
@@ -288,8 +369,17 @@ export function useMessageStream({
             streamingRef.current = false;
             clearPending();
             void loadMessages().then(() => {
-              setSandboxSubmission(null);
+              setSandboxSubmission(current => {
+                if (current?.generationId === generationId && current.status === 'error') {
+                  window.setTimeout(() => {
+                    setSandboxSubmission(latest => latest?.generationId === generationId ? null : latest);
+                  }, 1200);
+                  return current;
+                }
+                return null;
+              });
             });
+            refreshPersistedMessages([600, 1800]);
             loadSessionState();
             break;
         }
@@ -303,11 +393,9 @@ export function useMessageStream({
         setAgentStatuses([]);
         clearPending();
         setFailedContent(content);
-        if (sandboxSourceMessageId) {
-          setSandboxSubmission(current => current?.sourceMessageId === sandboxSourceMessageId
+        setSandboxSubmission(current => current?.generationId === generationId
             ? { ...current, status: 'error', error: error.message || '发送失败', updatedAt: Date.now() }
             : current);
-        }
       },
       () => {
         // Safety net: always clear streaming state
@@ -330,15 +418,21 @@ export function useMessageStream({
         }
 
         if (streamTextRef.current) {
-          void loadMessages();
+          refreshPersistedMessages([0, 800, 2500]);
           setStreamText('');
           streamTextRef.current = '';
         }
+        if (sandboxSourceMessageId) {
+          refreshPersistedMessages([0, 800, 2500]);
+        }
         if (!streamHadErrorRef.current && sandboxSourceMessageId) {
-          setSandboxSubmission(null);
+          window.setTimeout(() => {
+            setSandboxSubmission(current => current?.generationId === generationId ? null : current);
+          }, 1200);
         }
       },
       config.stream,
+      turnMetadata,
     );
   }
 
@@ -354,10 +448,7 @@ export function useMessageStream({
   }
 
   async function applyOpeningContent(greeting: string, errorMessage: string, canApplyOpening: boolean) {
-    const cardHasStatus = hasStatusRenderer(characterCard);
-    const content = cardHasStatus && !greeting.includes('<StatusPlaceHolderImpl/>')
-      ? `${greeting.trim()}\n\n<StatusPlaceHolderImpl/>`
-      : greeting;
+    const content = prepareOpeningContent(greeting);
     if (!content || inputLocked || !sessionId || !canApplyOpening) return;
     try {
       const opening = await api.applyOpeningMessage(sessionId, content);
@@ -382,9 +473,8 @@ export function useMessageStream({
       return;
     }
     const index = swipeId - 1;
-    const greeting = index >= 0
-      ? characterCard.alternate_greetings[index]
-      : characterCard.first_mes;
+    const greetings = getParsedGreetings(characterCard);
+    const greeting = greetings[index + 1] || greetings[0];
     if (!greeting) {
       setStreamError(`找不到开场白 swipe ${swipeId}`);
       return;
@@ -395,17 +485,20 @@ export function useMessageStream({
 
   // --- sandbox action routing ---
 
-  function sendFromSandbox(content: string, sourceMessageId?: string | number | null) {
+  function sendFromSandbox(content: string, sourceMessageId?: string | number | null, generationId?: string | number | null) {
     const text = content.trim();
     if (!text) return;
     const now = Date.now();
     const last = sandboxSubmitRef.current;
     if (last && last.content === text && now - last.time < 1200) return;
     sandboxSubmitRef.current = { content: text, time: now };
-    handleSend(text, { sandboxSourceMessageId: sourceMessageId == null ? null : String(sourceMessageId) });
+    handleSend(text, {
+      sandboxSourceMessageId: sourceMessageId == null ? null : String(sourceMessageId),
+      generationId: generationId == null ? null : String(generationId),
+    });
   }
 
-  function handleSandboxAction(event: SandboxCardAction, canApplyOpening: boolean, setShowVariableDebug?: (value: boolean) => void) {
+  async function handleSandboxAction(event: SandboxCardAction, canApplyOpening: boolean, setShowVariableDebug?: (value: boolean) => void) {
     setSandboxActionLog(prev => [{ time: Date.now(), action: event.action, payload: event.payload }, ...prev].slice(0, 80));
     if (event.action === 'diagnostic' || event.action === 'sandboxResize' || event.action === 'runtimeError' || event.action === 'missingApi') {
       return;
@@ -418,6 +511,13 @@ export function useMessageStream({
       const index = Number(event.payload?.index);
       if (Number.isInteger(index)) {
         setSelectedGreetingIndex(index);
+        if (canApplyOpening) {
+          const greetings = getParsedGreetings(characterCard);
+          const greeting = greetings[index + 1] || greetings[0];
+          if (greeting) {
+            await applyOpeningContent(greeting, '应用开场白失败', canApplyOpening);
+          }
+        }
       }
       return;
     }
@@ -429,17 +529,70 @@ export function useMessageStream({
       return;
     }
     if (event.action === 'submitText') {
-      sendFromSandbox(String(event.payload?.message || ''), event.payload?.sourceMessageId);
+      sendFromSandbox(String(event.payload?.message || ''), event.payload?.sourceMessageId, event.payload?.generationId);
       return;
     }
-    if (event.action === 'submitFreeStart' || event.action === 'formSubmit') {
-      const values = event.payload && typeof event.payload === 'object'
+    if (event.action === 'submitFreeStart' || (event.action === 'formSubmit' && event.payload?.__xrpSubmitChat === true)) {
+      const metaKeys = new Set(['sourceMessageId', 'generationId', '__xrpSubmitChat']);
+      const entries = event.payload && typeof event.payload === 'object'
         ? Object.entries(event.payload)
+            .filter(([key]) => !metaKeys.has(key))
             .filter(([, value]) => String(value ?? '').trim())
-            .map(([key, value]) => `${key}: ${String(value).trim()}`)
         : [];
+      const plainMessage = entries.find(([key]) => /^(?:message|text|input|prompt|content)$/i.test(key))?.[1];
+      if (plainMessage != null) {
+        sendFromSandbox(String(plainMessage), event.payload?.sourceMessageId, event.payload?.generationId);
+        return;
+      }
+      const values = entries
+            .map(([key, value]) => `${key}: ${String(value).trim()}`)
       if (values.length > 0) {
-        sendFromSandbox(values.join('\n'), event.payload?.sourceMessageId);
+        sendFromSandbox(values.join('\n'), event.payload?.sourceMessageId, event.payload?.generationId);
+      }
+      return;
+    }
+    if (event.action === 'formSubmit') {
+      console.debug('Card sandbox form submit ignored:', event.payload);
+      return;
+    }
+    if (event.action === 'setVariables') {
+      const variables = event.payload?.variables && typeof event.payload.variables === 'object'
+        ? event.payload.variables
+        : {};
+      const options = event.payload?.options && typeof event.payload.options === 'object'
+        ? event.payload.options
+        : {};
+      const scope = String(options.type || 'chat');
+      if (scope === 'message') {
+        const messageId = String(options.message_id ?? options.messageId ?? event.payload?.sourceMessageId ?? '').trim();
+        const targetId = messageId && messageId !== 'current' && messageId !== 'latest'
+          ? messageId
+          : String(event.payload?.sourceMessageId || '');
+        if (!targetId || !sessionId) return;
+        setMessages(prev => prev.map(message => {
+          if (String(message.id) !== targetId && String((message as any).message_id || '') !== targetId) return message;
+          let metadata: Record<string, any> = {};
+          try { metadata = JSON.parse(message.metadata || '{}'); } catch {}
+          const nextMetadata = { ...metadata, variables };
+          return { ...message, metadata: JSON.stringify(nextMetadata) };
+        }));
+        try {
+          await api.updateMessageMetadata(sessionId, targetId, { variables });
+        } catch (err) {
+          console.error('Failed to save message variables:', err);
+        }
+        return;
+      }
+      if (scope !== 'chat') {
+        console.debug('Scoped sandbox variables kept in runtime only:', scope, options);
+        return;
+      }
+      if (!sessionId) return;
+      try {
+        await api.updateSessionVariables(sessionId, variables, options.merge === true);
+        await loadSessionState();
+      } catch (err) {
+        console.error('Failed to save chat variables:', err);
       }
       return;
     }
@@ -449,6 +602,18 @@ export function useMessageStream({
       if (Number.isInteger(swipeId)) {
         applyOpeningSwipe(swipeId, canApplyOpening);
         return;
+      }
+      if (canApplyOpening && message) {
+        const greetings = getParsedGreetings(characterCard);
+        const normalizedMessage = message.replace(/\s+/g, '').trim();
+        const matchedGreetingIndex = greetings.findIndex(greeting =>
+          greeting.replace(/\s+/g, '').trim() === normalizedMessage
+        );
+        if (matchedGreetingIndex >= 0) {
+          setSelectedGreetingIndex(matchedGreetingIndex - 1);
+          await applyOpeningContent(greetings[matchedGreetingIndex], '应用开场白失败', canApplyOpening);
+          return;
+        }
       }
       if (message) {
         sandboxDraftRef.current = message;
@@ -460,12 +625,12 @@ export function useMessageStream({
       const command = String(event.payload?.command || '').trim();
       const sendMatch = command.match(/^\/?(?:send|继续书写)\s+([\s\S]+)$/i);
       if (sendMatch?.[1]?.trim()) {
-        sendFromSandbox(sendMatch[1].trim(), event.payload?.sourceMessageId);
+        sendFromSandbox(sendMatch[1].trim(), event.payload?.sourceMessageId, event.payload?.generationId);
         return;
       }
       const draft = sandboxDraftRef.current.trim() || input.trim();
       if (command && draft) {
-        sendFromSandbox(draft, event.payload?.sourceMessageId);
+        sendFromSandbox(draft, event.payload?.sourceMessageId, event.payload?.generationId);
         return;
       }
       console.debug('Card sandbox slash command:', event.payload);

@@ -36,56 +36,6 @@ export type UiSchema = {
   sections: UiSection[];
 };
 
-export type CoverMenuSchema = {
-  title: string;
-  subtitle: string;
-  background?: string;
-  buttons: string[];
-  theme: UiTheme;
-};
-
-export type PlatformOpeningCharacter = {
-  id: number;
-  name: string;
-  sect: string;
-  title: string;
-  front: string;
-  avatar: string;
-  desc: string;
-};
-
-export type PlatformLocation = {
-  id: string;
-  name: string;
-  tag: string;
-  desc: string;
-};
-
-export type PlatformLayout = {
-  shellMaxWidth: number;
-  stageMinHeight: number;
-  mainCardWidth: number;
-  mainCardMinWidth: number;
-  mainCardTop: number;
-  mainCardHeight: number;
-  sideCardScale: number;
-  sideCardOffset: number;
-  sideCardOpacity: number;
-  backgroundDim: number;
-};
-
-export type PlatformCardSchema = {
-  type: 'game_start';
-  title: string;
-  subtitle: string;
-  background?: string;
-  introHtml: string;
-  characters: PlatformOpeningCharacter[];
-  locations: PlatformLocation[];
-  theme: UiTheme;
-  layout: PlatformLayout;
-};
-
 export const DEFAULT_STATUS_THEME: UiTheme = {
   cardBg: '#15101C',
   textPrimary: '#F1E9F4',
@@ -97,17 +47,4 @@ export const DEFAULT_STATUS_THEME: UiTheme = {
   gold: '#B89A5B',
   borderGlow: 'rgba(61, 46, 79, 0.5)',
   shadow: '0 15px 40px rgba(0, 0, 0, 0.45)',
-};
-
-export const DEFAULT_PLATFORM_LAYOUT: PlatformLayout = {
-  shellMaxWidth: 760,
-  stageMinHeight: 300,
-  mainCardWidth: 280,
-  mainCardMinWidth: 180,
-  mainCardTop: 3,
-  mainCardHeight: 94,
-  sideCardScale: 0.72,
-  sideCardOffset: 42,
-  sideCardOpacity: 0.45,
-  backgroundDim: 0.78,
 };

@@ -4,6 +4,8 @@ import type {
   ParsedWorldBookEntry, Preset, PresetDetail,
   ImportDraftResponse, ConfirmImportRequest, ImportReport,
   LlmAssistRequest, LlmAssistResponse, RawPreviewResponse,
+  RuntimeSettings,
+  DebugMessage, DebugTurnSummary, AgentDebugSnapshot,
 } from './types';
 import { consumeSseResponse, type ChatSseHandler } from './sse';
 
@@ -79,6 +81,7 @@ export function sendMessageStream(
   onError: (error: Error) => void,
   onDone: () => void,
   stream: boolean = true,
+  metadata?: Record<string, unknown>,
 ): AbortController {
   const controller = new AbortController();
 
@@ -91,7 +94,7 @@ export function sendMessageStream(
           'Accept': 'text/event-stream',
           ...authHeaders(),
         },
-        body: JSON.stringify({ content, stream }),
+        body: JSON.stringify({ content, stream, metadata }),
         signal: controller.signal,
       });
 
@@ -115,6 +118,13 @@ export function sendMessageStream(
 // State
 export async function getSessionState(sessionId: string): Promise<any> {
   return request(`/sessions/${sessionId}/state`);
+}
+
+export async function updateSessionVariables(sessionId: string, variables: Record<string, unknown>, merge = false): Promise<{ variables: Record<string, unknown> }> {
+  return request(`/sessions/${sessionId}/variables`, {
+    method: 'PUT',
+    body: JSON.stringify({ variables, merge }),
+  });
 }
 
 // Memory
@@ -168,9 +178,29 @@ export async function fetchModels(base_url: string, api_key?: string, provider_i
   });
 }
 
+// Runtime Settings
+export async function getRuntimeSettings(): Promise<RuntimeSettings> {
+  return request('/settings/runtime');
+}
+
+export async function updateRuntimeSettings(data: Partial<RuntimeSettings>): Promise<RuntimeSettings> {
+  return request('/settings/runtime', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
 // Trace
 export async function getTrace(sessionId: string, turn: number): Promise<{ items: any[] }> {
   return request(`/sessions/${sessionId}/trace/${turn}`);
+}
+
+export async function getSessionDebugOverview(sessionId: string): Promise<{ messages: DebugMessage[]; turns: DebugTurnSummary[] }> {
+  return request(`/sessions/${sessionId}/debug`);
+}
+
+export async function getSessionDebugTurn(sessionId: string, turn: number): Promise<{ items: AgentDebugSnapshot[] }> {
+  return request(`/sessions/${sessionId}/debug/${turn}`);
 }
 
 // SSE reconnect for recovery: returns the fetch Response (200 = active stream, 404 = no active turn)
@@ -204,6 +234,13 @@ export async function editMessage(sessionId: string, messageId: string, content:
   return request(`/sessions/${sessionId}/messages/${messageId}`, {
     method: 'PUT',
     body: JSON.stringify({ content }),
+  });
+}
+
+export async function updateMessageMetadata(sessionId: string, messageId: string, metadata: Record<string, unknown>): Promise<{ id: string; metadata: Record<string, unknown> }> {
+  return request(`/sessions/${sessionId}/messages/${messageId}/metadata`, {
+    method: 'PUT',
+    body: JSON.stringify({ metadata }),
   });
 }
 
@@ -341,11 +378,11 @@ export async function updateCharacterCard(id: string, data: Partial<CharacterCar
 
 // --- World Book Parsing ---
 
-export async function parseWorldBook(id: string): Promise<{ status: string; entries: ParsedWorldBookEntry[] }> {
+export async function parseWorldBook(id: string): Promise<{ status: string; mode: string; entries?: ParsedWorldBookEntry[] }> {
   return request(`/worldbooks/${id}/parse`, { method: 'POST' });
 }
 
-export async function parseWorldBookSingleAgent(id: string): Promise<{ status: string; mode: string; entries: ParsedWorldBookEntry[] }> {
+export async function parseWorldBookSingleAgent(id: string): Promise<{ status: string; mode: string; entries?: ParsedWorldBookEntry[] }> {
   return request(`/worldbooks/${id}/parse-single-agent`, { method: 'POST' });
 }
 

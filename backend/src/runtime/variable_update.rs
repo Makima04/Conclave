@@ -1,4 +1,5 @@
 use crate::error::AppError;
+use crate::runtime::card_state_adapter;
 use crate::runtime::types::StateChangeCandidate;
 use sqlx::{Sqlite, Transaction};
 
@@ -46,39 +47,8 @@ pub async fn persist_extraction_tx(
         return Ok(());
     }
 
-    let current_state: Option<String> = sqlx::query_scalar(
-        "SELECT state_json FROM state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 1",
-    )
-    .bind(session_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-
-    let mut state_json = current_state
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-
-    for change in &changes {
-        set_nested_value(&mut state_json, &change.target, change.to.clone());
-    }
-
-    let max_version: Option<i32> =
-        sqlx::query_scalar("SELECT MAX(version) FROM state_snapshots WHERE session_id = ?")
-            .bind(session_id)
-            .fetch_one(&mut **tx)
-            .await?;
-
-    let now = chrono::Utc::now().to_rfc3339();
-    let id = uuid::Uuid::new_v4().to_string();
-    sqlx::query(
-        "INSERT INTO state_snapshots (id, session_id, version, state_json, risk_level, committed_by, created_at) VALUES (?, ?, ?, ?, 'low', 'variable_parser', ?)"
-    )
-    .bind(&id)
-    .bind(session_id)
-    .bind(max_version.unwrap_or(0) + 1)
-    .bind(state_json.to_string())
-    .bind(&now)
-    .execute(&mut **tx)
-    .await?;
+    card_state_adapter::persist_normalized_changes_tx(tx, session_id, &changes, "variable_parser")
+        .await?;
 
     tracing::info!(
         session = session_id,
@@ -283,36 +253,6 @@ fn make_change(key: &str, value: serde_json::Value) -> StateChangeCandidate {
         to: value,
         evidence_turns: vec![],
     }
-}
-
-fn set_nested_value(state: &mut serde_json::Value, path: &str, value: serde_json::Value) {
-    if !state.is_object() {
-        *state = serde_json::json!({});
-    }
-    let parts: Vec<&str> = path.split('.').collect();
-    set_nested_recursive(state, &parts, value);
-}
-
-fn set_nested_recursive(current: &mut serde_json::Value, parts: &[&str], value: serde_json::Value) {
-    if parts.is_empty() {
-        return;
-    }
-    if parts.len() == 1 {
-        if let Some(obj) = current.as_object_mut() {
-            obj.insert(parts[0].to_string(), value);
-        }
-        return;
-    }
-
-    if !current.is_object() {
-        *current = serde_json::json!({});
-    }
-    let next = current
-        .as_object_mut()
-        .expect("object initialized")
-        .entry(parts[0].to_string())
-        .or_insert_with(|| serde_json::json!({}));
-    set_nested_recursive(next, &parts[1..], value);
 }
 
 fn normalize_target(key: &str) -> String {

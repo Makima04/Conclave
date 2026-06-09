@@ -5,8 +5,8 @@ use crate::runtime::knowledge;
 use crate::runtime::recall;
 use crate::runtime::turn_state;
 use crate::runtime::types::{
-    AgentCall, AgentConfig, AgentOutput, AgentType, ContextBundle, ContextMessage, LifecycleAction,
-    SubAgent, TurnState,
+    AgentCall, AgentConfig, AgentInjectedOutputDebug, AgentOutput, AgentType, ContextBundle,
+    ContextMessage, LifecycleAction, SubAgent, SubAgentExecutionDebug, TurnState,
 };
 use sqlx::SqlitePool;
 use tracing::instrument;
@@ -22,7 +22,7 @@ pub async fn execute_sub_agent(
     state: &TurnState,
     context: &ContextBundle,
     tools: Option<Vec<ChatTool>>,
-) -> Result<AgentOutput, AppError> {
+) -> Result<(AgentOutput, SubAgentExecutionDebug), AppError> {
     let start = std::time::Instant::now();
 
     // Parse per-agent config
@@ -48,12 +48,48 @@ pub async fn execute_sub_agent(
 
     // Build user content: task + injected outputs
     let mut user_content = call.task.clone();
+    let mut injected_outputs = Vec::new();
+    for source_id in &call.inject_from {
+        if let Some(output) = state.agent_outputs.get(source_id) {
+            injected_outputs.push(AgentInjectedOutputDebug {
+                agent_id: output.agent_id.clone(),
+                agent_type: output.agent_type.as_str().to_string(),
+                text: output.text.clone(),
+            });
+        }
+    }
     if !call.inject_from.is_empty() {
         let injected = turn_state::get_outputs_text(state, &call.inject_from);
         if !injected.is_empty() {
             user_content.push_str(&format!("\n\n---\n相关Agent的输出:\n{}", injected));
         }
     }
+
+    let debug_snapshot = SubAgentExecutionDebug {
+        task: call.task.clone(),
+        system_prompt: system_prompt.clone(),
+        user_prompt: user_content.clone(),
+        injected_from: call.inject_from.clone(),
+        injected_outputs,
+        preset_modules: visible_preset_modules(agent, context),
+        worldbook_entries: visible_worldbook_entries(agent, context),
+        recent_messages: visible_recent_messages(agent, context, &agent_config),
+        recalled_events: recalled
+            .events
+            .iter()
+            .map(|event| {
+                serde_json::json!({
+                    "id": event.id,
+                    "turn_number": event.turn_number,
+                    "characters": event.characters,
+                    "scene_type": event.scene_type,
+                    "importance": event.importance,
+                    "raw_text": event.raw_text,
+                })
+            })
+            .collect(),
+        state_slice: visible_state_slice(agent, context),
+    };
 
     let effective_temperature = agent_config.temperature.unwrap_or(0.8);
     let effective_max_tokens = agent_config.max_tokens.unwrap_or(10000);
@@ -138,7 +174,7 @@ pub async fn execute_sub_agent(
         "Sub-agent executed"
     );
 
-    Ok(AgentOutput {
+    Ok((AgentOutput {
         agent_id: agent.id.clone(),
         agent_type: agent.agent_type,
         text,
@@ -146,7 +182,7 @@ pub async fn execute_sub_agent(
         prompt_tokens: pt,
         completion_tokens: ct,
         duration_ms,
-    })
+    }, debug_snapshot))
 }
 
 /// Format recent conversation messages into a readable transcript.
@@ -227,6 +263,82 @@ fn format_visible_knowledge(agent: &SubAgent, context: &ContextBundle) -> String
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn visible_preset_modules(agent: &SubAgent, context: &ContextBundle) -> Vec<crate::runtime::types::PresetModuleContext> {
+    context
+        .preset_modules
+        .iter()
+        .filter(|m| {
+            m.target_agents
+                .iter()
+                .any(|t| t == agent.agent_type.as_str())
+                || m.target_agents.contains(&"inject_all".to_string())
+        })
+        .cloned()
+        .collect()
+}
+
+fn visible_worldbook_entries(agent: &SubAgent, context: &ContextBundle) -> Vec<crate::runtime::types::WorldBookContextEntry> {
+    context
+        .world_book_entries
+        .iter()
+        .filter(|e| e.category != "user")
+        .filter(|e| match e.visibility.as_str() {
+            "public" => true,
+            "writer_only" => {
+                matches!(agent.agent_type, AgentType::Writer | AgentType::Director)
+            }
+            "gm_only" => matches!(agent.agent_type, AgentType::Director),
+            v if v.starts_with("character:") => {
+                let char_id = &v[10..];
+                matches!(agent.agent_type, AgentType::Director)
+                    || agent.character_id.as_deref() == Some(char_id)
+            }
+            _ => true,
+        })
+        .cloned()
+        .collect()
+}
+
+fn visible_recent_messages(
+    agent: &SubAgent,
+    context: &ContextBundle,
+    agent_config: &AgentConfig,
+) -> Vec<ContextMessage> {
+    if !matches!(
+        agent.agent_type,
+        AgentType::Npc | AgentType::Writer | AgentType::Director | AgentType::User
+    ) {
+        return vec![];
+    }
+
+    let max_turns = agent_config.max_context_turns.unwrap_or(5);
+    context
+        .recent_context
+        .iter()
+        .rev()
+        .take(max_turns * 2)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+fn visible_state_slice(agent: &SubAgent, context: &ContextBundle) -> serde_json::Value {
+    if matches!(
+        agent.agent_type,
+        AgentType::Npc | AgentType::Writer | AgentType::Director | AgentType::User
+    ) && !context
+        .structured_state
+        .as_object()
+        .map_or(true, |o| o.is_empty())
+    {
+        filter_state_for_visibility(&context.structured_state, agent.agent_type)
+    } else {
+        serde_json::json!({})
+    }
 }
 
 /// Filter structured state by visibility rules.
@@ -386,16 +498,7 @@ fn build_contextual_system_prompt(
     let visible_knowledge_text = format_visible_knowledge(agent, context);
 
     // Preset modules assigned to this agent type
-    let visible_modules: Vec<_> = context
-        .preset_modules
-        .iter()
-        .filter(|m| {
-            m.target_agents
-                .iter()
-                .any(|t| t == agent.agent_type.as_str())
-                || m.target_agents.contains(&"inject_all".to_string())
-        })
-        .collect();
+    let visible_modules = visible_preset_modules(agent, context);
     let preset_text = visible_modules
         .iter()
         .filter(|m| !m.content.is_empty())
@@ -499,24 +602,7 @@ fn build_contextual_system_prompt(
 
     // World book entries (visibility-filtered, excluding user category)
     let wb_text = {
-        let wb_entries: Vec<_> = context
-            .world_book_entries
-            .iter()
-            .filter(|e| e.category != "user")
-            .filter(|e| match e.visibility.as_str() {
-                "public" => true,
-                "writer_only" => {
-                    matches!(agent.agent_type, AgentType::Writer | AgentType::Director)
-                }
-                "gm_only" => matches!(agent.agent_type, AgentType::Director),
-                v if v.starts_with("character:") => {
-                    let char_id = &v[10..];
-                    matches!(agent.agent_type, AgentType::Director)
-                        || agent.character_id.as_deref() == Some(char_id)
-                }
-                _ => true,
-            })
-            .collect();
+        let wb_entries = visible_worldbook_entries(agent, context);
         wb_entries
             .iter()
             .filter(|e| !e.content.is_empty())

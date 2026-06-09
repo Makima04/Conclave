@@ -7,7 +7,7 @@ pub async fn acquire_processing_status(
     session_id: &str,
 ) -> Result<(), AppError> {
     let status_result = sqlx::query(
-        "UPDATE sessions SET status = 'processing' WHERE id = ? AND status IN ('idle', 'failed_generation', 'failed_compression', 'needs_repair')"
+        "UPDATE sessions SET status = 'processing' WHERE id = ? AND status IN ('idle', 'compressing', 'failed_generation', 'failed_compression', 'needs_repair')"
     )
     .bind(session_id)
     .execute(pool)

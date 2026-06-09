@@ -38,12 +38,20 @@ export const ToolRail = React.memo(function ToolRail({ activeTab, onTabClick, se
         // Only show Agents tab in multi_agent mode
         if (item.key === 'agents' && sessionMode !== 'multi_agent') return null;
 
+        const handleClick = () => {
+          if (item.key === 'debug' && sessionId) {
+            navigate(`/chat/${sessionId}/debug`);
+            return;
+          }
+          onTabClick(item.key);
+        };
+
         return (
           <button
             key={item.key}
             className={`tool-rail-btn${activeTab === item.key ? ' active' : ''}`}
             title={item.label}
-            onClick={() => onTabClick(item.key)}
+            onClick={handleClick}
           >
             <span>{item.icon}</span>
           </button>

@@ -6,7 +6,14 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { CharacterCard } from '../api/types';
 import { CodeBlock } from './components/CodeBlock';
-import { executeStRegexScripts, parseFindRegex } from './st-regex-executor';
+import {
+  executeStRegexScripts,
+  expandStRegexReplacement,
+  parseFindRegex,
+  shouldRunStRegexScript,
+  stRegexPlacement,
+  type RegexScript,
+} from './st-regex-executor';
 
 // --- GROUP 6: Character card inspection functions ---
 
@@ -63,20 +70,6 @@ export function hasTavernHelperScripts(card: CharacterCard | null): boolean {
   return getTavernHelperScripts(card).length > 0;
 }
 
-export function getUiReplaceStringForContent(card: CharacterCard | null, content: string): string {
-  const scripts = getRegexScripts(card);
-  const script = scripts.find((item: any) => {
-    if (item?.disabled || typeof item?.findRegex !== 'string' || typeof item?.replaceString !== 'string' || !item.replaceString.length) return false;
-    const parsed = parseFindRegex(item.findRegex);
-    if (parsed) {
-      parsed.lastIndex = 0;
-      return parsed.test(content);
-    }
-    return false;
-  });
-  return script?.replaceString || '';
-}
-
 export function isComplexCardUiSource(source: string): boolean {
   return source.length > 3000
     || /<html\b|<head\b|<body\b|<style\b/i.test(source)
@@ -94,28 +87,6 @@ function getSandboxRegexScripts(card: CharacterCard | null): any[] {
     if (item?.disabled || typeof item?.replaceString !== 'string') return false;
     return isSandboxUiSource(stripCodeFence(item.replaceString));
   });
-}
-
-export function hasComplexCardUi(card: CharacterCard | null): boolean {
-  return getRegexScripts(card).some((item: any) =>
-    !item?.disabled
-      && typeof item?.replaceString === 'string'
-      && item.replaceString.length > 0
-      && isComplexCardUiSource(stripCodeFence(item.replaceString))
-  );
-}
-
-export function isGameStartCard(card: CharacterCard | null): boolean {
-  if (!card) return false;
-  const firstMes = (card.first_mes || '').trim();
-  return firstMes === '【GameStart】'
-    || getRegexScripts(card).some((item: any) =>
-      !item?.disabled
-        && typeof item?.findRegex === 'string'
-        && item.findRegex.includes('GameStart')
-        && typeof item?.replaceString === 'string'
-        && isComplexCardUiSource(stripCodeFence(item.replaceString))
-    );
 }
 
 // --- GROUP 7: HTML sanitization & serialization ---
@@ -160,39 +131,6 @@ export function serializeSandboxData(value: any): string {
 
 // --- GROUP 8: Regex script application ---
 
-function parseRegexLiteral(source: string): RegExp | null {
-  if (!source.startsWith('/')) return null;
-  const lastSlash = source.lastIndexOf('/');
-  if (lastSlash <= 0) return null;
-  const pattern = source.slice(1, lastSlash);
-  const flags = source.slice(lastSlash + 1).replace(/[^dgimsuvy]/g, '');
-  try {
-    return new RegExp(pattern, flags.includes('g') ? flags : `${flags}g`);
-  } catch {
-    return null;
-  }
-}
-
-export function applyCardDisplayRegexScripts(card: CharacterCard | null, content: string): string {
-  let output = content;
-  for (const script of getRegexScripts(card)) {
-    if (script?.disabled || script?.promptOnly || !script?.markdownOnly) continue;
-    if (typeof script.findRegex !== 'string' || typeof script.replaceString !== 'string') continue;
-    if (!script.replaceString || /<script\b/i.test(script.replaceString)) continue;
-    if (script.findRegex === '<StatusPlaceHolderImpl/>' || script.findRegex.includes('GameStart')) continue;
-    if (isSandboxUiSource(stripCodeFence(script.replaceString))) continue;
-    if (script.findRegex.includes('UpdateVariable')) continue;
-
-    const replacement = sanitizeHtmlFragment(script.replaceString);
-    const regex = parseFindRegex(script.findRegex);
-    if (regex) {
-      regex.lastIndex = 0;
-      output = output.replace(regex, replacement);
-    }
-  }
-  return output;
-}
-
 type DisplayPart = {
   type: 'text' | 'html';
   content: string;
@@ -205,32 +143,31 @@ function applyCardDisplayRegexScriptsToParts(card: CharacterCard | null, content
   const htmlParts: string[] = [];
   let output = content;
 
-  for (const script of getRegexScripts(card)) {
-    if (script?.disabled || script?.promptOnly || !script?.markdownOnly) continue;
+  for (const script of getRegexScripts(card) as RegexScript[]) {
     if (typeof script.findRegex !== 'string' || typeof script.replaceString !== 'string') continue;
     if (!script.replaceString || /<script\b/i.test(script.replaceString)) continue;
     if (script.findRegex === '<StatusPlaceHolderImpl/>' || script.findRegex.includes('GameStart')) continue;
     if (isSandboxUiSource(stripCodeFence(script.replaceString))) continue;
     if (script.findRegex.includes('UpdateVariable')) continue;
+    if (!shouldRunStRegexScript(script, {
+      placement: stRegexPlacement.AI_OUTPUT,
+      isMarkdown: true,
+    })) continue;
 
-    const replacement = sanitizeHtmlFragment(script.replaceString);
+    const replacementScript = { ...script, replaceString: sanitizeHtmlFragment(script.replaceString) };
     const regex = parseFindRegex(script.findRegex);
     if (!regex) continue;
 
     regex.lastIndex = 0;
-    output = output.replace(regex, (...args: any[]) => {
-      const match = args[0] as string;
-      const captures = args.slice(1, -2).map(value => String(value ?? ''));
-      const expanded = replacement.replace(/\$(\$|&|`|'|\d{1,2})/g, (token, key) => {
-        if (key === '$') return '$';
-        if (key === '&') return match;
-        if (key === '`' || key === "'") return '';
-        const index = Number(key);
-        return Number.isFinite(index) && index > 0 ? (captures[index - 1] || '') : token;
+    output = output.replace(regex, (...args: unknown[]) => {
+      const expanded = expandStRegexReplacement(replacementScript, args, {
+        placement: stRegexPlacement.AI_OUTPUT,
+        isMarkdown: true,
       });
       const index = htmlParts.push(expanded) - 1;
       return `${DISPLAY_HTML_OPEN}${index}${DISPLAY_HTML_CLOSE}`;
     });
+    regex.lastIndex = 0;
   }
 
   const parts: DisplayPart[] = [];
@@ -255,6 +192,7 @@ export function cleanCardDisplayText(content: string): string {
   return content
     .replace(/<StatusPlaceHolderImpl\/>/g, '')
     .replace(/<UpdateVariable(?:variable)?\b[^>]*>[\s\S]*?<\/UpdateVariable(?:variable)?>/gi, '')
+    .replace(/<options\b[^>]*>[\s\S]*?<\/options>/gi, '')
     .replace(/<\/?正文>/g, '')
     .replace(/{{user}}/g, '你')
     .replace(/{{char}}/g, '')
@@ -287,6 +225,7 @@ export function renderInlineDecorators(content: string): React.ReactNode {
   const innerRegex = /<inner>([\s\S]*?)<\/inner>/gi;
   const source = content
     .replace(/<UpdateVariable(?:variable)?\b[^>]*>[\s\S]*?<\/UpdateVariable(?:variable)?>/gi, '')
+    .replace(/<options\b[^>]*>[\s\S]*?<\/options>/gi, '')
     .replace(/<\/?正文>/g, '')
     .replace(/{{user}}/g, '你')
     .replace(/{{char}}/g, '')
@@ -316,6 +255,7 @@ export function renderInlineDecorators(content: string): React.ReactNode {
 export function renderCardFormattedContent(card: CharacterCard | null, content: string): React.ReactNode {
   const normalized = content
     .replace(/<\/?正文>/g, '')
+    .replace(/<options\b[^>]*>[\s\S]*?<\/options>/gi, '')
     .replace(/{{user}}/g, '你')
     .replace(/{{char}}/g, '')
     .replace(/<user>/g, '你')

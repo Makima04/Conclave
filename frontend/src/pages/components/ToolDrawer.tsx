@@ -11,7 +11,6 @@ import type {
   UserSettingMergeStrategy,
   WorldBook,
 } from '../../api/types';
-import type { PlatformCardSchema } from '../card-schema-types';
 import type { InspectorTab } from './InspectorSidebar';
 import type { UserPersonaPreset } from '../../settings/sessionDefaults';
 
@@ -78,9 +77,6 @@ export interface ToolDrawerProps {
   activePreset: Preset | null;
   activePresetMissing: boolean;
   cardHasStatusRenderer: boolean;
-  cardHasComplexUi: boolean;
-  cardHasGameStart: boolean;
-  debugPlatformSchema: PlatformCardSchema | null;
 
   // editing state
   paramsEditing: boolean;
@@ -302,8 +298,7 @@ function AgentsTab(props: ToolDrawerProps) {
 
 function RenderTab(props: ToolDrawerProps) {
   const {
-    renderMode, cardHasStatusRenderer, cardHasComplexUi, cardHasGameStart,
-    debugPlatformSchema,
+    renderMode, cardHasStatusRenderer,
     updateRenderMode,
   } = props;
 
@@ -312,7 +307,7 @@ function RenderTab(props: ToolDrawerProps) {
       <div className="inspector-section">
         <div className="inspector-section-title">渲染模式</div>
         <div className="render-mode-group">
-          {([['auto','Auto','作者原始 UI 优先，失败走平台兜底'],['schema','Schema','只用平台 Schema，不执行原始 JS'],['sandbox','Sandbox','优先执行作者原始沙盒 UI'],['text','Text','纯文本，无 UI 渲染']] as const).map(([mode, label, desc]) => (
+          {([['auto','Auto','按 SillyTavern 原始渲染流程'],['schema','Schema','仅显示平台状态面板调试'],['sandbox','Sandbox','仅执行作者原始沙盒 UI'],['text','Text','纯文本，无 UI 渲染']] as const).map(([mode, label, desc]) => (
             <label key={mode} className={`render-mode-option${renderMode === mode ? ' selected' : ''}`}>
               <input type="radio" name="renderMode" value={mode} checked={renderMode === mode} onChange={() => updateRenderMode(mode)} />
               <div><div className="render-mode-label">{label}</div><div className="render-mode-desc">{desc}</div></div>
@@ -323,18 +318,7 @@ function RenderTab(props: ToolDrawerProps) {
       <div className="inspector-section">
         <div className="inspector-section-title">角色卡检测</div>
         <div className="debug-row"><span className="debug-key">状态栏 Renderer</span><span className="debug-value">{cardHasStatusRenderer ? '✓' : '—'}</span></div>
-        <div className="debug-row"><span className="debug-key">复杂角色卡 UI</span><span className="debug-value">{cardHasComplexUi ? '✓' : '—'}</span></div>
-        <div className="debug-row"><span className="debug-key">GameStart</span><span className="debug-value">{cardHasGameStart ? '✓' : '—'}</span></div>
       </div>
-      {debugPlatformSchema && (
-        <div className="inspector-section">
-          <div className="inspector-section-title">平台布局</div>
-          <div className="debug-row"><span className="debug-key">主卡宽度</span><span className="debug-value">{debugPlatformSchema.layout.mainCardWidth}px</span></div>
-          <div className="debug-row"><span className="debug-key">舞台高度</span><span className="debug-value">{debugPlatformSchema.layout.stageMinHeight}px</span></div>
-          <div className="debug-row"><span className="debug-key">侧卡缩放</span><span className="debug-value">{debugPlatformSchema.layout.sideCardScale}</span></div>
-          <div className="debug-row"><span className="debug-key">背景压暗</span><span className="debug-value">{debugPlatformSchema.layout.backgroundDim}</span></div>
-        </div>
-      )}
     </>
   );
 }
@@ -408,7 +392,7 @@ function DebugTab(props: ToolDrawerProps) {
   const {
     renderMode, messages, flatVariables, sandboxActionLog,
     streaming, recovering, memoryPending, stateUpdating,
-    cardHasStatusRenderer, cardHasComplexUi, cardHasGameStart,
+    cardHasStatusRenderer,
   } = props;
 
   return (
@@ -423,8 +407,6 @@ function DebugTab(props: ToolDrawerProps) {
       <div className="inspector-section">
         <div className="inspector-section-title">角色卡</div>
         <div className="debug-row"><span className="debug-key">状态栏</span><span className="debug-value">{cardHasStatusRenderer ? '是' : '否'}</span></div>
-        <div className="debug-row"><span className="debug-key">复杂 UI</span><span className="debug-value">{cardHasComplexUi ? '是' : '否'}</span></div>
-        <div className="debug-row"><span className="debug-key">GameStart</span><span className="debug-value">{cardHasGameStart ? '是' : '否'}</span></div>
       </div>
       {sandboxActionLog.length > 0 && (
         <div className="inspector-section">

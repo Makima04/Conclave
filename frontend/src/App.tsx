@@ -10,6 +10,7 @@ const SessionList = React.lazy(() => import('./pages/SessionList'));
 const Chat = React.lazy(() => import('./pages/Chat'));
 const Settings = React.lazy(() => import('./pages/Settings'));
 const AgentManager = React.lazy(() => import('./pages/AgentManager'));
+const SessionDebug = React.lazy(() => import('./pages/SessionDebug'));
 const WorldBooks = React.lazy(() => import('./pages/WorldBooks'));
 const Presets = React.lazy(() => import('./pages/Presets'));
 const CharacterCard = React.lazy(() => import('./pages/CharacterCard'));
@@ -33,6 +34,7 @@ export default function App() {
                 {/* Routes WITHOUT sidebar (Chat has its own tool-rail layout) */}
                 <Route path="/chat/:sessionId" element={<Chat />} />
                 <Route path="/chat/:sessionId/agents" element={<AgentManager />} />
+                <Route path="/chat/:sessionId/debug" element={<SessionDebug />} />
                 <Route path="/charactercards/:id" element={<CharacterCard />} />
                 <Route path="/charactercards/import" element={<ImportWorkbench />} />
                 <Route path="/charactercards/import/:cardId" element={<ImportWorkbench />} />

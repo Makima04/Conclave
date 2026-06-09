@@ -25,8 +25,7 @@ pub async fn update_imported_card(
         serde_json::to_string(package).map_err(|e| ImportError::Internal(e.to_string()))?;
     let extensions_json =
         serde_json::to_string(&original_card.extensions).unwrap_or_else(|_| "{}".to_string());
-    let tags_json =
-        serde_json::to_string(&original_card.tags).unwrap_or_else(|_| "[]".to_string());
+    let tags_json = serde_json::to_string(&original_card.tags).unwrap_or_else(|_| "[]".to_string());
     let greetings_json = serde_json::to_string(&original_card.alternate_greetings)
         .unwrap_or_else(|_| "[]".to_string());
     let source_data_json =

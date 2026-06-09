@@ -10,6 +10,8 @@ pub fn build_package(
     resources: &ResourceManifest,
     actions: &[ActionDeclaration],
     variables: &[VariableDeclaration],
+    state_schema: &CardStateSchema,
+    state_adapter: &CardStateAdapter,
     compatibility: &CompatibilityReport,
 ) -> ConclaveCardPackage {
     let ui_type = determine_ui_type(html_split, regex_result);
@@ -22,6 +24,8 @@ pub fn build_package(
         greetings,
         ui,
         variables: variables.to_vec(),
+        state_schema: state_schema.clone(),
+        state_adapter: state_adapter.clone(),
         actions: actions.to_vec(),
         compatibility: compatibility.clone(),
     }
@@ -171,6 +175,7 @@ mod tests {
             required_apis: vec![],
             unsupported_apis: vec![],
             warnings: vec![],
+            api_mappings: vec![],
         }
     }
 
@@ -280,12 +285,36 @@ mod tests {
         let resources = make_empty_resources();
         let compatibility = make_empty_compatibility();
 
-        let pkg = build_package(&card, &regex, &split, &resources, &[], &[], &compatibility);
+        let state_schema = CardStateSchema {
+            roots: vec![],
+            fields: vec![],
+        };
+        let state_adapter = CardStateAdapter {
+            adapter_version: "test".to_string(),
+            source_format: "test".to_string(),
+            read_rules: vec![],
+            write_rules: vec![],
+            variable_rules: vec![],
+            warnings: vec![],
+        };
+
+        let pkg = build_package(
+            &card,
+            &regex,
+            &split,
+            &resources,
+            &[],
+            &[],
+            &state_schema,
+            &state_adapter,
+            &compatibility,
+        );
 
         assert_eq!(pkg.manifest.name, "AssemblyTest");
         assert_eq!(pkg.greetings.len(), 3);
         assert_eq!(pkg.ui.ui_type, UiType::RawPreview);
         assert!(pkg.variables.is_empty());
+        assert!(pkg.state_schema.fields.is_empty());
         assert!(pkg.actions.is_empty());
     }
 

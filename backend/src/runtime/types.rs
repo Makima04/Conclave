@@ -241,6 +241,56 @@ pub struct AgentTrace {
     pub model: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentInjectedOutputDebug {
+    pub agent_id: String,
+    pub agent_type: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentDebugSnapshot {
+    pub id: String,
+    pub session_id: String,
+    pub turn_number: i32,
+    pub phase: String,
+    pub level_index: Option<i32>,
+    pub agent_id: Option<String>,
+    pub agent_type: String,
+    pub agent_label: String,
+    pub model: String,
+    pub task: String,
+    pub system_prompt: String,
+    pub user_prompt: String,
+    pub injected_from: Vec<String>,
+    pub injected_outputs: Vec<AgentInjectedOutputDebug>,
+    pub preset_modules: Vec<PresetModuleContext>,
+    pub worldbook_entries: Vec<WorldBookContextEntry>,
+    pub recent_messages: Vec<ContextMessage>,
+    pub recalled_events: Vec<serde_json::Value>,
+    pub state_slice: serde_json::Value,
+    pub raw_output: String,
+    pub tool_calls: serde_json::Value,
+    pub duration_ms: i32,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubAgentExecutionDebug {
+    pub task: String,
+    pub system_prompt: String,
+    pub user_prompt: String,
+    pub injected_from: Vec<String>,
+    pub injected_outputs: Vec<AgentInjectedOutputDebug>,
+    pub preset_modules: Vec<PresetModuleContext>,
+    pub worldbook_entries: Vec<WorldBookContextEntry>,
+    pub recent_messages: Vec<ContextMessage>,
+    pub recalled_events: Vec<serde_json::Value>,
+    pub state_slice: serde_json::Value,
+}
+
 // --- Parser types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

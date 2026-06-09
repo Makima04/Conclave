@@ -1,5 +1,5 @@
 use crate::error::AppError;
-use crate::runtime::types::{AgentTrace, CompressionResult};
+use crate::runtime::types::{AgentDebugSnapshot, AgentTrace, CompressionResult};
 use crate::runtime::variable_update;
 use crate::runtime::{compression, knowledge};
 use sqlx::Sqlite;
@@ -13,6 +13,7 @@ use sqlx::Transaction;
 pub struct TurnCommit {
     pub narrative: String,
     pub traces: Vec<AgentTrace>,
+    pub debug_snapshots: Vec<AgentDebugSnapshot>,
     pub compression: Option<CompressionResult>,
     pub compression_job: Option<CompressionJob>,
 }
@@ -40,7 +41,9 @@ pub async fn finalize_turn(
         user_input,
         narrative,
         traces,
+        &[],
         true,
+        &serde_json::json!({}),
     )
     .await
 }
@@ -52,9 +55,13 @@ pub async fn finalize_turn_with_options(
     user_input: &str,
     narrative: &str,
     traces: &[AgentTrace],
+    debug_snapshots: &[AgentDebugSnapshot],
     persist_inline_variable_updates: bool,
+    message_metadata: &serde_json::Value,
 ) -> Result<(), AppError> {
     let now = chrono::Utc::now().to_rfc3339();
+    let message_metadata_json =
+        serde_json::to_string(message_metadata).unwrap_or_else(|_| "{}".to_string());
     let variable_extraction = variable_update::extract(narrative);
     let assistant_content = if variable_extraction.display_text.is_empty() {
         narrative
@@ -75,12 +82,13 @@ pub async fn finalize_turn_with_options(
     if existing_user == 0 {
         let user_msg_id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
-            "INSERT INTO messages (id, session_id, turn_number, role, content, created_at) VALUES (?, ?, ?, 'user', ?, ?)"
+            "INSERT INTO messages (id, session_id, turn_number, role, content, metadata, created_at) VALUES (?, ?, ?, 'user', ?, ?, ?)"
         )
         .bind(&user_msg_id)
         .bind(session_id)
         .bind(turn_number)
         .bind(user_input)
+        .bind(&message_metadata_json)
         .bind(&now)
         .execute(&mut **tx)
         .await?;
@@ -99,12 +107,13 @@ pub async fn finalize_turn_with_options(
     if existing_assistant == 0 {
         let assistant_msg_id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
-            "INSERT INTO messages (id, session_id, turn_number, role, content, created_at) VALUES (?, ?, ?, 'assistant', ?, ?)"
+            "INSERT INTO messages (id, session_id, turn_number, role, content, metadata, created_at) VALUES (?, ?, ?, 'assistant', ?, ?, ?)"
         )
         .bind(&assistant_msg_id)
         .bind(session_id)
         .bind(turn_number)
         .bind(assistant_content)
+        .bind(&message_metadata_json)
         .bind(&now)
         .execute(&mut **tx)
         .await?;
@@ -137,10 +146,60 @@ pub async fn finalize_turn_with_options(
         .bind(trace.duration_ms)
         .bind(&now)
         .execute(&mut **tx)
+            .await?;
+    }
+
+    // 4. Debug snapshots
+    if !debug_snapshots.is_empty() {
+        sqlx::query(
+            "DELETE FROM agent_call_debug_snapshots WHERE session_id = ? AND turn_number = ?",
+        )
+        .bind(session_id)
+        .bind(turn_number)
+        .execute(&mut **tx)
         .await?;
     }
 
-    // 4. Advance current_turn
+    for snapshot in debug_snapshots {
+        sqlx::query(
+            r#"INSERT INTO agent_call_debug_snapshots (
+               id, session_id, turn_number, phase, level_index, agent_id, agent_type, agent_label,
+               model, task, system_prompt, user_prompt, injected_from_json, injected_outputs_json,
+               preset_modules_json, worldbook_entries_json, recent_messages_json, recalled_events_json,
+               state_slice_json, raw_output, tool_calls_json, duration_ms, prompt_tokens,
+               completion_tokens, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#
+        )
+        .bind(&snapshot.id)
+        .bind(session_id)
+        .bind(turn_number)
+        .bind(&snapshot.phase)
+        .bind(snapshot.level_index)
+        .bind(&snapshot.agent_id)
+        .bind(&snapshot.agent_type)
+        .bind(&snapshot.agent_label)
+        .bind(&snapshot.model)
+        .bind(&snapshot.task)
+        .bind(&snapshot.system_prompt)
+        .bind(&snapshot.user_prompt)
+        .bind(serde_json::to_string(&snapshot.injected_from).unwrap_or_else(|_| "[]".to_string()))
+        .bind(serde_json::to_string(&snapshot.injected_outputs).unwrap_or_else(|_| "[]".to_string()))
+        .bind(serde_json::to_string(&snapshot.preset_modules).unwrap_or_else(|_| "[]".to_string()))
+        .bind(serde_json::to_string(&snapshot.worldbook_entries).unwrap_or_else(|_| "[]".to_string()))
+        .bind(serde_json::to_string(&snapshot.recent_messages).unwrap_or_else(|_| "[]".to_string()))
+        .bind(serde_json::to_string(&snapshot.recalled_events).unwrap_or_else(|_| "[]".to_string()))
+        .bind(serde_json::to_string(&snapshot.state_slice).unwrap_or_else(|_| "{}".to_string()))
+        .bind(&snapshot.raw_output)
+        .bind(serde_json::to_string(&snapshot.tool_calls).unwrap_or_else(|_| "[]".to_string()))
+        .bind(snapshot.duration_ms)
+        .bind(snapshot.prompt_tokens as i32)
+        .bind(snapshot.completion_tokens as i32)
+        .bind(&snapshot.created_at)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    // 5. Advance current_turn
     sqlx::query("UPDATE sessions SET current_turn = ?, updated_at = ? WHERE id = ?")
         .bind(turn_number)
         .bind(&now)

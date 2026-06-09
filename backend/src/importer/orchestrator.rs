@@ -203,6 +203,21 @@ pub async fn run_import(
             None,
         ));
     }
+    if js_analysis
+        .detected_apis
+        .iter()
+        .any(|api| api.name == "generateRaw")
+    {
+        diagnostics.push(report::make_diagnostic(
+            "api_scan",
+            DiagnosticLevel::Warn,
+            "legacy_secondary_generation_disabled",
+            "generateRaw was detected. Legacy secondary generation is disabled; card input should use Generate()/submitText so it goes through the main chat pipeline.",
+            None,
+            Some("Automatic card-side summaries or variable analysis will receive an empty safe response instead of calling an LLM."),
+            Some("Map real user input controls to Generate()/submitText or data-xrp-submit-chat during card normalization."),
+        ));
+    }
 
     for err in &js_analysis.syntax_errors {
         diagnostics.push(report::make_diagnostic(
@@ -281,11 +296,14 @@ pub async fn run_import(
     ));
 
     // Stage 7: Extract variables
-    let variables = if has_js {
+    let mut variables = if has_js {
         variable_extractor::extract_variables(&html_split.js, &js_analysis)
     } else {
         vec![]
     };
+    variables.extend(extract_initvar_variables(&card));
+    variables.sort_by(|a, b| a.path.cmp(&b.path));
+    variables.dedup_by(|a, b| a.path == b.path);
     for var in &variables {
         rule_traces.push(RuleTrace {
             rule_id: format!("var_{}", var.path),
@@ -300,21 +318,71 @@ pub async fn run_import(
     stages.push(report::make_stage(
         "variable_extract",
         "Variable Extract",
-        if !has_js {
-            StageStatus::Skipped
-        } else if variables.is_empty() {
+        if variables.is_empty() {
             StageStatus::Warning
         } else {
             StageStatus::Success
         },
-        if has_js {
-            None
+        if variables.is_empty() {
+            Some("No card state variables were detected from JS or InitVar".to_string())
         } else {
-            Some("Skipped because no inline JavaScript was extracted".to_string())
+            None
         },
     ));
 
-    // Stage 8: Build compatibility report
+    // Stage 8: Build platform state schema + adapter
+    let (state_schema, state_adapter) = state_adapter::build_state_conversion(&card, &variables);
+    for field in &state_schema.fields {
+        rule_traces.push(RuleTrace {
+            rule_id: format!("state_field_{}", field.path),
+            stage: "state_adapter".to_string(),
+            status: if field.canonical_path.is_some() {
+                RuleStatus::Matched
+            } else {
+                RuleStatus::Skipped
+            },
+            confidence: field.confidence,
+            input_ref: Some(field.path.clone()),
+            output_ref: field.canonical_path.clone(),
+            diagnostics: if field.canonical_path.is_none() {
+                vec!["Card-private state field requires adapter review".to_string()]
+            } else {
+                vec![]
+            },
+        });
+    }
+    stages.push(report::make_stage(
+        "state_adapter",
+        "State Adapter Build",
+        if state_schema.fields.is_empty() {
+            StageStatus::Warning
+        } else if state_adapter.write_rules.is_empty() {
+            StageStatus::Warning
+        } else {
+            StageStatus::Success
+        },
+        if state_schema.fields.is_empty() {
+            Some("No card state fields were detected".to_string())
+        } else if state_adapter.write_rules.is_empty() {
+            Some("Only card-private or read-only state fields were detected".to_string())
+        } else {
+            None
+        },
+    ));
+
+    for warning in &state_adapter.warnings {
+        diagnostics.push(report::make_diagnostic(
+            "state_adapter",
+            DiagnosticLevel::Warn,
+            "state_field_manual_review",
+            warning,
+            None,
+            Some("This field will not be written by platform Agents until a safe mapping is confirmed"),
+            Some("Review the generated state_schema/state_adapter and add a reusable mapping rule if the field is meaningful"),
+        ));
+    }
+
+    // Stage 9: Build compatibility report
     let compatibility = build_compatibility(
         &js_analysis,
         &resources,
@@ -335,7 +403,7 @@ pub async fn run_import(
         ));
     }
 
-    // Stage 9: Build package
+    // Stage 10: Build package
     let package = package_builder::build_package(
         &card,
         &regex_result,
@@ -343,6 +411,8 @@ pub async fn run_import(
         &resources,
         &actions,
         &variables,
+        &state_schema,
+        &state_adapter,
         &compatibility,
     );
     stages.push(report::make_stage(
@@ -401,6 +471,74 @@ fn empty_html_split(content: &str) -> HtmlAppSplit {
         script_types: vec![],
         entry_node: None,
         is_full_document: false,
+    }
+}
+
+fn extract_initvar_variables(card: &ExternalCard) -> Vec<VariableDeclaration> {
+    let Some(book) = card.extensions.get("__character_book") else {
+        return vec![];
+    };
+    let Some(entries) = book.get("entries").and_then(|value| value.as_array()) else {
+        return vec![];
+    };
+
+    let mut variables = Vec::new();
+    for entry in entries {
+        let comment = entry
+            .get("comment")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !comment.contains("initvar") {
+            continue;
+        }
+        let Some(content) = entry.get("content").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(content.trim()) else {
+            continue;
+        };
+        let root = value.get("variables").unwrap_or(&value);
+        collect_json_variable_declarations(root, "", &mut variables);
+    }
+    variables
+}
+
+fn collect_json_variable_declarations(
+    value: &serde_json::Value,
+    path: &str,
+    out: &mut Vec<VariableDeclaration>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                let next = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", path, key)
+                };
+                collect_json_variable_declarations(child, &next, out);
+            }
+        }
+        _ if !path.is_empty() => out.push(VariableDeclaration {
+            path: path.to_string(),
+            var_type: variable_type_from_value(value),
+            default_value: Some(value.clone()),
+            label: None,
+            source: "character_book_initvar".to_string(),
+        }),
+        _ => {}
+    }
+}
+
+fn variable_type_from_value(value: &serde_json::Value) -> VariableType {
+    match value {
+        serde_json::Value::String(_) => VariableType::String,
+        serde_json::Value::Number(_) => VariableType::Number,
+        serde_json::Value::Bool(_) => VariableType::Boolean,
+        serde_json::Value::Object(_) => VariableType::Object,
+        serde_json::Value::Array(_) => VariableType::Array,
+        serde_json::Value::Null => VariableType::String,
     }
 }
 
@@ -487,7 +625,75 @@ fn build_compatibility(
         required_apis: required,
         unsupported_apis: unsupported,
         warnings,
+        api_mappings: build_api_mappings(js_analysis),
     }
+}
+
+fn build_api_mappings(js_analysis: &JsAnalysisReport) -> Vec<ApiCompatibilityMapping> {
+    let mut mappings = Vec::new();
+
+    for api in &js_analysis.detected_apis {
+        let mapping = match api.name.as_str() {
+            "Generate" | "generate" | "submitText" => Some(ApiCompatibilityMapping {
+                api: api.name.clone(),
+                status: "bridged".to_string(),
+                replacement: "submitText -> main chat pipeline".to_string(),
+                notes: "User-facing card input is routed through the same sendMessageStream flow as the platform input panel.".to_string(),
+            }),
+            "generateRaw" => Some(ApiCompatibilityMapping {
+                api: api.name.clone(),
+                status: "disabled".to_string(),
+                replacement: "safe empty response".to_string(),
+                notes: "Legacy secondary generation is not allowed to call an LLM; card-side summaries or analysis receive an empty compatibility response.".to_string(),
+            }),
+            "getVariables" | "getAllVariables" => Some(ApiCompatibilityMapping {
+                api: api.name.clone(),
+                status: "bridged".to_string(),
+                replacement: "platform runtime variables".to_string(),
+                notes: "Reads from the current platform/card runtime variable projection.".to_string(),
+            }),
+            "setVariables" | "updateVariablesWith" | "replaceMvuData" => {
+                Some(ApiCompatibilityMapping {
+                    api: api.name.clone(),
+                    status: "bridged".to_string(),
+                    replacement: "platform state bridge".to_string(),
+                    notes: "Writes are forwarded to the sandbox action bridge and reconciled with platform state rules.".to_string(),
+                })
+            }
+            "setChatMessage" | "setChatMessages" => Some(ApiCompatibilityMapping {
+                api: api.name.clone(),
+                status: "bridged".to_string(),
+                replacement: "message/opening bridge".to_string(),
+                notes: "Message edits are routed through sandbox actions instead of directly mutating platform storage.".to_string(),
+            }),
+            "eventOn" | "eventOnce" | "eventRemoveListener" => Some(ApiCompatibilityMapping {
+                api: api.name.clone(),
+                status: "partial".to_string(),
+                replacement: "runtime event shim".to_string(),
+                notes: "Common runtime events are shimmed; unsupported event names may no-op.".to_string(),
+            }),
+            _ if matches!(api.classification, ApiClassification::BrowserShim) => {
+                Some(ApiCompatibilityMapping {
+                    api: api.name.clone(),
+                    status: "shimmed".to_string(),
+                    replacement: "browser storage shim".to_string(),
+                    notes: "Provided inside the sandboxed card runtime.".to_string(),
+                })
+            }
+            _ => None,
+        };
+
+        if let Some(mapping) = mapping {
+            if !mappings
+                .iter()
+                .any(|existing: &ApiCompatibilityMapping| existing.api == mapping.api)
+            {
+                mappings.push(mapping);
+            }
+        }
+    }
+
+    mappings
 }
 
 #[cfg(test)]

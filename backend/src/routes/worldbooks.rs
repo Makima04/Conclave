@@ -542,8 +542,8 @@ pub async fn import_worldbook(
 pub async fn list_worldbooks(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let rows = sqlx::query_as::<_, (String, String, String, String, String, String)>(
-        "SELECT w.id, w.name, w.description, w.original_format, w.created_at, w.updated_at FROM world_books w ORDER BY w.created_at DESC"
+    let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String, String)>(
+        "SELECT w.id, w.name, w.description, w.original_format, COALESCE(w.parse_status, 'none'), COALESCE(w.single_agent_parse_status, 'none'), w.created_at, w.updated_at FROM world_books w ORDER BY w.created_at DESC"
     )
     .fetch_all(&state.pool)
     .await?;
@@ -555,38 +555,43 @@ pub async fn list_worldbooks(
     .await?;
 
     // Check which world books have character cards and fetch card names/avatars
-    let cc_rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT world_book_id, name, avatar FROM character_cards",
-    )
-    .fetch_all(&state.pool)
-    .await?;
+    let cc_rows: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT world_book_id, name, avatar FROM character_cards")
+            .fetch_all(&state.pool)
+            .await?;
 
-    let cc_map: std::collections::HashMap<String, (String, String)> =
-        cc_rows.into_iter().map(|(wid, name, avatar)| (wid, (name, avatar))).collect();
+    let cc_map: std::collections::HashMap<String, (String, String)> = cc_rows
+        .into_iter()
+        .map(|(wid, name, avatar)| (wid, (name, avatar)))
+        .collect();
     let count_map: std::collections::HashMap<String, i64> = count_rows.into_iter().collect();
 
     let items: Vec<serde_json::Value> = rows
         .iter()
-        .map(|(id, name, desc, fmt, created, updated)| {
-            let mut val = serde_json::json!({
-                "id": id,
-                "name": name,
-                "description": desc,
-                "original_format": fmt,
-                "entry_count": count_map.get(id).copied().unwrap_or(0),
-                "has_character_card": cc_map.contains_key(id),
-                "created_at": created,
-                "updated_at": updated,
-            });
-            if let Some((cc_name, cc_avatar)) = cc_map.get(id) {
-                val["character_card_name"] = serde_json::json!(cc_name);
-                val["character_card_avatar"] = serde_json::json!(cc_avatar);
-            } else {
-                val["character_card_name"] = serde_json::json!(null);
-                val["character_card_avatar"] = serde_json::json!(null);
-            }
-            val
-        })
+        .map(
+            |(id, name, desc, fmt, parse_status, single_agent_parse_status, created, updated)| {
+                let mut val = serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "description": desc,
+                    "original_format": fmt,
+                    "parse_status": parse_status,
+                    "single_agent_parse_status": single_agent_parse_status,
+                    "entry_count": count_map.get(id).copied().unwrap_or(0),
+                    "has_character_card": cc_map.contains_key(id),
+                    "created_at": created,
+                    "updated_at": updated,
+                });
+                if let Some((cc_name, cc_avatar)) = cc_map.get(id) {
+                    val["character_card_name"] = serde_json::json!(cc_name);
+                    val["character_card_avatar"] = serde_json::json!(cc_avatar);
+                } else {
+                    val["character_card_name"] = serde_json::json!(null);
+                    val["character_card_avatar"] = serde_json::json!(null);
+                }
+                val
+            },
+        )
         .collect();
 
     Ok(Json(serde_json::json!({ "items": items })))
@@ -954,16 +959,14 @@ async fn parse_worldbook_with_mode(
 ) -> Result<Json<serde_json::Value>, AppError> {
     // Load entries
     let entry_rows = sqlx::query_as::<_, (String, String, String, String, String, i32, i32, i32, String, i32, String, i32, String, String)>(
-        "SELECT id, world_book_id, keys, content, comment, constant, priority, enabled, position, selective, secondary_keys, selective_logic, created_at, updated_at FROM world_book_entries WHERE world_book_id = ? AND enabled = 1 ORDER BY priority DESC"
+        "SELECT id, world_book_id, keys, content, comment, constant, priority, enabled, position, selective, secondary_keys, selective_logic, created_at, updated_at FROM world_book_entries WHERE world_book_id = ? ORDER BY priority DESC, created_at ASC"
     )
     .bind(&id)
     .fetch_all(&state.pool)
     .await?;
 
     if entry_rows.is_empty() {
-        return Err(AppError::BadRequest(
-            "No enabled entries to parse".to_string(),
-        ));
+        return Err(AppError::BadRequest("No entries to parse".to_string()));
     }
 
     // Prepare entries for parsing: (id, keys, content, comment, constant)
@@ -981,6 +984,29 @@ async fn parse_worldbook_with_mode(
             },
         )
         .collect();
+
+    let status_column = match mode {
+        WorldBookParseMode::MultiAgent => "parse_status",
+        WorldBookParseMode::SingleAgent => "single_agent_parse_status",
+    };
+    let current_status: Option<String> = sqlx::query_scalar(&format!(
+        "SELECT {} FROM world_books WHERE id = ?",
+        status_column
+    ))
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    if current_status.is_none() {
+        return Err(AppError::NotFound("World book not found".to_string()));
+    }
+
+    if current_status.as_deref() == Some("parsing") {
+        return Ok(Json(serde_json::json!({
+            "status": "parsing",
+            "mode": parse_mode_name(mode),
+        })));
+    }
 
     // Mark as parsing
     let now = chrono::Utc::now().to_rfc3339();
@@ -1005,31 +1031,96 @@ async fn parse_worldbook_with_mode(
         }
     }
 
-    // Load provider
-    let provider = crate::runtime::executor::load_default_provider(&state.pool).await?;
-    let model = crate::runtime::executor::load_provider_model(&state.pool).await?;
+    let task_state = state.clone();
+    let task_id = id.clone();
+    tokio::spawn(async move {
+        if let Err(e) = run_worldbook_parse_task(
+            task_state,
+            task_id.clone(),
+            entry_rows,
+            entries_for_parse,
+            mode,
+        )
+        .await
+        {
+            tracing::error!(book_id = %task_id, mode = ?mode, error = %e, "World book parse task failed");
+        }
+    });
 
-    let parsed_result = match mode {
-        WorldBookParseMode::MultiAgent => {
-            crate::runtime::worldbook_parser::parse_world_book_for_multi_agent(
-                &provider,
-                &model,
-                &entries_for_parse,
-            )
+    Ok(Json(serde_json::json!({
+        "status": "accepted",
+        "mode": parse_mode_name(mode),
+    })))
+}
+
+type WorldBookEntryRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    i32,
+    i32,
+    i32,
+    String,
+    i32,
+    String,
+    i32,
+    String,
+    String,
+);
+
+fn parse_mode_name(mode: WorldBookParseMode) -> &'static str {
+    match mode {
+        WorldBookParseMode::MultiAgent => "multi_agent",
+        WorldBookParseMode::SingleAgent => "single_agent",
+    }
+}
+
+async fn run_worldbook_parse_task(
+    state: Arc<AppState>,
+    id: String,
+    entry_rows: Vec<WorldBookEntryRow>,
+    entries_for_parse: Vec<(String, Vec<String>, String, String, bool)>,
+    mode: WorldBookParseMode,
+) -> Result<(), AppError> {
+    let parsed_result = async {
+        let _permit = state
+            .llm_limiter
+            .acquire()
             .await
+            .map_err(|e| AppError::Internal(format!("LLM limiter closed: {}", e)))?;
+
+        let provider = crate::runtime::executor::load_default_provider(&state.pool).await?;
+        let model = crate::runtime::executor::load_provider_model(&state.pool).await?;
+
+        match mode {
+            WorldBookParseMode::MultiAgent => {
+                crate::runtime::worldbook_parser::parse_world_book_for_multi_agent(
+                    &provider,
+                    &model,
+                    &entries_for_parse,
+                )
+                .await
+            }
+            WorldBookParseMode::SingleAgent => {
+                crate::runtime::worldbook_parser::parse_world_book_for_single_agent(
+                    &provider,
+                    &model,
+                    &entries_for_parse,
+                )
+                .await
+            }
         }
-        WorldBookParseMode::SingleAgent => {
-            crate::runtime::worldbook_parser::parse_world_book_for_single_agent(
-                &provider,
-                &model,
-                &entries_for_parse,
-            )
-            .await
-        }
-    };
+    }
+    .await;
 
     match parsed_result {
-        Ok(parsed) => {
+        Ok(mut parsed) => {
+            for (entry, row) in parsed.iter_mut().zip(entry_rows.iter()) {
+                entry.enabled = row.7 != 0;
+            }
+
             let parsed_json = serde_json::to_string(&parsed).map_err(|e| {
                 AppError::Internal(format!("Failed to serialize parsed entries: {}", e))
             })?;
@@ -1056,14 +1147,7 @@ async fn parse_worldbook_with_mode(
 
             tracing::info!(book_id = %id, entries = parsed.len(), mode = ?mode, "World book parsed");
 
-            Ok(Json(serde_json::json!({
-                "status": "done",
-                "entries": parsed,
-                "mode": match mode {
-                    WorldBookParseMode::MultiAgent => "multi_agent",
-                    WorldBookParseMode::SingleAgent => "single_agent",
-                },
-            })))
+            Ok(())
         }
         Err(e) => {
             let now2 = chrono::Utc::now().to_rfc3339();

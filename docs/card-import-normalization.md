@@ -49,6 +49,16 @@ Conclave Card Package
 
 这样新增外部卡时，优先修导入器和转译器，而不是污染聊天运行时。
 
+**状态转换层是一等产物。**
+
+复杂卡不应长期保留“卡内私账”和“平台正史”两套状态。导入器必须生成：
+
+- `state_schema`：卡状态字段、root、语义角色、类型、默认值和可信度。
+- `state_adapter`：卡路径与平台 canonical path 的读写规则。
+- `variable_rules`：变量 Agent 是否可写、由消息派生、仅 UI 使用或需要人工确认。
+
+运行时只消费这个契约，不继续为单张卡补 `generate/generateRaw`、私有 IndexedDB 结构或私有 summary store。
+
 ---
 
 ## 运行时 ST Sandbox：受控兼容，不是无限兼容
@@ -285,6 +295,46 @@ type CardVariable = {
 
 变量 schema 是平台运行时契约，不能直接依赖 ST 的内部全局对象。
 
+### 8. 状态转换层生成
+
+变量抽取后，导入器必须构建卡状态转换层：
+
+```ts
+type CardStateSchema = {
+  roots: Array<{
+    path: string;
+    role: "world" | "character_collection" | "relationship" | "inventory" | "memory" | "summary" | "ui_runtime" | "custom";
+    confidence: number;
+  }>;
+  fields: Array<{
+    path: string;
+    canonical_path?: string;
+    type: "string" | "number" | "boolean" | "object" | "array";
+    role: "time" | "location" | "relationship_score" | "memory_entry" | "summary_entry" | "ui_flag" | "custom";
+    writable: boolean;
+    confidence: number;
+  }>;
+};
+```
+
+```ts
+type CardStateAdapter = {
+  adapter_version: string;
+  read_rules: StateMappingRule[];
+  write_rules: StateMappingRule[];
+  variable_rules: VariableRule[];
+  warnings: string[];
+};
+```
+
+规则：
+
+- 能稳定识别的字段映射到平台 canonical path，如 `world.current_time`、`world.current_location`、`relationships.*.score`。
+- 不确定字段保持 `custom/manual_review`，不得让 Agent 直接写。
+- `summary` / `memory` 默认由消息派生或总结 Agent 生成，不由卡内 secondary API 决定正史。
+- `ui_runtime` 字段只服务 UI，不进入世界状态正史。
+- 新规则必须是可复用的路径/语义规则，不得写死某张卡名称。
+
 ---
 
 ## LLM 的位置
@@ -420,6 +470,7 @@ LLM 只用于语义理解和补全，不用于执行或安全判断。
 5. 实现资源扫描与重写。
 6. 实现 JS parser / transpiler。
 7. 实现 action / variable 抽取。
-8. 生成 import-report。
-9. 前端运行时改为优先加载平台卡包。
-10. 将 ST runtime sandbox 标记为 fallback，并默认不作为主路径。
+8. 生成 state_schema / state_adapter / variable_rules。
+9. 生成 import-report。
+10. 前端运行时改为优先加载平台卡包。
+11. 将 ST runtime sandbox 标记为 fallback，并默认不作为主路径。

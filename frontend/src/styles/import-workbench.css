@@ -621,12 +621,14 @@
 }
 
 .package-greetings,
+.package-api-mappings,
 .package-actions,
 .package-variables {
   margin-top: 14px;
 }
 
 .package-greetings h4,
+.package-api-mappings h4,
 .package-actions h4,
 .package-variables h4 {
   font-size: 12px;
@@ -635,6 +637,115 @@
   margin-bottom: 8px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+.package-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.package-section-heading h4 {
+  margin-bottom: 0;
+}
+
+.api-map-source {
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-3);
+  background: var(--surface-0);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.api-map-source.source-backend {
+  border-color: rgba(91, 138, 94, 0.32);
+  color: #6fcf74;
+  background: rgba(91, 138, 94, 0.12);
+}
+
+.api-map-source.source-fallback {
+  border-color: rgba(184, 154, 91, 0.32);
+  color: #e6c65a;
+  background: rgba(184, 154, 91, 0.12);
+}
+
+.api-mapping-item {
+  display: grid;
+  grid-template-columns: 88px minmax(120px, 0.8fr) 20px minmax(180px, 1.2fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--surface-0);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin-bottom: 4px;
+}
+
+.api-map-status {
+  width: fit-content;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.api-map-status.status-bridged,
+.api-map-status.status-shimmed {
+  background: rgba(91, 138, 94, 0.18);
+  color: #6fcf74;
+}
+
+.api-map-status.status-disabled {
+  background: rgba(184, 154, 91, 0.16);
+  color: #e6c65a;
+}
+
+.api-map-status.status-partial {
+  background: rgba(107, 163, 214, 0.16);
+  color: #6ba3d6;
+}
+
+.api-map-status.status-review,
+.api-map-status.status-detected,
+.api-map-status.status-unsupported {
+  background: rgba(201, 37, 70, 0.12);
+  color: #f0627a;
+}
+
+.api-map-name {
+  color: var(--ink);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.api-map-arrow {
+  color: var(--text-3);
+  text-align: center;
+}
+
+.api-map-target {
+  color: var(--text-2);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-mapping-empty {
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--text-3);
+  background: var(--surface-0);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .greeting-item {
@@ -995,6 +1106,16 @@
   color: var(--text);
   border-color: var(--border-hi);
   background: var(--surface-2);
+}
+
+.iw-nav-item.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.iw-tab-panel {
+  padding-bottom: 12px;
 }
 
 /* ── Pagination ── */

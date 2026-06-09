@@ -136,7 +136,8 @@ export function useStreamRecovery(
             setMemoryBusy(true);
             break;
           case 'memory_error':
-            setStreamError(message.data.error || '记忆整理失败，已允许继续');
+            console.warn('Post-turn state update failed during recovery:', message.data.error || '状态整理失败，已允许继续');
+            setMemoryBusy(false);
             break;
           case 'turn_ready':
             setMemoryBusy(false);

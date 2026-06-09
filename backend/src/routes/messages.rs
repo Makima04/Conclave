@@ -14,6 +14,9 @@ use tokio::sync::broadcast;
 use crate::config::AppConfig;
 use crate::error::AppError;
 use crate::importer::types::ImportDraft;
+use crate::provider::openai::OpenAiProvider;
+use crate::provider::types::{ChatMessage, ChatRequest};
+use crate::runtime::card_state_adapter;
 use crate::runtime::executor;
 use crate::runtime::executor::ActiveTurns;
 use crate::runtime::sse_types::SseEvent;
@@ -84,17 +87,82 @@ pub struct AppState {
     pub session_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// In-memory store for import drafts (import_id -> ImportDraft).
     pub import_drafts: Arc<dashmap::DashMap<String, ImportDraft>>,
+    /// Global gate for non-streaming background LLM workloads such as parsing.
+    pub llm_limiter: crate::runtime::llm_limiter::LlmConcurrencyLimiter,
 }
 
 #[derive(Deserialize)]
 pub struct SendMessage {
     pub content: String,
     pub stream: Option<bool>,
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
 pub struct ApplyOpeningMessage {
     pub content: String,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateSessionVariablesBody {
+    pub variables: serde_json::Value,
+    #[serde(default)]
+    pub merge: bool,
+}
+
+#[derive(Deserialize)]
+pub struct QuietGenerateRequest {
+    pub prompt: Option<String>,
+    pub message: Option<String>,
+    pub content: Option<String>,
+    pub text: Option<String>,
+    pub input: Option<String>,
+    pub messages: Option<Vec<QuietPromptInput>>,
+    pub ordered_prompts: Option<Vec<QuietOrderedPrompt>>,
+    pub system_prompt: Option<String>,
+    pub model: Option<String>,
+    pub model_ref: Option<String>,
+    pub response_length: Option<serde_json::Value>,
+    pub max_tokens: Option<serde_json::Value>,
+    pub temperature: Option<serde_json::Value>,
+    pub top_p: Option<serde_json::Value>,
+    pub frequency_penalty: Option<serde_json::Value>,
+    pub presence_penalty: Option<serde_json::Value>,
+    pub generation_id: Option<String>,
+    #[serde(rename = "generationId")]
+    pub generation_id_alt: Option<String>,
+    pub custom_api: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum QuietPromptInput {
+    Text(String),
+    Object {
+        role: Option<String>,
+        content: Option<String>,
+        text: Option<String>,
+        prompt: Option<String>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum QuietOrderedPrompt {
+    Text(String),
+    Object {
+        role: Option<String>,
+        content: Option<String>,
+        text: Option<String>,
+        prompt: Option<String>,
+    },
+}
+
+#[derive(Serialize)]
+pub struct QuietGenerateResponse {
+    pub content: String,
+    pub generation_id: Option<String>,
+    pub model: String,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -106,7 +174,254 @@ pub struct MessageResponse {
     pub content: String,
     pub variants: String,
     pub variant_index: i32,
+    pub metadata: String,
     pub created_at: String,
+}
+
+fn normalize_quiet_role(role: Option<&str>) -> String {
+    match role.unwrap_or("user").trim().to_lowercase().as_str() {
+        "system" => "system".to_string(),
+        "assistant" | "char" | "character" => "assistant".to_string(),
+        "user" | "human" => "user".to_string(),
+        _ => "user".to_string(),
+    }
+}
+
+fn quiet_chat_message(role: Option<&str>, content: String) -> Option<ChatMessage> {
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return None;
+    }
+    Some(ChatMessage {
+        role: normalize_quiet_role(role),
+        content,
+        reasoning_content: None,
+        tool_calls: None,
+    })
+}
+
+fn quiet_messages_from_request(body: &QuietGenerateRequest) -> Vec<ChatMessage> {
+    let mut messages = Vec::new();
+
+    if let Some(system_prompt) = body.system_prompt.as_deref() {
+        if let Some(message) = quiet_chat_message(Some("system"), system_prompt.to_string()) {
+            messages.push(message);
+        }
+    }
+
+    if let Some(input_messages) = body.messages.as_ref() {
+        messages.extend(input_messages.iter().filter_map(|item| match item {
+            QuietPromptInput::Text(text) => quiet_chat_message(Some("user"), text.clone()),
+            QuietPromptInput::Object {
+                role,
+                content,
+                text,
+                prompt,
+            } => quiet_chat_message(
+                role.as_deref(),
+                content
+                    .clone()
+                    .or_else(|| text.clone())
+                    .or_else(|| prompt.clone())
+                    .unwrap_or_default(),
+            ),
+        }));
+    } else if let Some(ordered_prompts) = body.ordered_prompts.as_ref() {
+        messages.extend(ordered_prompts.iter().filter_map(|item| match item {
+            QuietOrderedPrompt::Text(text) => quiet_chat_message(Some("user"), text.clone()),
+            QuietOrderedPrompt::Object {
+                role,
+                content,
+                text,
+                prompt,
+            } => quiet_chat_message(
+                role.as_deref(),
+                content
+                    .clone()
+                    .or_else(|| text.clone())
+                    .or_else(|| prompt.clone())
+                    .unwrap_or_default(),
+            ),
+        }));
+    } else {
+        let prompt = body
+            .prompt
+            .as_ref()
+            .or(body.message.as_ref())
+            .or(body.content.as_ref())
+            .or(body.text.as_ref())
+            .or(body.input.as_ref())
+            .cloned()
+            .unwrap_or_default();
+        if let Some(message) = quiet_chat_message(Some("user"), prompt) {
+            messages.push(message);
+        }
+    }
+
+    messages
+}
+
+fn quiet_string_field(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .filter_map(|key| value.get(*key)?.as_str())
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn quiet_custom_api_target(body: &QuietGenerateRequest) -> Option<(OpenAiProvider, String)> {
+    let custom_api = body.custom_api.as_ref()?.as_object()?;
+    let value = serde_json::Value::Object(custom_api.clone());
+    let base_url = quiet_string_field(&value, &["apiurl", "api_url", "base_url"])?;
+    let api_key = quiet_string_field(&value, &["key", "api_key"])?;
+    let model = quiet_string_field(&value, &["model"])?;
+    Some((OpenAiProvider::new(&base_url, &api_key), model))
+}
+
+fn quiet_u32(value: Option<&serde_json::Value>) -> Option<u32> {
+    match value {
+        Some(serde_json::Value::Number(number)) => number.as_u64().and_then(|n| u32::try_from(n).ok()),
+        Some(serde_json::Value::String(text)) => text.trim().parse::<u32>().ok(),
+        _ => None,
+    }
+}
+
+fn quiet_f32(value: Option<&serde_json::Value>) -> Option<f32> {
+    match value {
+        Some(serde_json::Value::Number(number)) => number.as_f64().map(|n| n as f32),
+        Some(serde_json::Value::String(text)) => text.trim().parse::<f32>().ok(),
+        _ => None,
+    }
+}
+
+pub async fn quiet_generate(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    Json(body): Json<QuietGenerateRequest>,
+) -> Result<Json<QuietGenerateResponse>, AppError> {
+    let generation_id = body
+        .generation_id
+        .clone()
+        .or_else(|| body.generation_id_alt.clone());
+    let messages = quiet_messages_from_request(&body);
+    if messages.is_empty() {
+        return Err(AppError::BadRequest(
+            "quiet generate prompt cannot be empty".to_string(),
+        ));
+    }
+
+    let config_json: String =
+        sqlx::query_scalar("SELECT config FROM sessions WHERE id = ? AND deleted_at IS NULL")
+            .bind(&session_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Session not found".to_string()))?;
+    let session_config: crate::routes::sessions::SessionConfig =
+        serde_json::from_str(&config_json).unwrap_or_default();
+
+    let _permit = state
+        .llm_limiter
+        .acquire()
+        .await
+        .map_err(|e| AppError::Internal(format!("LLM limiter closed: {}", e)))?;
+
+    let (provider, model) = if let Some((provider, model)) = quiet_custom_api_target(&body) {
+        (provider, model)
+    } else {
+        let fallback_model = executor::load_provider_model(&state.pool).await?;
+        let requested_model = body
+            .model_ref
+            .as_deref()
+            .or(body.model.as_deref())
+            .or_else(|| {
+                let value = session_config.variable_tool_model.trim();
+                (!value.is_empty()).then_some(value)
+            })
+            .or_else(|| {
+                let value = session_config.sub_agent_model.trim();
+                (!value.is_empty()).then_some(value)
+            })
+            .or_else(|| {
+                let value = session_config.master_model.trim();
+                (!value.is_empty()).then_some(value)
+            })
+            .unwrap_or(&fallback_model);
+        let target =
+            executor::resolve_model_target(&state.pool, &fallback_model, requested_model).await?;
+        (target.provider, target.model)
+    };
+
+    let max_tokens = body
+        .max_tokens
+        .as_ref()
+        .and_then(|value| quiet_u32(Some(value)))
+        .or_else(|| {
+            body.response_length
+                .as_ref()
+                .and_then(|value| quiet_u32(Some(value)))
+        })
+        .or_else(|| u32::try_from(session_config.max_tokens).ok());
+    let request = ChatRequest {
+        model: model.clone(),
+        messages,
+        temperature: Some(
+            quiet_f32(body.temperature.as_ref()).unwrap_or(session_config.temperature),
+        ),
+        top_p: Some(quiet_f32(body.top_p.as_ref()).unwrap_or(session_config.top_p)),
+        max_tokens,
+        frequency_penalty: Some(
+            quiet_f32(body.frequency_penalty.as_ref()).unwrap_or(session_config.frequency_penalty),
+        ),
+        presence_penalty: Some(
+            quiet_f32(body.presence_penalty.as_ref()).unwrap_or(session_config.presence_penalty),
+        ),
+        tools: None,
+        tool_choice: None,
+        stream: false,
+    };
+
+    tracing::info!(
+        session = %session_id,
+        generation_id = generation_id.as_deref().unwrap_or(""),
+        model = %model,
+        messages = request.messages.len(),
+        "quiet_generate request"
+    );
+
+    let response = provider
+        .chat_completion_with_retry(request, 1)
+        .await
+        .map_err(|e| AppError::Provider(e.to_string()))?;
+    let content = response
+        .choices
+        .first()
+        .map(|choice| {
+            if choice.message.content.trim().is_empty() {
+                choice.message.reasoning_content.clone().unwrap_or_default()
+            } else {
+                choice.message.content.clone()
+            }
+        })
+        .unwrap_or_default();
+    if content.trim().is_empty() {
+        return Err(AppError::Provider(
+            "quiet generate returned empty content".to_string(),
+        ));
+    }
+
+    tracing::info!(
+        session = %session_id,
+        generation_id = generation_id.as_deref().unwrap_or(""),
+        model = %model,
+        content_len = content.len(),
+        "quiet_generate completed"
+    );
+
+    Ok(Json(QuietGenerateResponse {
+        content,
+        generation_id,
+        model,
+    }))
 }
 
 pub async fn apply_opening(
@@ -200,6 +515,7 @@ pub async fn apply_opening(
         content: display_content,
         variants: "[]".to_string(),
         variant_index: -1,
+        metadata: "{}".to_string(),
         created_at: now,
     }))
 }
@@ -214,6 +530,15 @@ pub async fn send_message(
     Path(session_id): Path<String>,
     Json(body): Json<SendMessage>,
 ) -> Result<(HeaderMap, Sse<SseStream>), AppError> {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    tracing::info!(
+        request_id = %request_id,
+        session = %session_id,
+        stream = body.stream.unwrap_or(false),
+        content_len = body.content.len(),
+        "send_message request received"
+    );
+
     let mut headers = HeaderMap::new();
     headers.insert(
         HeaderName::from_static("x-accel-buffering"),
@@ -265,6 +590,7 @@ pub async fn send_message(
         let session_id_clone = stream_result.session_id.clone();
         let title_source = stream_result.title_source.clone();
         let user_input = body.content.clone();
+        let message_metadata = body.metadata.unwrap_or_else(|| serde_json::json!({}));
         let pool = state.pool.clone();
         let commit_data = stream_result.commit_data.clone();
         let active_turns_clone = state.active_turns.clone();
@@ -380,14 +706,13 @@ pub async fn send_message(
             };
 
             // Finalize: user msg + assistant msg + traces + current_turn in one transaction
-            let (commit_traces, commit_compression, compression_job) =
-                commit_data
-                    .as_ref()
-                    .and_then(|data| data.lock().ok().and_then(|guard| guard.clone()))
-                    .map(|(traces, compression, job)| {
-                        (Some(traces), compression, job)
-                    })
-                    .unwrap_or((None, None, None));
+            let (commit_traces, commit_debug_snapshots, commit_compression, compression_job) = commit_data
+                .as_ref()
+                .and_then(|data| data.lock().ok().and_then(|guard| guard.clone()))
+                .map(|(traces, debug_snapshots, compression, job)| {
+                    (Some(traces), Some(debug_snapshots), compression, job)
+                })
+                .unwrap_or((None, None, None, None));
             let is_multi_agent_commit = commit_data.is_some();
             if !is_multi_agent_commit {
                 let _ = broadcast_tx.send(crate::runtime::sse_types::SseEvent::StateUpdate {
@@ -415,19 +740,30 @@ pub async fn send_message(
                                     &mut tx,
                                     &session_id_clone,
                                     &proposal.changes,
-                                ).await {
+                                )
+                                .await
+                                {
                                     Ok(()) => {
                                         if let Err(e) = tx.commit().await {
-                                            tracing::warn!("Failed to commit single-agent variable changes: {}", e);
+                                            tracing::warn!(
+                                                "Failed to commit single-agent variable changes: {}",
+                                                e
+                                            );
                                         }
                                     }
                                     Err(e) => {
-                                        tracing::warn!("Failed to persist single-agent variable changes: {}", e);
+                                        tracing::warn!(
+                                            "Failed to persist single-agent variable changes: {}",
+                                            e
+                                        );
                                         let _ = tx.rollback().await;
                                     }
                                 }
                             }
-                            Err(e) => tracing::warn!("Failed to begin transaction for variable changes: {}", e),
+                            Err(e) => tracing::warn!(
+                                "Failed to begin transaction for variable changes: {}",
+                                e
+                            ),
                         }
                     }
                     Ok(None) => {}
@@ -447,6 +783,7 @@ pub async fn send_message(
                 )));
             }
             let traces_ref = commit_traces.as_deref().unwrap_or(&[]);
+            let debug_snapshots_ref = commit_debug_snapshots.as_deref().unwrap_or(&[]);
             let finalize_result: Result<(), String> = async {
                 let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
                 turn_finalizer::finalize_turn_with_options(
@@ -456,7 +793,9 @@ pub async fn send_message(
                     &user_input,
                     &accumulated,
                     traces_ref,
+                    debug_snapshots_ref,
                     is_multi_agent_commit,
+                    &message_metadata,
                 )
                 .await
                 .map_err(|e| e.to_string())?;
@@ -662,7 +1001,7 @@ pub async fn list_messages(
     let limit = params.limit.unwrap_or(50).min(200);
 
     let messages = sqlx::query_as::<_, MessageResponse>(
-        "SELECT id, session_id, turn_number, role, content, variants, variant_index, created_at FROM messages WHERE session_id = ? ORDER BY turn_number ASC, created_at ASC LIMIT ?"
+        "SELECT id, session_id, turn_number, role, content, variants, variant_index, metadata, created_at FROM messages WHERE session_id = ? ORDER BY turn_number ASC, created_at ASC LIMIT ?"
     )
     .bind(&session_id)
     .bind(limit)
@@ -689,11 +1028,107 @@ pub async fn get_state(
     .fetch_optional(&state.pool)
     .await?;
 
-    let value = state_data
+    let mut value = state_data
         .map(|s| serde_json::from_str(&s).unwrap_or(serde_json::json!({})))
         .unwrap_or_else(|| serde_json::json!({}));
 
+    let fallback_variables = value.get("variables").cloned();
+    if let Ok(Some(contract)) = card_state_adapter::load_session_contract(
+        &state.pool,
+        &session_id,
+        fallback_variables.as_ref(),
+    )
+    .await
+    {
+        value = card_state_adapter::build_normalized_state(&value, &contract, None);
+    }
+
     Ok(Json(value))
+}
+
+pub async fn update_variables(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    Json(body): Json<UpdateSessionVariablesBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let session_exists: Option<String> =
+        sqlx::query_scalar("SELECT id FROM sessions WHERE id = ? AND deleted_at IS NULL")
+            .bind(&session_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    if session_exists.is_none() {
+        return Err(AppError::NotFound("Session not found".to_string()));
+    }
+
+    let current_state: Option<String> = sqlx::query_scalar(
+        "SELECT state_json FROM state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 1",
+    )
+    .bind(&session_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let mut state_value: serde_json::Value = current_state
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !state_value.is_object() {
+        state_value = serde_json::json!({});
+    }
+
+    let next_variables = if body.merge {
+        let mut merged = state_value
+            .get("variables")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        merge_json_objects(&mut merged, &body.variables);
+        merged
+    } else {
+        body.variables
+    };
+    if let Some(obj) = state_value.as_object_mut() {
+        obj.insert("variables".to_string(), next_variables.clone());
+    }
+
+    let max_version: Option<i32> =
+        sqlx::query_scalar("SELECT MAX(version) FROM state_snapshots WHERE session_id = ?")
+            .bind(&session_id)
+            .fetch_one(&state.pool)
+            .await?;
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO state_snapshots (id, session_id, version, state_json, risk_level, committed_by, created_at) VALUES (?, ?, ?, ?, 'low', 'card_runtime', ?)"
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(&session_id)
+    .bind(max_version.unwrap_or(0) + 1)
+    .bind(state_value.to_string())
+    .bind(now.clone())
+    .execute(&state.pool)
+    .await?;
+
+    sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+        .bind(now)
+        .bind(&session_id)
+        .execute(&state.pool)
+        .await?;
+
+    Ok(Json(serde_json::json!({ "variables": next_variables })))
+}
+
+fn merge_json_objects(target: &mut serde_json::Value, source: &serde_json::Value) {
+    match (target, source) {
+        (serde_json::Value::Object(target_obj), serde_json::Value::Object(source_obj)) => {
+            for (key, value) in source_obj {
+                match target_obj.get_mut(key) {
+                    Some(existing) => merge_json_objects(existing, value),
+                    None => {
+                        target_obj.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        (target_value, source_value) => {
+            *target_value = source_value.clone();
+        }
+    }
 }
 
 pub async fn get_memory_events(
@@ -773,6 +1208,147 @@ pub async fn get_trace(
     .await?;
 
     Ok(Json(serde_json::json!({ "items": traces })))
+}
+
+pub async fn get_debug_overview(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    #[derive(sqlx::FromRow, Serialize)]
+    struct DebugMessageRow {
+        id: String,
+        turn_number: i32,
+        role: String,
+        content: String,
+        created_at: String,
+    }
+
+    #[derive(sqlx::FromRow, Serialize)]
+    struct DebugTurnRow {
+        turn_number: i32,
+        call_count: i32,
+        agent_count: i32,
+        total_prompt_tokens: i32,
+        total_completion_tokens: i32,
+        total_duration_ms: i32,
+    }
+
+    let messages = sqlx::query_as::<_, DebugMessageRow>(
+        "SELECT id, turn_number, role, content, created_at FROM messages WHERE session_id = ? ORDER BY turn_number ASC, created_at ASC"
+    )
+    .bind(&session_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let turns = sqlx::query_as::<_, DebugTurnRow>(
+        r#"SELECT
+            turn_number,
+            COUNT(*) AS call_count,
+            COUNT(DISTINCT COALESCE(agent_id, '')) AS agent_count,
+            COALESCE(SUM(prompt_tokens), 0) AS total_prompt_tokens,
+            COALESCE(SUM(completion_tokens), 0) AS total_completion_tokens,
+            COALESCE(SUM(COALESCE(duration_ms, 0)), 0) AS total_duration_ms
+           FROM agent_call_debug_snapshots
+           WHERE session_id = ?
+           GROUP BY turn_number
+           ORDER BY turn_number ASC"#
+    )
+    .bind(&session_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    Ok(Json(serde_json::json!({
+        "messages": messages,
+        "turns": turns,
+    })))
+}
+
+pub async fn get_debug_turn(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, turn)): Path<(String, i32)>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    #[derive(sqlx::FromRow, Serialize)]
+    struct SnapshotRow {
+        id: String,
+        session_id: String,
+        turn_number: i32,
+        phase: String,
+        level_index: Option<i32>,
+        agent_id: Option<String>,
+        agent_type: String,
+        agent_label: String,
+        model: String,
+        task: String,
+        system_prompt: String,
+        user_prompt: String,
+        injected_from_json: String,
+        injected_outputs_json: String,
+        preset_modules_json: String,
+        worldbook_entries_json: String,
+        recent_messages_json: String,
+        recalled_events_json: String,
+        state_slice_json: String,
+        raw_output: String,
+        tool_calls_json: String,
+        duration_ms: Option<i32>,
+        prompt_tokens: i32,
+        completion_tokens: i32,
+        created_at: String,
+    }
+
+    let rows = sqlx::query_as::<_, SnapshotRow>(
+        r#"SELECT id, session_id, turn_number, phase, level_index, agent_id, agent_type,
+           agent_label, model, task, system_prompt, user_prompt, injected_from_json,
+           injected_outputs_json, preset_modules_json, worldbook_entries_json,
+           recent_messages_json, recalled_events_json, state_slice_json, raw_output,
+           tool_calls_json, duration_ms, prompt_tokens, completion_tokens, created_at
+           FROM agent_call_debug_snapshots
+           WHERE session_id = ? AND turn_number = ?
+           ORDER BY COALESCE(level_index, 9999), created_at ASC"#
+    )
+    .bind(&session_id)
+    .bind(turn)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let snapshots: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|row| {
+            serde_json::json!({
+                "id": row.id,
+                "session_id": row.session_id,
+                "turn_number": row.turn_number,
+                "phase": row.phase,
+                "level_index": row.level_index,
+                "agent_id": row.agent_id,
+                "agent_type": row.agent_type,
+                "agent_label": row.agent_label,
+                "model": row.model,
+                "task": row.task,
+                "system_prompt": row.system_prompt,
+                "user_prompt": row.user_prompt,
+                "injected_from": parse_json_or_empty_array(&row.injected_from_json),
+                "injected_outputs": parse_json_or_empty_array(&row.injected_outputs_json),
+                "preset_modules": parse_json_or_empty_array(&row.preset_modules_json),
+                "worldbook_entries": parse_json_or_empty_array(&row.worldbook_entries_json),
+                "recent_messages": parse_json_or_empty_array(&row.recent_messages_json),
+                "recalled_events": parse_json_or_empty_array(&row.recalled_events_json),
+                "state_slice": serde_json::from_str::<serde_json::Value>(&row.state_slice_json).unwrap_or_else(|_| serde_json::json!({})),
+                "raw_output": row.raw_output,
+                "tool_calls": parse_json_or_empty_array(&row.tool_calls_json),
+                "duration_ms": row.duration_ms,
+                "prompt_tokens": row.prompt_tokens,
+                "completion_tokens": row.completion_tokens,
+                "created_at": row.created_at,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({ "items": snapshots })))
+}
+
+fn parse_json_or_empty_array(value: &str) -> serde_json::Value {
+    serde_json::from_str::<serde_json::Value>(value).unwrap_or_else(|_| serde_json::json!([]))
 }
 
 pub async fn regenerate(
@@ -867,6 +1443,11 @@ pub struct EditMessageBody {
     pub content: String,
 }
 
+#[derive(Deserialize)]
+pub struct UpdateMessageMetadataBody {
+    pub metadata: serde_json::Value,
+}
+
 pub async fn edit_message(
     State(state): State<Arc<AppState>>,
     Path((session_id, message_id)): Path<(String, String)>,
@@ -910,6 +1491,44 @@ pub async fn edit_message(
         "content": body.content,
         "variants": variants_json,
         "variant_index": -1
+    })))
+}
+
+pub async fn update_message_metadata(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, message_id)): Path<(String, String)>,
+    Json(body): Json<UpdateMessageMetadataBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let existing: Option<String> =
+        sqlx::query_scalar("SELECT metadata FROM messages WHERE id = ? AND session_id = ?")
+            .bind(&message_id)
+            .bind(&session_id)
+            .fetch_optional(&state.pool)
+            .await?;
+
+    let existing = existing.ok_or_else(|| AppError::NotFound("Message not found".to_string()))?;
+    let mut metadata: serde_json::Value =
+        serde_json::from_str(&existing).unwrap_or_else(|_| serde_json::json!({}));
+    if !metadata.is_object() {
+        metadata = serde_json::json!({});
+    }
+    if let (Some(target), Some(source)) = (metadata.as_object_mut(), body.metadata.as_object()) {
+        for (key, value) in source {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+    let metadata_json = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
+
+    sqlx::query("UPDATE messages SET metadata = ? WHERE id = ? AND session_id = ?")
+        .bind(&metadata_json)
+        .bind(&message_id)
+        .bind(&session_id)
+        .execute(&state.pool)
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "id": message_id,
+        "metadata": metadata
     })))
 }
 

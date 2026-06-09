@@ -9,6 +9,7 @@ pub mod png_parser;
 pub mod regex_executor;
 pub mod report;
 pub mod resource_scanner;
+pub mod state_adapter;
 pub mod storage;
 pub mod types;
 pub mod variable_extractor;

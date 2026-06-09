@@ -9,7 +9,7 @@ use std::sync::Arc;
 const INITIAL_BATCH_SIZE: usize = 12;
 const ENTRY_CONTENT_LIMIT: usize = 500;
 const LLM_MAX_TOKENS: u32 = 4096;
-const PARSE_CONCURRENCY: usize = 4;
+const PARSE_CONCURRENCY: usize = 1;
 
 /// A world book entry after LLM categorization for runtime context routing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,7 +50,7 @@ Guidelines:
 - "user": Information specifically for the player/user character
 
 IMPORTANT: Output ONLY a valid JSON array. No markdown, no explanation text outside the JSON.
-Output an array of objects, one per input entry (same order), each with fields: index, category, visibility, reason, enabled (bool)."#;
+Output an array of objects, one per input entry (same order), each with fields: index, category, visibility, reason."#;
 
 const SINGLE_AGENT_PARSE_SYSTEM_PROMPT: &str = r#"You are a world book analysis engine for a single-agent roleplay runtime. Given a list of world book entries from a character card, categorize each entry for prompt routing.
 
@@ -67,7 +67,7 @@ Guidelines:
 - "user": Information specifically for the player/user character.
 
 IMPORTANT: Output ONLY a valid JSON array. No markdown, no explanation text outside the JSON.
-Output an array of objects, one per input entry (same order), each with fields: index, category, visibility, reason, enabled (bool)."#;
+Output an array of objects, one per input entry (same order), each with fields: index, category, visibility, reason."#;
 
 /// Parse world book entries for multi-agent use via LLM categorization.
 pub async fn parse_world_book_for_multi_agent(
@@ -317,7 +317,7 @@ async fn parse_batch(
                 comment: comment.clone(),
                 constant: *constant,
                 priority: 100,
-                enabled: p.enabled,
+                enabled: true,
                 category: p.category,
                 visibility: p.visibility,
                 reason: p.reason,
@@ -481,12 +481,6 @@ struct ParsedLLMEntry {
     category: String,
     visibility: String,
     reason: String,
-    #[serde(default = "default_true")]
-    enabled: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 #[cfg(test)]

@@ -4,45 +4,22 @@
 import React from 'react';
 import type { CharacterCard } from '../../api/types';
 import type { SandboxCardAction } from '../card-schema-types';
-import type { SandboxRuntimeContext } from '../sandbox-document';
+import type { SandboxRuntimeContext } from '../sandbox-runtime-types';
 import { CustomStatusRenderer } from './CustomStatusRenderer';
 import { SandboxHtmlRenderer } from './SandboxHtmlRenderer';
 import { TavernHelperRuntimeHost } from './TavernHelperRuntimeHost';
 import { MessageHtmlAppRenderer } from './MessageHtmlAppRenderer';
 import {
   cleanCardDisplayText,
-  getSandboxHtmlForContent,
   getTavernHelperScripts,
-  removeUiTriggers,
   renderCardFormattedContent,
 } from '../card-content';
 import { buildStatusSchema } from '../card-schema-builders';
-
-function hasHtmlAppUi(card: CharacterCard | null): boolean {
-  return card?.conclave_package?.ui?.type === 'html_app'
-    && Boolean(String(card.conclave_package?.ui?.html || '').trim());
-}
-
-function isHtmlAppTriggerContent(content: string): boolean {
-  return /(?:^|\n)\s*(?:\[attachment\]|\[开局\]|【GameStart】|【游戏开始】)\s*(?:\n|$)/i.test(content);
-}
-
-function isOpeningPreviewRuntime(runtime?: SandboxRuntimeContext): boolean {
-  const current = runtime?.currentMessage;
-  const id = String(runtime?.currentMessageId ?? current?.message_id ?? current?.id ?? '');
-  return id === 'opening-preview';
-}
-
-function shouldRenderHtmlApp(card: CharacterCard | null, content: string, runtime?: SandboxRuntimeContext): boolean {
-  return hasHtmlAppUi(card) && (isOpeningPreviewRuntime(runtime) || isHtmlAppTriggerContent(content));
-}
-
-function removeHtmlAppTriggers(content: string): string {
-  return content
-    .replace(/(?:^|\n)\s*(?:\[attachment\]|\[开局\]|【GameStart】|【游戏开始】)\s*(?=\n|$)/gi, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
+import {
+  resolveCardRenderPlan,
+  resolveTavernHelperStatusMode,
+  shouldRenderCleanText,
+} from '../card-runtime-resolver';
 
 export const MessageContent = React.memo(function MessageContent({
   content,
@@ -61,10 +38,11 @@ export const MessageContent = React.memo(function MessageContent({
 }) {
   const marker = '<StatusPlaceHolderImpl/>';
   const contentHasStatusMarker = content.includes(marker);
-  const renderHtmlApp = shouldRenderHtmlApp(card, content, runtime);
-  const htmlAppCard = renderHtmlApp ? card : null;
-  const displayContent = renderHtmlApp ? removeHtmlAppTriggers(content) : content;
   const tavernHelperScripts = React.useMemo(() => getTavernHelperScripts(card), [card?.id, card?.extensions]);
+  const renderPlan = React.useMemo(
+    () => resolveCardRenderPlan({ card, content, runtime, renderMode }),
+    [card, content, runtime, renderMode],
+  );
   const renderCleanText = (value: string) => {
     if (value.trim() === 'false') return null;
     const cleaned = cleanCardDisplayText(value);
@@ -93,13 +71,15 @@ export const MessageContent = React.memo(function MessageContent({
 
   // Text mode: always plain formatted content
   if (renderMode === 'text') {
-    return <>{renderCleanText(displayContent)}</>;
+    return <>{renderCleanText(renderPlan.displayContent)}</>;
   }
 
   const schema = buildStatusSchema(card);
-  const statusContent = contentHasStatusMarker ? displayContent : `${displayContent.trim()}\n\n${marker}`;
+  const statusContent = contentHasStatusMarker
+    ? renderPlan.displayContent
+    : `${renderPlan.displayContent.trim()}\n\n${marker}`;
 
-  if (contentHasStatusMarker && tavernHelperScripts.length > 0 && renderMode === 'sandbox') {
+  if (resolveTavernHelperStatusMode(card, content, renderMode)) {
     return renderTavernHelperStatusParts();
   }
 
@@ -118,66 +98,35 @@ export const MessageContent = React.memo(function MessageContent({
         </>
       );
     }
-    return <>{renderCleanText(displayContent)}</>;
+    return <>{renderCleanText(renderPlan.displayContent)}</>;
   }
 
-  // Sandbox mode: render the author's original ST regex UI. No platform fallback.
-  if (renderMode === 'sandbox') {
-    if (htmlAppCard) {
-      return (
-        <>
-          <MessageHtmlAppRenderer
-            card={htmlAppCard}
-            variables={variables || {}}
-            runtime={runtime}
-            onAction={onSandboxAction}
-          />
-          {renderCleanText(displayContent)}
-        </>
-      );
-    }
-    const sandboxHtml = getSandboxHtmlForContent(card, statusContent);
-    if (sandboxHtml) {
-      const contentWithoutTrigger = removeUiTriggers(card, statusContent);
-      return (
-        <>
-          <SandboxHtmlRenderer html={sandboxHtml} variables={variables || {}} runtime={runtime} onAction={onSandboxAction} />
-          {cleanCardDisplayText(contentWithoutTrigger) && renderCardFormattedContent(card, contentWithoutTrigger)}
-        </>
-      );
-    }
-    return <>{renderCleanText(displayContent)}</>;
-  }
-
-  // Auto mode (default): ST regex/sandbox first; otherwise ST-style text only.
-  if (htmlAppCard) {
+  if (renderPlan.kind === 'html_app' && card) {
     return (
       <>
         <MessageHtmlAppRenderer
-          card={htmlAppCard}
+          card={card}
           variables={variables || {}}
           runtime={runtime}
           onAction={onSandboxAction}
         />
-        {renderCleanText(displayContent)}
+        {renderCleanText(renderPlan.displayContent)}
       </>
     );
   }
 
-  const autoSandboxHtml = getSandboxHtmlForContent(card, statusContent);
-  if (autoSandboxHtml) {
-    const contentWithoutTrigger = removeUiTriggers(card, statusContent);
+  if (renderPlan.kind === 'sandbox_html') {
     return (
       <>
-        <SandboxHtmlRenderer html={autoSandboxHtml} variables={variables || {}} runtime={runtime} onAction={onSandboxAction} />
-        {cleanCardDisplayText(contentWithoutTrigger) && renderCardFormattedContent(card, contentWithoutTrigger)}
+        <SandboxHtmlRenderer html={renderPlan.runtimeHtml} variables={variables || {}} runtime={runtime} onAction={onSandboxAction} />
+        {shouldRenderCleanText(renderPlan.displayContent) && renderCardFormattedContent(card, renderPlan.displayContent)}
       </>
     );
   }
 
   return (
     <>
-      {renderCleanText(displayContent)}
+      {renderCleanText(renderPlan.displayContent)}
     </>
   );
 });

@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { SandboxCardAction } from '../card-schema-types';
-import type { SandboxRuntimeContext } from '../sandbox-document';
+import type { SandboxRuntimeContext } from '../sandbox-runtime-types';
+import {
+  buildRuntimeResponsePayload,
+  buildRuntimeUpdatePayload,
+} from '../runtime-host-protocol';
 
 interface DirectHtmlRuntimeHostProps {
   documentHtml: string;
@@ -8,7 +12,7 @@ interface DirectHtmlRuntimeHostProps {
   runtime?: SandboxRuntimeContext;
   variables?: Record<string, unknown>;
   allowedActions?: Set<string>;
-  onAction?: (action: SandboxCardAction) => void;
+  onAction?: (action: SandboxCardAction) => void | Promise<unknown>;
 }
 
 function copyAttributes(from: Element, to: Element) {
@@ -59,7 +63,26 @@ export function DirectHtmlRuntimeHost({
       } else if (detail.action === 'missingApi') {
         console.warn('[Direct Card Missing API]', detail.payload?.method, detail.payload);
       }
-      onAction?.({ action: detail.action, payload: detail.payload || {} });
+      const action = { action: detail.action, payload: detail.payload || {} };
+      const maybePromise = onAction?.(action);
+      const requestId = typeof detail.requestId === 'string' ? detail.requestId : '';
+      if (!requestId || !maybePromise || typeof (maybePromise as Promise<unknown>).then !== 'function') return;
+      Promise.resolve(maybePromise)
+        .then((payload) => {
+          window.dispatchEvent(new CustomEvent(eventNamesRef.current.message, {
+            detail: buildRuntimeResponsePayload(requestId, true, payload),
+          }));
+        })
+        .catch((error) => {
+          window.dispatchEvent(new CustomEvent(eventNamesRef.current.message, {
+            detail: buildRuntimeResponsePayload(
+              requestId,
+              false,
+              null,
+              String((error as any)?.message || error || 'Runtime bridge failed'),
+            ),
+          }));
+        });
     }
 
     window.addEventListener(eventNamesRef.current.message, handleRuntimeMessage);
@@ -134,12 +157,7 @@ export function DirectHtmlRuntimeHost({
   useEffect(() => {
     if (!mounted) return;
     window.dispatchEvent(new CustomEvent(eventNamesRef.current.update, {
-      detail: {
-        type: 'xrp-runtime-update',
-        runtime: runtime || {},
-        variables: variables || {},
-        submission: runtime?.submission || null,
-      },
+      detail: buildRuntimeUpdatePayload(runtime, variables),
     }));
   }, [mounted, runtime, variables]);
 

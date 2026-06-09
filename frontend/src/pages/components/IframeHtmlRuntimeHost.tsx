@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { SandboxCardAction } from '../card-schema-types';
-import type { SandboxRuntimeContext } from '../sandbox-document';
+import type { SandboxRuntimeContext } from '../sandbox-runtime-types';
+import {
+  buildRuntimeResponsePayload,
+  buildRuntimeUpdatePayload,
+} from '../runtime-host-protocol';
 
 const MIN_IFRAME_HEIGHT = 360;
 const MAX_MESSAGE_IFRAME_HEIGHT = 720;
@@ -11,7 +15,7 @@ interface IframeHtmlRuntimeHostProps {
   runtime?: SandboxRuntimeContext;
   variables?: Record<string, unknown>;
   allowedActions?: Set<string>;
-  onAction?: (action: SandboxCardAction) => void;
+  onAction?: (action: SandboxCardAction) => void | Promise<unknown>;
 }
 
 export function IframeHtmlRuntimeHost({
@@ -81,7 +85,28 @@ export function IframeHtmlRuntimeHost({
       } else if (data.action === 'missingApi') {
         console.warn('[Iframe Card Missing API]', data.payload?.method, data.payload);
       }
-      onAction?.({ action: data.action, payload: data.payload || {} });
+      const action = { action: data.action, payload: data.payload || {} };
+      const maybePromise = onAction?.(action);
+      const requestId = typeof data.requestId === 'string' ? data.requestId : '';
+      if (!requestId || !maybePromise || typeof (maybePromise as Promise<unknown>).then !== 'function') return;
+      Promise.resolve(maybePromise)
+        .then((payload) => {
+          iframeRef.current?.contentWindow?.postMessage(
+            buildRuntimeResponsePayload(requestId, true, payload),
+            '*',
+          );
+        })
+        .catch((error) => {
+          iframeRef.current?.contentWindow?.postMessage(
+            buildRuntimeResponsePayload(
+              requestId,
+              false,
+              null,
+              String((error as any)?.message || error || 'Runtime bridge failed'),
+            ),
+            '*',
+          );
+        });
     }
 
     window.addEventListener('message', handleMessage);
@@ -90,12 +115,7 @@ export function IframeHtmlRuntimeHost({
 
   useEffect(() => {
     if (!loaded || !iframeRef.current?.contentWindow) return;
-    iframeRef.current.contentWindow.postMessage({
-      type: 'xrp-runtime-update',
-      runtime: runtime || {},
-      variables: variables || {},
-      submission: runtime?.submission || null,
-    }, '*');
+    iframeRef.current.contentWindow.postMessage(buildRuntimeUpdatePayload(runtime, variables), '*');
   }, [loaded, runtime, variables]);
 
   return (

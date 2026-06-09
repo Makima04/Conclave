@@ -562,7 +562,7 @@ export function useMessageStream({
       const options = event.payload?.options && typeof event.payload.options === 'object'
         ? event.payload.options
         : {};
-      const scope = String(options.type || 'chat');
+      const scope = String(options.type || 'projection');
       if (scope === 'message') {
         const messageId = String(options.message_id ?? options.messageId ?? event.payload?.sourceMessageId ?? '').trim();
         const targetId = messageId && messageId !== 'current' && messageId !== 'latest'
@@ -583,7 +583,7 @@ export function useMessageStream({
         }
         return;
       }
-      if (scope !== 'chat') {
+      if (scope !== 'chat' && scope !== 'projection') {
         console.debug('Scoped sandbox variables kept in runtime only:', scope, options);
         return;
       }
@@ -593,6 +593,64 @@ export function useMessageStream({
         await loadSessionState();
       } catch (err) {
         console.error('Failed to save chat variables:', err);
+      }
+      return;
+    }
+    if (event.action === 'readVariables') {
+      const paths = Array.isArray(event.payload?.paths)
+        ? event.payload.paths.map((path: any) => String(path || '').trim()).filter(Boolean)
+        : [];
+      const options = event.payload?.options && typeof event.payload.options === 'object'
+        ? event.payload.options
+        : { type: 'projection' };
+      const scope = String(options.type || 'projection');
+      if (sessionId && (scope === 'canonical' || scope === 'platform' || scope === 'platform_state')) {
+        const result = await api.readSessionVariables(sessionId, 'canonical', paths);
+        return result?.values || {};
+      }
+      console.debug('Card sandbox readVariables bridge handled inside runtime:', event.payload);
+      return {};
+    }
+    if (event.action === 'generateRaw') {
+      const request = event.payload?.request && typeof event.payload.request === 'object'
+        ? event.payload.request
+        : (typeof event.payload?.request === 'string' ? { prompt: event.payload.request } : {});
+      if (!sessionId) {
+        throw new Error('Session not ready for quiet generation');
+      }
+      const result = await api.quietGenerate(sessionId, request);
+      return {
+        content: String(result?.content || ''),
+        generation_id: result?.generation_id,
+        model: result?.model,
+      };
+    }
+    if (event.action === 'writeVariables') {
+      const changes = event.payload?.changes;
+      const options = event.payload?.options && typeof event.payload.options === 'object'
+        ? event.payload.options
+        : { type: 'projection' };
+      const scope = String(options.type || 'projection');
+      if (scope === 'projection' && sessionId && Array.isArray(changes)) {
+        try {
+          await api.applyProjectionChanges(sessionId, changes.map((change: any) => ({
+            path: String(change?.path ?? change?.target ?? '').trim(),
+            value: change?.value ?? change?.to ?? null,
+          })).filter((change: any) => change.path));
+          await loadSessionState();
+        } catch (err) {
+          console.error('Failed to apply projection changes:', err);
+        }
+        return;
+      }
+      if (changes && typeof changes === 'object') {
+        await handleSandboxAction({
+          action: 'setVariables',
+          payload: {
+            variables: Array.isArray(changes) ? {} : changes,
+            options,
+          },
+        } as SandboxCardAction, canApplyOpening, setShowVariableDebug);
       }
       return;
     }

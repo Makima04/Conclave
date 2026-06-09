@@ -141,6 +141,7 @@ export function PackagePreview({ packageDraft }: { packageDraft: ConclaveCardPac
   const stateAdapter = packageDraft.state_adapter;
   const writableStateFields = stateFields.filter(field => field.writable).length;
   const mappedStateFields = stateFields.filter(field => field.canonical_path).length;
+  const stateAdapterWarnings = stateAdapter?.warnings?.length || 0;
 
   const actions = packageDraft.actions;
   const actionTotal = actions.length;
@@ -155,6 +156,42 @@ export function PackagePreview({ packageDraft }: { packageDraft: ConclaveCardPac
     setActionPage(1);
   }, []);
 
+  const runtimeReadiness = useMemo(() => {
+    if (packageDraft.ui.type === 'raw_preview' || unsupportedCount > 0) {
+      return {
+        tone: 'limited',
+        label: '仅适合原始预览或人工兜底',
+        detail: '当前草案还不能稳定映射到平台运行时，保存前建议先审诊断和 API 映射。',
+      };
+    }
+
+    if (
+      warningCount > 0 ||
+      stateAdapterWarnings > 0 ||
+      packageDraft.variables.length === 0 ||
+      stateFields.length === 0
+    ) {
+      return {
+        tone: 'partial',
+        label: '可渲染，但运行时能力不完整',
+        detail: '基础 UI 多半可展示，但变量桥、状态映射或行为兼容仍需要补齐。',
+      };
+    }
+
+    return {
+      tone: 'ready',
+      label: '已接近平台运行时模型',
+      detail: 'UI、变量与状态映射都已形成草案，保存后更接近最终渲染行为。',
+    };
+  }, [
+    packageDraft.ui.type,
+    packageDraft.variables.length,
+    stateFields.length,
+    stateAdapterWarnings,
+    unsupportedCount,
+    warningCount,
+  ]);
+
   return (
     <div className="package-preview" id="section-package-draft">
       <div className="package-header">
@@ -162,6 +199,12 @@ export function PackagePreview({ packageDraft }: { packageDraft: ConclaveCardPac
         <button onClick={() => setShowJson(!showJson)} className="btn-toggle-json">
           {showJson ? '收起 JSON' : '展开 JSON'}
         </button>
+      </div>
+
+      <div className={`runtime-readiness readiness-${runtimeReadiness.tone}`}>
+        <div className="runtime-readiness-label">运行时就绪度</div>
+        <div className="runtime-readiness-main">{runtimeReadiness.label}</div>
+        <p>{runtimeReadiness.detail}</p>
       </div>
 
       {/* Summary - always visible at top */}
@@ -208,6 +251,12 @@ export function PackagePreview({ packageDraft }: { packageDraft: ConclaveCardPac
               : warningCount > 0
                 ? `${warningCount} 个警告`
                 : '无问题'}
+          </span>
+        </div>
+        <div className="summary-item">
+          <span className="summary-label">运行时提示</span>
+          <span className="summary-value">
+            {packageDraft.runtime_hints.st_regex_scripts_present ? '含 ST Regex' : '无 ST Regex'} · {packageDraft.runtime_hints.raw_opening_full_document ? '整页 HTML' : '片段/文本'}
           </span>
         </div>
       </div>

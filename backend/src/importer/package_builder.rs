@@ -14,15 +14,17 @@ pub fn build_package(
     state_adapter: &CardStateAdapter,
     compatibility: &CompatibilityReport,
 ) -> ConclaveCardPackage {
-    let ui_type = determine_ui_type(html_split, regex_result);
+    let ui_type = determine_ui_type(html_split);
     let manifest = build_manifest(card);
     let greetings = build_greetings(card);
     let ui = build_ui(ui_type, html_split, resources);
+    let runtime_hints = build_runtime_hints(card, regex_result, html_split);
 
     ConclaveCardPackage {
         manifest,
         greetings,
         ui,
+        runtime_hints,
         variables: variables.to_vec(),
         state_schema: state_schema.clone(),
         state_adapter: state_adapter.clone(),
@@ -31,14 +33,14 @@ pub fn build_package(
     }
 }
 
-fn determine_ui_type(html_split: &HtmlAppSplit, regex_result: &RegexExecutionResult) -> UiType {
+fn determine_ui_type(html_split: &HtmlAppSplit) -> UiType {
     if html_split.is_full_document && !html_split.js.is_empty() {
         UiType::HtmlApp
     } else if html_split.is_full_document {
         UiType::HtmlFragment
-    } else if !regex_result.output.is_empty() && regex_result.output.contains('<') {
+    } else if !html_split.html.trim().is_empty() && html_split.html.contains('<') {
         UiType::HtmlFragment
-    } else if !regex_result.output.is_empty() {
+    } else if !html_split.html.trim().is_empty() {
         UiType::Text
     } else {
         UiType::RawPreview
@@ -92,6 +94,32 @@ fn build_ui(ui_type: UiType, html_split: &HtmlAppSplit, resources: &ResourceMani
         js: html_split.js.clone(),
         entry: html_split.entry_node.clone(),
         assets: resources.resources.iter().map(|r| r.url.clone()).collect(),
+    }
+}
+
+fn build_runtime_hints(
+    card: &ExternalCard,
+    regex_result: &RegexExecutionResult,
+    html_split: &HtmlAppSplit,
+) -> PackageRuntimeHints {
+    let raw_opening = card.first_mes.trim();
+    let regex_opening = regex_result.output.trim();
+    PackageRuntimeHints {
+        st_regex_scripts_present: !card
+            .extensions
+            .get("regex_scripts")
+            .and_then(|value| value.as_array())
+            .map(|items| items.is_empty())
+            .unwrap_or(true),
+        opening_regex_matched: regex_result.matched,
+        raw_opening_html_candidate: raw_opening.contains('<'),
+        raw_opening_full_document: raw_opening.to_ascii_lowercase().contains("<html")
+            || raw_opening.to_ascii_lowercase().contains("<!doctype"),
+        regex_opening_html_candidate: regex_opening.contains('<'),
+        regex_opening_full_document: html_split.is_full_document,
+        canonical_state_root: "state".to_string(),
+        projection_root: "variables".to_string(),
+        runtime_local_root: "_runtime".to_string(),
     }
 }
 
@@ -182,36 +210,45 @@ mod tests {
     #[test]
     fn test_determine_ui_type_html_app() {
         let split = make_html_split(true, true);
-        let regex = make_regex_result(false, "");
-        assert_eq!(determine_ui_type(&split, &regex), UiType::HtmlApp);
+        assert_eq!(determine_ui_type(&split), UiType::HtmlApp);
     }
 
     #[test]
     fn test_determine_ui_type_html_fragment_full_doc_no_js() {
         let split = make_html_split(true, false);
-        let regex = make_regex_result(false, "");
-        assert_eq!(determine_ui_type(&split, &regex), UiType::HtmlFragment);
+        assert_eq!(determine_ui_type(&split), UiType::HtmlFragment);
     }
 
     #[test]
-    fn test_determine_ui_type_html_fragment_regex_html() {
+    fn test_determine_ui_type_html_fragment_from_split_html() {
         let split = make_html_split(false, false);
-        let regex = make_regex_result(true, "<div>hello</div>");
-        assert_eq!(determine_ui_type(&split, &regex), UiType::HtmlFragment);
+        assert_eq!(determine_ui_type(&split), UiType::HtmlFragment);
     }
 
     #[test]
     fn test_determine_ui_type_text() {
-        let split = make_html_split(false, false);
-        let regex = make_regex_result(true, "plain text output");
-        assert_eq!(determine_ui_type(&split, &regex), UiType::Text);
+        let split = HtmlAppSplit {
+            html: "plain text output".to_string(),
+            css: vec![],
+            js: vec![],
+            script_types: vec![],
+            entry_node: None,
+            is_full_document: false,
+        };
+        assert_eq!(determine_ui_type(&split), UiType::Text);
     }
 
     #[test]
     fn test_determine_ui_type_raw_preview() {
-        let split = make_html_split(false, false);
-        let regex = make_regex_result(false, "");
-        assert_eq!(determine_ui_type(&split, &regex), UiType::RawPreview);
+        let split = HtmlAppSplit {
+            html: String::new(),
+            css: vec![],
+            js: vec![],
+            script_types: vec![],
+            entry_node: None,
+            is_full_document: false,
+        };
+        assert_eq!(determine_ui_type(&split), UiType::RawPreview);
     }
 
     #[test]
@@ -281,7 +318,14 @@ mod tests {
     fn test_build_package_assembly() {
         let card = make_card("AssemblyTest");
         let regex = make_regex_result(false, "");
-        let split = make_html_split(false, false);
+        let split = HtmlAppSplit {
+            html: String::new(),
+            css: vec![],
+            js: vec![],
+            script_types: vec![],
+            entry_node: None,
+            is_full_document: false,
+        };
         let resources = make_empty_resources();
         let compatibility = make_empty_compatibility();
 
@@ -313,6 +357,7 @@ mod tests {
         assert_eq!(pkg.manifest.name, "AssemblyTest");
         assert_eq!(pkg.greetings.len(), 3);
         assert_eq!(pkg.ui.ui_type, UiType::RawPreview);
+        assert_eq!(pkg.runtime_hints.projection_root, "variables");
         assert!(pkg.variables.is_empty());
         assert!(pkg.state_schema.fields.is_empty());
         assert!(pkg.actions.is_empty());

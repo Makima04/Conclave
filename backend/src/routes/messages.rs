@@ -111,6 +111,25 @@ pub struct UpdateSessionVariablesBody {
 }
 
 #[derive(Deserialize)]
+pub struct ProjectionChange {
+    pub path: String,
+    pub value: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateProjectionChangesBody {
+    #[serde(default)]
+    pub changes: Vec<ProjectionChange>,
+}
+
+#[derive(Deserialize)]
+pub struct ReadVariablesBody {
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub paths: Vec<String>,
+}
+
+#[derive(Deserialize)]
 pub struct QuietGenerateRequest {
     pub prompt: Option<String>,
     pub message: Option<String>,
@@ -1060,12 +1079,14 @@ pub async fn update_variables(
         return Err(AppError::NotFound("Session not found".to_string()));
     }
 
+    let mut tx = state.pool.begin().await?;
     let current_state: Option<String> = sqlx::query_scalar(
         "SELECT state_json FROM state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 1",
     )
     .bind(&session_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?;
+
     let mut state_value: serde_json::Value = current_state
         .and_then(|value| serde_json::from_str(&value).ok())
         .unwrap_or_else(|| serde_json::json!({}));
@@ -1073,7 +1094,7 @@ pub async fn update_variables(
         state_value = serde_json::json!({});
     }
 
-    let next_variables = if body.merge {
+    let mut next_projection = if body.merge {
         let mut merged = state_value
             .get("variables")
             .cloned()
@@ -1083,14 +1104,32 @@ pub async fn update_variables(
     } else {
         body.variables
     };
-    if let Some(obj) = state_value.as_object_mut() {
-        obj.insert("variables".to_string(), next_variables.clone());
+    if !next_projection.is_object() {
+        next_projection = serde_json::json!({});
     }
+
+    let fallback_variables = state_value.get("variables").cloned();
+    let contract = card_state_adapter::load_session_contract_tx_for_routes(
+        &mut tx,
+        &session_id,
+        fallback_variables.as_ref(),
+    )
+    .await?;
+
+    let next_state = if let Some(contract) = contract.as_ref() {
+        card_state_adapter::build_normalized_state(&state_value, contract, Some(next_projection.clone()))
+    } else {
+        let mut raw = state_value.clone();
+        if let Some(obj) = raw.as_object_mut() {
+            obj.insert("variables".to_string(), next_projection.clone());
+        }
+        raw
+    };
 
     let max_version: Option<i32> =
         sqlx::query_scalar("SELECT MAX(version) FROM state_snapshots WHERE session_id = ?")
             .bind(&session_id)
-            .fetch_one(&state.pool)
+            .fetch_one(&mut *tx)
             .await?;
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
@@ -1099,18 +1138,195 @@ pub async fn update_variables(
     .bind(uuid::Uuid::new_v4().to_string())
     .bind(&session_id)
     .bind(max_version.unwrap_or(0) + 1)
-    .bind(state_value.to_string())
+    .bind(next_state.to_string())
     .bind(now.clone())
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
 
     sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
         .bind(now)
         .bind(&session_id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
 
-    Ok(Json(serde_json::json!({ "variables": next_variables })))
+    tx.commit().await?;
+
+    let response_variables = next_state
+        .get("variables")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    Ok(Json(serde_json::json!({ "variables": response_variables })))
+}
+
+pub async fn update_projection_changes(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    Json(body): Json<UpdateProjectionChangesBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let session_exists: Option<String> =
+        sqlx::query_scalar("SELECT id FROM sessions WHERE id = ? AND deleted_at IS NULL")
+            .bind(&session_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    if session_exists.is_none() {
+        return Err(AppError::NotFound("Session not found".to_string()));
+    }
+
+    let mut tx = state.pool.begin().await?;
+    let current_state: Option<String> = sqlx::query_scalar(
+        "SELECT state_json FROM state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 1",
+    )
+    .bind(&session_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let mut state_value: serde_json::Value = current_state
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !state_value.is_object() {
+        state_value = serde_json::json!({});
+    }
+
+    let fallback_variables = state_value.get("variables").cloned();
+    let contract = card_state_adapter::load_session_contract_tx_for_routes(
+        &mut tx,
+        &session_id,
+        fallback_variables.as_ref(),
+    )
+    .await?;
+
+    let Some(contract) = contract.as_ref() else {
+        return Err(AppError::BadRequest(
+            "Session has no card state adapter contract".to_string(),
+        ));
+    };
+
+    let current_projection = state_value
+        .get("variables")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let raw_changes = body
+        .changes
+        .into_iter()
+        .map(|change| (change.path, change.value))
+        .collect::<Vec<_>>();
+    let (next_projection, rejected_paths) =
+        card_state_adapter::apply_projection_change_set(&current_projection, &raw_changes, contract);
+
+    let next_state = card_state_adapter::build_normalized_state(&state_value, contract, Some(next_projection));
+
+    let max_version: Option<i32> =
+        sqlx::query_scalar("SELECT MAX(version) FROM state_snapshots WHERE session_id = ?")
+            .bind(&session_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO state_snapshots (id, session_id, version, state_json, risk_level, committed_by, created_at) VALUES (?, ?, ?, ?, 'low', 'card_runtime_changes', ?)"
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(&session_id)
+    .bind(max_version.unwrap_or(0) + 1)
+    .bind(next_state.to_string())
+    .bind(now.clone())
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+        .bind(now)
+        .bind(&session_id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+
+    Ok(Json(serde_json::json!({
+        "variables": next_state.get("variables").cloned().unwrap_or_else(|| serde_json::json!({})),
+        "rejected_paths": rejected_paths,
+    })))
+}
+
+pub async fn read_variables(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    Json(body): Json<ReadVariablesBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let session_exists: Option<String> =
+        sqlx::query_scalar("SELECT id FROM sessions WHERE id = ? AND deleted_at IS NULL")
+            .bind(&session_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    if session_exists.is_none() {
+        return Err(AppError::NotFound("Session not found".to_string()));
+    }
+
+    let state_data: Option<String> = sqlx::query_scalar(
+        "SELECT state_json FROM state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 1",
+    )
+    .bind(&session_id)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    let mut state_value = state_data
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !state_value.is_object() {
+        state_value = serde_json::json!({});
+    }
+
+    let fallback_variables = state_value.get("variables").cloned();
+    let contract =
+        card_state_adapter::load_session_contract(&state.pool, &session_id, fallback_variables.as_ref())
+            .await?;
+    if let Some(contract) = contract.as_ref() {
+        state_value = card_state_adapter::build_normalized_state(&state_value, contract, None);
+    }
+
+    let scope = body
+        .scope
+        .as_deref()
+        .map(|value| value.trim().to_lowercase())
+        .unwrap_or_else(|| "projection".to_string());
+    let source = match scope.as_str() {
+        "canonical" | "platform" | "platform_state" => state_value
+            .get("platform_state")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})),
+        "message" => serde_json::json!({}),
+        "projection" | "chat" => state_value
+            .get("variables")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})),
+        _ => {
+            return Err(AppError::BadRequest(format!(
+                "Unsupported variable read scope: {}",
+                scope
+            )));
+        }
+    };
+
+    if body.paths.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "scope": scope,
+            "values": source,
+        })));
+    }
+
+    let mut values = serde_json::Map::new();
+    for raw_path in body.paths.iter().take(100) {
+        let path = raw_path.trim();
+        if path.is_empty() {
+            continue;
+        }
+        if let Some(value) = card_state_adapter::get_path_value(&source, path) {
+            values.insert(path.to_string(), value.clone());
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "scope": scope,
+        "values": values,
+    })))
 }
 
 fn merge_json_objects(target: &mut serde_json::Value, source: &serde_json::Value) {

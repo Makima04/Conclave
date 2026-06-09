@@ -370,6 +370,18 @@ export interface PackageUi {
   assets: string[];
 }
 
+export interface PackageRuntimeHints {
+  st_regex_scripts_present: boolean;
+  opening_regex_matched: boolean;
+  raw_opening_html_candidate: boolean;
+  raw_opening_full_document: boolean;
+  regex_opening_html_candidate: boolean;
+  regex_opening_full_document: boolean;
+  canonical_state_root: string;
+  projection_root: string;
+  runtime_local_root: string;
+}
+
 export interface VariableDeclaration {
   path: string;
   type: VariableTypeEnum;
@@ -481,6 +493,7 @@ export interface ConclaveCardPackage {
   manifest: PackageManifest;
   greetings: Greeting[];
   ui: PackageUi;
+  runtime_hints: PackageRuntimeHints;
   variables: VariableDeclaration[];
   state_schema: CardStateSchema;
   state_adapter: CardStateAdapter;

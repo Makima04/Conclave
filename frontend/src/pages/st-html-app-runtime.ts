@@ -1,4 +1,5 @@
 import type { CharacterCard } from '../api/types';
+import { resolveCardRenderPlan } from './card-runtime-resolver';
 
 export interface StHtmlAppManifest {
   kind: 'st-html-app';
@@ -10,13 +11,20 @@ export interface StHtmlAppManifest {
 export function detectStHtmlApp(card: CharacterCard | null): StHtmlAppManifest | null {
   if (!card) return null;
   const packageDraft = card.conclave_package;
-  const html = typeof packageDraft?.ui?.html === 'string' ? packageDraft.ui.html.trim() : '';
-  if (packageDraft?.ui?.type !== 'html_app' || !html) return null;
+  if (!packageDraft) return null;
+  const opening = getParsedGreetings(card)[0] || card.first_mes || '【GameStart】';
+  const plan = resolveCardRenderPlan({
+    card,
+    content: opening,
+    runtime: undefined,
+    renderMode: 'auto',
+  });
+  if (plan.kind !== 'html_app') return null;
   const greeting = packageDraft.greetings?.[0]?.content || card.first_mes || '【GameStart】';
   return {
     kind: 'st-html-app',
     bootTrigger: greeting,
-    bootHtml: html,
+    bootHtml: plan.runtimeHtml,
     scriptName: packageDraft.manifest?.id || `${card.id}:conclave-package`,
   };
 }

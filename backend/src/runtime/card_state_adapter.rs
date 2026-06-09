@@ -184,6 +184,36 @@ pub fn tool_state_for_context(state: &Value, contract: Option<&SessionStateContr
     view.writable_platform_state
 }
 
+pub fn projection_path_writable(contract: &SessionStateContract, path: &str) -> bool {
+    let trimmed = path.trim().trim_start_matches("variables.");
+    contract.adapter.write_rules.iter().any(|rule| {
+        trimmed == rule.card_path
+            || trimmed.starts_with(&format!("{}.", rule.card_path))
+            || trimmed.starts_with(&format!("{}[", rule.card_path))
+    })
+}
+
+pub fn apply_projection_change_set(
+    current_projection: &Value,
+    changes: &[(String, Value)],
+    contract: &SessionStateContract,
+) -> (Value, Vec<String>) {
+    let mut next = current_projection.clone();
+    ensure_object(&mut next);
+    let mut rejected = Vec::new();
+
+    for (path, value) in changes {
+        let trimmed = path.trim().trim_start_matches("variables.").to_string();
+        if !projection_path_writable(contract, &trimmed) {
+            rejected.push(trimmed);
+            continue;
+        }
+        set_path_value(&mut next, &trimmed, value.clone());
+    }
+
+    (next, rejected)
+}
+
 async fn load_latest_package_for_world_pack(
     pool: &SqlitePool,
     world_pack_id: &str,
@@ -244,6 +274,14 @@ async fn load_session_contract_tx(
     }
 
     Ok(fallback_variables.and_then(build_contract_from_variables))
+}
+
+pub async fn load_session_contract_tx_for_routes(
+    tx: &mut Transaction<'_, Sqlite>,
+    session_id: &str,
+    fallback_variables: Option<&Value>,
+) -> Result<Option<SessionStateContract>, AppError> {
+    load_session_contract_tx(tx, session_id, fallback_variables).await
 }
 
 fn build_contract_from_variables(variables: &Value) -> Option<SessionStateContract> {

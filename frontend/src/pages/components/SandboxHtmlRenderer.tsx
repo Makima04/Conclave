@@ -3,7 +3,8 @@
 
 import React, { useMemo } from 'react';
 import type { SandboxCardAction } from '../card-schema-types';
-import { buildSandboxDocument, type SandboxRuntimeContext } from '../sandbox-document';
+import { buildSandboxDocument } from '../sandbox-document';
+import type { SandboxRuntimeContext } from '../sandbox-runtime-types';
 import { DirectHtmlRuntimeHost } from './DirectHtmlRuntimeHost';
 
 const ALLOWED_ACTIONS = new Set([

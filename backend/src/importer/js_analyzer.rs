@@ -2,6 +2,8 @@ use crate::importer::types::*;
 use regex::Regex;
 use std::sync::LazyLock;
 
+type DelimiterStack = Vec<(char, usize, usize, usize, bool)>;
+
 // ── Patterns (compiled once) ────────────────────────────────────────────
 
 static DYNAMIC_IMPORT_RE: LazyLock<Regex> =
@@ -43,13 +45,13 @@ pub fn analyze_js(js_sources: &[String]) -> JsAnalysisReport {
 
 /// Check JS syntax using heuristic balanced-brace analysis.
 /// Skips content inside string/template literals and comments.
-fn check_syntax(js: &str, _file_label: &str) -> Vec<SyntaxError> {
+fn check_syntax(js: &str, file_label: &str) -> Vec<SyntaxError> {
     let mut errors = Vec::new();
     let chars: Vec<char> = js.chars().collect();
     let len = chars.len();
 
     // Stack of expected closing delimiters
-    let mut stack: Vec<(char, usize, usize, usize)> = Vec::new(); // (expected_close, offset, line, col)
+    let mut stack: DelimiterStack = Vec::new(); // (expected_close, offset, line, col, closes_template_expr)
 
     let mut line: usize = 1;
     let mut col: usize = 1;
@@ -116,17 +118,25 @@ fn check_syntax(js: &str, _file_label: &str) -> Vec<SyntaxError> {
             continue;
         }
 
-        // ── Skip template literal ──
+        // ── Skip template literal, but parse ${...} expressions ──
         if ch == '`' {
-            advance(&chars, &mut i, &mut line, &mut col);
-            while i < len && chars[i] != '`' {
-                if chars[i] == '\\' && i + 1 < len {
-                    advance(&chars, &mut i, &mut line, &mut col);
+            if let Err(template_error) = skip_template_literal(
+                &chars,
+                &mut i,
+                &mut line,
+                &mut col,
+                &mut stack,
+            ) {
+                if errors.len() < 10 {
+                    errors.push(SyntaxError {
+                        file: file_label.to_string(),
+                        message: template_error.message,
+                        line: template_error.line,
+                        column: template_error.column,
+                        offset: template_error.offset,
+                        excerpt: template_error.excerpt,
+                    });
                 }
-                advance(&chars, &mut i, &mut line, &mut col);
-            }
-            if i < len {
-                advance(&chars, &mut i, &mut line, &mut col); // closing backtick
             }
             continue;
         }
@@ -139,20 +149,22 @@ fn check_syntax(js: &str, _file_label: &str) -> Vec<SyntaxError> {
                 '[' => ']',
                 _ => unreachable!(),
             };
-            stack.push((expected, i, line, col));
+            stack.push((expected, i, line, col, false));
             advance(&chars, &mut i, &mut line, &mut col);
             continue;
         }
 
         // ── Track closing delimiters ──
         if ch == ')' || ch == '}' || ch == ']' {
-            if let Some((expected, _open_off, _open_line, _open_col)) = stack.last() {
+            if let Some((expected, _open_off, _open_line, _open_col, _is_template)) = stack.last()
+            {
                 if *expected == ch {
                     stack.pop();
                 } else {
                     if errors.len() < 10 {
                         let (excerpt, _) = excerpt_at(&chars, i, 80);
                         errors.push(SyntaxError {
+                            file: file_label.to_string(),
                             message: format!(
                                 "Mismatched delimiter: expected '{}' but found '{}'",
                                 expected, ch
@@ -169,6 +181,7 @@ fn check_syntax(js: &str, _file_label: &str) -> Vec<SyntaxError> {
             } else if errors.len() < 10 {
                 let (excerpt, _) = excerpt_at(&chars, i, 80);
                 errors.push(SyntaxError {
+                    file: file_label.to_string(),
                     message: format!("Unmatched closing delimiter '{}'", ch),
                     line,
                     column: col,
@@ -184,12 +197,13 @@ fn check_syntax(js: &str, _file_label: &str) -> Vec<SyntaxError> {
     }
 
     // Report unclosed delimiters
-    for &(_expected, off, open_line, open_col) in stack.iter() {
+    for &(_expected, off, open_line, open_col, _is_template) in stack.iter() {
         if errors.len() >= 10 {
             break;
         }
         let (excerpt, _) = excerpt_at(&chars, off, 80);
         errors.push(SyntaxError {
+            file: file_label.to_string(),
             message: "Unclosed delimiter".to_string(),
             line: open_line,
             column: open_col,
@@ -272,6 +286,148 @@ fn skip_regex_literal(chars: &[char], i: &mut usize, line: &mut usize, col: &mut
         }
         advance(chars, i, line, col);
     }
+}
+
+struct TemplateLiteralError {
+    message: String,
+    line: usize,
+    column: usize,
+    offset: usize,
+    excerpt: String,
+}
+
+fn skip_template_literal(
+    chars: &[char],
+    i: &mut usize,
+    line: &mut usize,
+    col: &mut usize,
+    stack: &mut DelimiterStack,
+) -> Result<(), TemplateLiteralError> {
+    advance(chars, i, line, col); // opening `
+    while *i < chars.len() {
+        let ch = chars[*i];
+        if ch == '\\' && *i + 1 < chars.len() {
+            advance(chars, i, line, col);
+            advance(chars, i, line, col);
+            continue;
+        }
+        if ch == '`' {
+            advance(chars, i, line, col);
+            return Ok(());
+        }
+        if ch == '$' && *i + 1 < chars.len() && chars[*i + 1] == '{' {
+            advance(chars, i, line, col); // $
+            stack.push(('}', *i, *line, *col, true));
+            advance(chars, i, line, col); // {
+            while *i < chars.len() {
+                let expr_ch = chars[*i];
+                if expr_ch == '\'' {
+                    advance(chars, i, line, col);
+                    while *i < chars.len() && chars[*i] != '\'' {
+                        if chars[*i] == '\\' && *i + 1 < chars.len() {
+                            advance(chars, i, line, col);
+                        }
+                        advance(chars, i, line, col);
+                    }
+                    if *i < chars.len() {
+                        advance(chars, i, line, col);
+                    }
+                    continue;
+                }
+                if expr_ch == '"' {
+                    advance(chars, i, line, col);
+                    while *i < chars.len() && chars[*i] != '"' {
+                        if chars[*i] == '\\' && *i + 1 < chars.len() {
+                            advance(chars, i, line, col);
+                        }
+                        advance(chars, i, line, col);
+                    }
+                    if *i < chars.len() {
+                        advance(chars, i, line, col);
+                    }
+                    continue;
+                }
+                if expr_ch == '`' {
+                    skip_template_literal(chars, i, line, col, stack)?;
+                    continue;
+                }
+                if expr_ch == '/' && *i + 1 < chars.len() && chars[*i + 1] == '/' {
+                    while *i < chars.len() && chars[*i] != '\n' {
+                        advance(chars, i, line, col);
+                    }
+                    continue;
+                }
+                if expr_ch == '/' && *i + 1 < chars.len() && chars[*i + 1] == '*' {
+                    *i += 2;
+                    *col += 2;
+                    while *i + 1 < chars.len() && !(chars[*i] == '*' && chars[*i + 1] == '/') {
+                        advance(chars, i, line, col);
+                    }
+                    if *i + 1 < chars.len() {
+                        *i += 2;
+                        *col += 2;
+                    }
+                    continue;
+                }
+                if expr_ch == '/' && likely_regex_literal_start(chars, *i) {
+                    skip_regex_literal(chars, i, line, col);
+                    continue;
+                }
+                if expr_ch == '{' {
+                    stack.push(('}', *i, *line, *col, false));
+                    advance(chars, i, line, col);
+                    continue;
+                }
+                if expr_ch == '}' {
+                    if let Some((expected, _, _, _, closes_template_expr)) = stack.last() {
+                        if *expected == '}' {
+                            let closes_template_expr = *closes_template_expr;
+                            stack.pop();
+                            advance(chars, i, line, col);
+                            if closes_template_expr {
+                                break;
+                            }
+                            continue;
+                        }
+                    }
+                    advance(chars, i, line, col);
+                    continue;
+                }
+                if expr_ch == '(' {
+                    stack.push((')', *i, *line, *col, false));
+                    advance(chars, i, line, col);
+                    continue;
+                }
+                if expr_ch == '[' {
+                    stack.push((']', *i, *line, *col, false));
+                    advance(chars, i, line, col);
+                    continue;
+                }
+                if expr_ch == ')' || expr_ch == ']' {
+                    if let Some((expected, _, _, _, _)) = stack.last() {
+                        if *expected == expr_ch {
+                            stack.pop();
+                        }
+                    }
+                    advance(chars, i, line, col);
+                    continue;
+                }
+                advance(chars, i, line, col);
+            }
+            continue;
+        }
+        advance(chars, i, line, col);
+    }
+
+    let offset = chars.len().saturating_sub(1);
+    let (excerpt, _) = excerpt_at(chars, offset, 80);
+    Err(TemplateLiteralError {
+        message: "Unclosed template literal".to_string(),
+        line: *line,
+        column: *col,
+        offset,
+        excerpt,
+    })
 }
 
 /// Advance one character, tracking line/column.
@@ -564,6 +720,22 @@ const rows = items.map(item => `<div>${item.name}</div>`);
         assert!(
             report.syntax_valid,
             "Template literal markup should not confuse the heuristic scan"
+        );
+    }
+
+    #[test]
+    fn test_template_literals_with_nested_ternaries_and_objects() {
+        let js = r#"
+function renderCard(e) {
+  return `${e.summary ? `<div class="summary">${e.summary ? `：${e.summary}` : ''}</div>` : ''}`;
+}
+const rows = items.map(item => ({ id: item.id, html: `<div data-id="${item.id}">${item.label}</div>` }));
+"#
+        .to_string();
+        let report = analyze_js(&[js]);
+        assert!(
+            report.syntax_valid,
+            "Nested template expressions from bundled UI code should not trip the heuristic parser"
         );
     }
 

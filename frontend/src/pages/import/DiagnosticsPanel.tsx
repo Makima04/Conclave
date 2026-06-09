@@ -16,10 +16,42 @@ const levelLabels: Record<string, string> = {
 
 const LEVEL_ORDER: ImportDiagnostic['level'][] = ['error', 'warn', 'info'];
 
+function buildClipboardText(diagnostics: ImportDiagnostic[], counts: Record<string, number>) {
+  const lines = [
+    `诊断汇总: 错误 ${counts.error} / 警告 ${counts.warn} / 信息 ${counts.info}`,
+    `总计: ${diagnostics.length}`,
+    '',
+  ];
+
+  diagnostics.forEach((diag, index) => {
+    lines.push(`[${index + 1}] ${levelLabels[diag.level]} | ${diag.code} | ${diag.stage}`);
+    lines.push(diag.message);
+    if (diag.source?.script_name || diag.source?.kind) {
+      lines.push(`来源: ${diag.source.script_name || diag.source.kind}`);
+    }
+    if (diag.source?.offset != null) {
+      lines.push(`Offset: ${diag.source.offset}`);
+    }
+    if (diag.source?.excerpt) {
+      lines.push(`Excerpt: ${diag.source.excerpt}`);
+    }
+    if (diag.impact) {
+      lines.push(`影响: ${diag.impact}`);
+    }
+    if (diag.suggestion) {
+      lines.push(`建议: ${diag.suggestion}`);
+    }
+    lines.push('');
+  });
+
+  return lines.join('\n');
+}
+
 export function DiagnosticsPanel({ diagnostics }: { diagnostics: ImportDiagnostic[] }) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
 
   // Sort: errors first, then warns, then infos
   const sorted = useMemo(() => {
@@ -35,6 +67,20 @@ export function DiagnosticsPanel({ diagnostics }: { diagnostics: ImportDiagnosti
     for (const d of diagnostics) c[d.level]++;
     return c;
   }, [diagnostics]);
+
+  const exportJson = useMemo(
+    () =>
+      JSON.stringify(
+        {
+          summary: counts,
+          total: diagnostics.length,
+          diagnostics,
+        },
+        null,
+        2,
+      ),
+    [counts, diagnostics],
+  );
 
   const total = sorted.length;
   const tp = totalPagesOf(total, pageSize);
@@ -54,16 +100,50 @@ export function DiagnosticsPanel({ diagnostics }: { diagnostics: ImportDiagnosti
     });
   };
 
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(buildClipboardText(sorted, counts));
+      setCopyState('copied');
+      window.setTimeout(() => setCopyState('idle'), 1800);
+    } catch {
+      setCopyState('error');
+      window.setTimeout(() => setCopyState('idle'), 2200);
+    }
+  }, [counts, sorted]);
+
+  const handleDownloadJson = useCallback(() => {
+    const blob = new Blob([exportJson], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    anchor.href = url;
+    anchor.download = `import-diagnostics-${stamp}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  }, [exportJson]);
+
   return (
     <div className="diagnostics-panel" id="section-diagnostics">
-      <h3>
-        诊断信息
-        <span className="iw-diag-counts">
-          {counts.error > 0 && <span className="iw-diag-badge error">错误 {counts.error}</span>}
-          {counts.warn > 0 && <span className="iw-diag-badge warn">警告 {counts.warn}</span>}
-          {counts.info > 0 && <span className="iw-diag-badge info">信息 {counts.info}</span>}
-        </span>
-      </h3>
+      <div className="diagnostics-toolbar">
+        <h3>
+          诊断信息
+          <span className="iw-diag-counts">
+            {counts.error > 0 && <span className="iw-diag-badge error">错误 {counts.error}</span>}
+            {counts.warn > 0 && <span className="iw-diag-badge warn">警告 {counts.warn}</span>}
+            {counts.info > 0 && <span className="iw-diag-badge info">信息 {counts.info}</span>}
+          </span>
+        </h3>
+        <div className="diagnostics-actions">
+          <button type="button" className="btn btn-secondary diagnostics-action-btn" onClick={handleCopy}>
+            {copyState === 'copied' ? '已复制' : copyState === 'error' ? '复制失败' : '复制给 Codex'}
+          </button>
+          <button type="button" className="btn btn-secondary diagnostics-action-btn" onClick={handleDownloadJson}>
+            导出 JSON
+          </button>
+        </div>
+      </div>
       {pageItems.map(diag => (
         <div
           key={diag.id}

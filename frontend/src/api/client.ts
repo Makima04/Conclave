@@ -73,6 +73,16 @@ export async function applyOpeningMessage(sessionId: string, content: string): P
   });
 }
 
+export async function quietGenerate(
+  sessionId: string,
+  payload: Record<string, unknown>,
+): Promise<{ content: string; generation_id?: string; model: string }> {
+  return request(`/sessions/${sessionId}/quiet-generate`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 // SSE streaming for sending messages
 export function sendMessageStream(
   sessionId: string,
@@ -124,6 +134,27 @@ export async function updateSessionVariables(sessionId: string, variables: Recor
   return request(`/sessions/${sessionId}/variables`, {
     method: 'PUT',
     body: JSON.stringify({ variables, merge }),
+  });
+}
+
+export async function applyProjectionChanges(
+  sessionId: string,
+  changes: Array<{ path: string; value: unknown }>,
+): Promise<{ variables: Record<string, unknown>; rejected_paths: string[] }> {
+  return request(`/sessions/${sessionId}/variable-changes`, {
+    method: 'POST',
+    body: JSON.stringify({ changes }),
+  });
+}
+
+export async function readSessionVariables(
+  sessionId: string,
+  scope: 'projection' | 'canonical' | 'message' | 'chat' | 'platform',
+  paths: string[] = [],
+): Promise<{ scope: string; values: Record<string, unknown> }> {
+  return request(`/sessions/${sessionId}/variable-reads`, {
+    method: 'POST',
+    body: JSON.stringify({ scope, paths }),
   });
 }
 

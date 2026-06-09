@@ -536,10 +536,14 @@
 }
 
 .card-regex-html {
+  display: block;
   min-width: 0;
   max-width: 100%;
+  max-height: min(70vh, 960px);
+  overflow: auto;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+  contain: content;
 }
 
 .card-regex-html style {
@@ -561,13 +565,17 @@
 }
 
 .sandbox-renderer-shell {
+  display: block;
   width: 100%;
   max-width: min(100%, 920px);
+  min-width: 0;
+  min-height: 360px;
+  max-height: min(72vh, 860px);
   margin: 0 auto;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: transparent;
-  overflow: visible;
+  overflow: auto;
   contain: content;
   content-visibility: auto;
   contain-intrinsic-size: auto 640px;
@@ -621,7 +629,9 @@
 .message-html-app-runtime {
   display: block;
   width: 100%;
+  max-width: min(100%, 920px);
   margin: 0 auto 18px;
+  min-width: 0;
 }
 
 .message-html-app-runtime-frame {
@@ -631,7 +641,7 @@
   max-height: 720px;
   border: 0;
   background: transparent;
-  overflow: auto;
+  overflow: hidden;
 }
 
 @media (max-width: 640px) {

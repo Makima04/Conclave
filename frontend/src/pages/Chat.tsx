@@ -14,7 +14,12 @@ import { ToolDrawer } from './components/ToolDrawer';
 import { InputPanel } from './components/InputPanel';
 import type { InspectorTab } from './components/InspectorSidebar';
 import type { Message, Session } from '../api/types';
-import type { SandboxRuntimeContext, SandboxRuntimeMessage, SandboxRuntimeSubmission, SandboxSharedSave } from './sandbox-document';
+import type {
+  SandboxRuntimeContext,
+  SandboxRuntimeMessage,
+  SandboxRuntimeSubmission,
+  SandboxSharedSave,
+} from './sandbox-runtime-types';
 import { useChatSession } from './hooks/useChatSession';
 import { useStreamRecovery } from './hooks/useStreamRecovery';
 import { useMessageStream } from './hooks/useMessageStream';
@@ -85,10 +90,21 @@ export default function Chat() {
   );
   const openingLocked = React.useMemo(() => messages.some(msg => msg.turn_number > 0), [messages]);
   const canApplyOpening = !openingLocked;
-  const cardRuntimeVariables = sessionState?.variables || emptyVariables;
+  const cardProjectionVariables = sessionState?.variables || emptyVariables;
+  const cardVariableContract = React.useMemo(() => ({
+    writableProjectionPaths: Array.isArray(characterCard?.conclave_package?.state_adapter?.write_rules)
+      ? characterCard!.conclave_package!.state_adapter.write_rules.map(rule => rule.card_path)
+      : [],
+    manualReviewPaths: Array.isArray(characterCard?.conclave_package?.state_adapter?.warnings)
+      ? characterCard!.conclave_package!.state_adapter.warnings
+      : [],
+    writableCanonicalPaths: Array.isArray(characterCard?.conclave_package?.state_adapter?.write_rules)
+      ? characterCard!.conclave_package!.state_adapter.write_rules.map(rule => rule.platform_path)
+      : [],
+  }), [characterCard?.conclave_package?.state_adapter]);
   const flatVariables = React.useMemo(
-    () => Object.keys(cardRuntimeVariables).length ? flattenVariables(cardRuntimeVariables) : [],
-    [cardRuntimeVariables],
+    () => Object.keys(cardProjectionVariables).length ? flattenVariables(cardProjectionVariables) : [],
+    [cardProjectionVariables],
   );
   const activeWorldBook = React.useMemo(
     () => worldBooks.find(book => book.id === activeWorldBookId) || null,
@@ -129,7 +145,7 @@ export default function Chat() {
   }, [characterCard, greetingLabel]);
   const sandboxRuntimeMessages = React.useMemo(
     () => messages.map(buildSandboxRuntimeMessage),
-    [messages, cardRuntimeVariables, userPersona.name, characterCard?.name],
+    [messages, cardProjectionVariables, userPersona.name, characterCard?.name],
   );
   const sandboxRuntimeById = React.useMemo(
     () => new Map(sandboxRuntimeMessages.map(message => [String(message.id), message])),
@@ -158,7 +174,7 @@ export default function Chat() {
       buildSharedSave(currentSession, messages),
       ...peerSharedSaves.filter(save => save.sessionId !== sessionId),
     ];
-  }, [activeWorldBookId, characterCard, config, messages, peerSharedSaves, sessionId, sessionMode, cardRuntimeVariables, sessionTitle, userPersona.name]);
+  }, [activeWorldBookId, characterCard, config, messages, peerSharedSaves, sessionId, sessionMode, cardProjectionVariables, sessionTitle, userPersona.name]);
   const sandboxContextById = React.useMemo(
     () => new Map(messages.map(message => {
       const currentMessage = sandboxRuntimeById.get(message.id)
@@ -169,9 +185,10 @@ export default function Chat() {
         currentMessage,
         currentMessageId: message.id,
         sharedSaves: runtimeSharedSaves,
+        variableContract: cardVariableContract,
       } satisfies SandboxRuntimeContext];
     })),
-    [messages, sandboxRuntimeMessages, sandboxRuntimeById, runtimeSharedSaves, sessionId],
+    [messages, sandboxRuntimeMessages, sandboxRuntimeById, runtimeSharedSaves, sessionId, cardVariableContract],
   );
   const openingPreviewContent = selectedGreetingText || getParsedOpeningContent(characterCard);
   const sandboxSubmissionRuntime = React.useMemo<SandboxRuntimeSubmission | null>(() => {
@@ -190,7 +207,7 @@ export default function Chat() {
   const isSandboxInlineStreaming = Boolean(sandboxSubmission);
   const openingPreviewRuntime = React.useMemo(
     () => buildEmptySessionPreviewRuntime(openingPreviewContent),
-    [openingPreviewContent, runtimeSharedSaves, cardRuntimeVariables, characterCard?.name, sandboxSubmissionRuntime, sessionId],
+    [openingPreviewContent, runtimeSharedSaves, cardProjectionVariables, characterCard?.name, sandboxSubmissionRuntime, sessionId, cardVariableContract],
   );
   const sessionTavernHelperRuntime = React.useMemo<SandboxRuntimeContext>(() => withSandboxSubmission({
     sessionId,
@@ -198,7 +215,8 @@ export default function Chat() {
     currentMessage: sandboxRuntimeMessages[sandboxRuntimeMessages.length - 1] || null,
     currentMessageId: sandboxRuntimeMessages[sandboxRuntimeMessages.length - 1]?.message_id ?? null,
     sharedSaves: runtimeSharedSaves,
-  }), [sessionId, sandboxRuntimeMessages, runtimeSharedSaves, sandboxSubmissionRuntime, sandboxSubmissionSourceId]);
+    variableContract: cardVariableContract,
+  }), [sessionId, sandboxRuntimeMessages, runtimeSharedSaves, sandboxSubmissionRuntime, sandboxSubmissionSourceId, cardVariableContract]);
 
   // --- local helpers ---
   const handleRailClick = React.useCallback((tab: InspectorTab) => {
@@ -269,7 +287,7 @@ export default function Chat() {
   }
 
   function buildSandboxRuntimeMessage(msg: Message, index: number): SandboxRuntimeMessage {
-    const chatVariables = cardRuntimeVariables;
+    const chatVariables = cardProjectionVariables;
     const metadata = parseMessageMetadata(msg);
     const messageVariables = metadata.variables && typeof metadata.variables === 'object'
       ? metadata.variables
@@ -336,7 +354,7 @@ export default function Chat() {
   }
 
   function buildStreamingSandboxRuntime(content: string): SandboxRuntimeContext {
-    const runtimeVariables = cardRuntimeVariables;
+    const projectionVariables = cardProjectionVariables;
     const syntheticSubmission: SandboxRuntimeSubmission = sandboxSubmissionRuntime || {
       status: 'streaming',
       sourceMessageId: 'main-chat',
@@ -355,11 +373,11 @@ export default function Chat() {
       content,
       is_user: false,
       data: {
-        stat_data: runtimeVariables,
-        display_data: runtimeVariables,
-        variables: runtimeVariables,
+        stat_data: projectionVariables,
+        display_data: projectionVariables,
+        variables: projectionVariables,
       },
-      variables: runtimeVariables,
+      variables: projectionVariables,
     };
 
     return {
@@ -368,12 +386,13 @@ export default function Chat() {
       currentMessage: streamingMessage,
       currentMessageId: 'streaming',
       sharedSaves: runtimeSharedSaves,
+      variableContract: cardVariableContract,
       submission: syntheticSubmission,
     };
   }
 
   function buildEmptySessionPreviewRuntime(content: string): SandboxRuntimeContext {
-    const runtimeVariables = cardRuntimeVariables;
+    const projectionVariables = cardProjectionVariables;
     if (hasHtmlAppInternalMessages) {
       const currentMessage = sandboxRuntimeMessages[sandboxRuntimeMessages.length - 1];
       return withSandboxSubmission({
@@ -382,6 +401,7 @@ export default function Chat() {
         currentMessage,
         currentMessageId: currentMessage?.message_id ?? currentMessage?.id ?? 'opening-preview',
         sharedSaves: runtimeSharedSaves,
+        variableContract: cardVariableContract,
         submission: sandboxSubmissionRuntime,
       });
     }
@@ -397,11 +417,11 @@ export default function Chat() {
       turn_number: 0,
       is_user: false,
       data: {
-        stat_data: runtimeVariables,
-        display_data: runtimeVariables,
-        variables: runtimeVariables,
+        stat_data: projectionVariables,
+        display_data: projectionVariables,
+        variables: projectionVariables,
       },
-      variables: runtimeVariables,
+      variables: projectionVariables,
     };
 
     return {
@@ -410,6 +430,7 @@ export default function Chat() {
       currentMessage: previewMessage,
       currentMessageId: previewMessage.id,
       sharedSaves: runtimeSharedSaves,
+      variableContract: cardVariableContract,
       submission: sandboxSubmissionRuntime,
     };
   }
@@ -477,8 +498,8 @@ export default function Chat() {
           ...(isAssistant ? { rawText } : {}),
         };
       });
-    const statusData = cardRuntimeVariables && typeof cardRuntimeVariables === 'object'
-      ? JSON.parse(JSON.stringify(cardRuntimeVariables))
+    const statusData = cardProjectionVariables && typeof cardProjectionVariables === 'object'
+      ? JSON.parse(JSON.stringify(cardProjectionVariables))
       : {};
     const gameState = {
       runId,
@@ -601,7 +622,7 @@ export default function Chat() {
     <div className="chat-layout">
       <SessionTavernHelperRuntimeHost
         scripts={tavernHelperScripts}
-        variables={cardRuntimeVariables}
+        variables={cardProjectionVariables}
         runtime={sessionTavernHelperRuntime}
         onAction={(event) => handleCardSandboxAction(event, 'card-runtime')}
       />
@@ -697,7 +718,7 @@ export default function Chat() {
                 <MessageContent
                   content={openingPreviewContent}
                   card={characterCard}
-                  variables={cardRuntimeVariables}
+                  variables={cardProjectionVariables}
                   runtime={openingPreviewRuntime}
                   onSandboxAction={(event) => handleCardSandboxAction(event, 'opening-preview')}
                   renderMode={renderMode}
@@ -739,7 +760,7 @@ export default function Chat() {
                         <MessageContent
                           content={msg.content}
                           card={characterCard}
-                          variables={cardRuntimeVariables}
+                          variables={cardProjectionVariables}
                           runtime={buildSandboxRuntime(msg)}
                           onSandboxAction={(event) => handleCardSandboxAction(event, msg.id)}
                           renderMode={renderMode}
@@ -884,7 +905,7 @@ export default function Chat() {
                 <MessageContent
                   content={streamText}
                   card={characterCard}
-                  variables={cardRuntimeVariables}
+                  variables={cardProjectionVariables}
                   runtime={buildStreamingSandboxRuntime(streamText)}
                   onSandboxAction={(event) => handleCardSandboxAction(event, 'streaming')}
                   renderMode="text"

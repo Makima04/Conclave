@@ -182,6 +182,28 @@ pub async fn run_import(
     };
 
     for api in &js_analysis.detected_apis {
+        let (code, impact, suggestion) = match api.classification {
+            ApiClassification::PlatformNative => (
+                "platform_api_detected",
+                Some("This API is part of the platform bridge surface and should resolve through the unified runtime model."),
+                Some("Prefer keeping this call on the main runtime path; no legacy ST side channel is needed."),
+            ),
+            ApiClassification::BrowserShim => (
+                "browser_shim_api_detected",
+                Some("This API depends on the sandbox/browser shim layer rather than the canonical card state bridge."),
+                Some("Verify the card still behaves correctly inside the sandbox if it relies on client-side persistence."),
+            ),
+            ApiClassification::Unsupported => (
+                "unsupported_api",
+                Some("This API is not guaranteed to preserve SillyTavern semantics in the platform runtime."),
+                Some("Replace it with a bridged platform API or keep it in raw preview only."),
+            ),
+            ApiClassification::Dangerous => (
+                "dangerous_api_detected",
+                Some("This API can mutate DOM or execute code in ways that make sandbox behavior and layout harder to stabilize."),
+                Some("Review and normalize this code before trusting runtime behavior or auto-sizing."),
+            ),
+        };
         diagnostics.push(report::make_diagnostic(
             "api_scan",
             match api.classification {
@@ -189,7 +211,7 @@ pub async fn run_import(
                 ApiClassification::Unsupported => DiagnosticLevel::Warn,
                 _ => DiagnosticLevel::Info,
             },
-            "unsupported_api",
+            code,
             &format!("API detected: {} ({:?})", api.name, api.classification),
             api.occurrences.first().map(|o| DiagnosticSource {
                 kind: "js".to_string(),
@@ -199,8 +221,8 @@ pub async fn run_import(
                 selector: None,
                 excerpt: Some(o.excerpt.clone()),
             }),
-            None,
-            None,
+            impact,
+            suggestion,
         ));
     }
     if js_analysis
@@ -227,14 +249,14 @@ pub async fn run_import(
             &err.message,
             Some(DiagnosticSource {
                 kind: "js".to_string(),
-                script_name: None,
+                script_name: Some(err.file.clone()),
                 field: None,
                 offset: Some(err.offset),
                 selector: None,
                 excerpt: Some(err.excerpt.clone()),
             }),
-            Some("Heuristic JS syntax scan found a possible issue; runtime sandbox will report real execution errors"),
-            Some("Review the source card JS if the rendered card fails at runtime"),
+            Some("The extracted script fragment is structurally invalid, so variable/action inference may already be incomplete before runtime."),
+            Some("Compare this script fragment with the original ST card source. If ST can run it but this fragment is broken, the HTML/JS split pipeline likely damaged the script."),
         ));
     }
 
@@ -463,9 +485,9 @@ fn looks_like_html_candidate(content: &str) -> bool {
         || lower.contains("<div")
 }
 
-fn empty_html_split(content: &str) -> HtmlAppSplit {
+fn empty_html_split(_content: &str) -> HtmlAppSplit {
     HtmlAppSplit {
-        html: content.to_string(),
+        html: String::new(),
         css: vec![],
         js: vec![],
         script_types: vec![],
@@ -741,6 +763,8 @@ mod tests {
         let (package, report, _card) = run_import(bytes, "card.json").await.unwrap();
 
         assert_eq!(package.ui.ui_type, UiType::HtmlApp);
+        assert!(package.runtime_hints.opening_regex_matched);
+        assert!(package.runtime_hints.regex_opening_full_document);
         assert!(
             package
                 .ui
@@ -778,6 +802,8 @@ mod tests {
         let (package, report, _card) = run_import(bytes, "card.json").await.unwrap();
 
         assert_eq!(package.ui.ui_type, UiType::RawPreview);
+        assert!(!package.runtime_hints.opening_regex_matched);
+        assert!(package.runtime_hints.st_regex_scripts_present);
         assert!(
             report
                 .diagnostics

@@ -24,6 +24,19 @@ interface NavItem {
   condition?: boolean;
 }
 
+const MIN_RAW_PREVIEW_IFRAME_HEIGHT = 360;
+const MAX_RAW_PREVIEW_IFRAME_HEIGHT = 720;
+
+function summarizeDiagnostics(diagnostics: ImportDraftResponse['import_report']['diagnostics']) {
+  return diagnostics.reduce(
+    (acc, diagnostic) => {
+      acc[diagnostic.level] += 1;
+      return acc;
+    },
+    { error: 0, warn: 0, info: 0 },
+  );
+}
+
 export default function ImportWorkbench() {
   const navigate = useNavigate();
   const { cardId } = useParams<{ cardId: string }>();
@@ -165,6 +178,49 @@ export default function ImportWorkbench() {
     { id: 'section-raw-preview', label: '原始预览', condition: !!rawPreviewHtml },
   ];
 
+  const draftSummary = useMemo(() => {
+    if (!draft) return null;
+
+    const diagnostics = summarizeDiagnostics(draft.import_report.diagnostics);
+    const packageDraft = draft.package_draft;
+    const variableCount = packageDraft.variables.length;
+    const stateFieldCount = packageDraft.state_schema?.fields.length || 0;
+    const mappedStateCount =
+      packageDraft.state_schema?.fields.filter((field) => Boolean(field.canonical_path)).length || 0;
+    const apiWarnings =
+      packageDraft.compatibility.unsupported_apis.length + packageDraft.compatibility.warnings.length;
+    const renderCritical = draft.import_report.stages.filter(
+      (stage) =>
+        stage.status === 'error' ||
+        ((stage.id === 'html_split' || stage.id === 'package_build') && stage.status === 'warning'),
+    );
+    const runtimeWarnings = draft.import_report.stages.filter((stage) =>
+      ['action_extract', 'variable_extract', 'state_adapter', 'js_parse'].includes(stage.id) &&
+      stage.status !== 'success',
+    );
+    const saveTarget = worldBookId
+      ? {
+          label: '更新当前角色工作台关联卡包',
+          detail: '保存后会覆盖当前世界书源数据、关联角色卡原始数据，并写入新的导入报告。',
+        }
+      : {
+          label: '创建新的角色卡包记录',
+          detail: '保存后会新建世界书、角色卡与导入报告，再交给前端运行时渲染。',
+        };
+
+    return {
+      diagnostics,
+      variableCount,
+      stateFieldCount,
+      mappedStateCount,
+      actionCount: packageDraft.actions.length,
+      apiWarnings,
+      renderCritical,
+      runtimeWarnings,
+      saveTarget,
+    };
+  }, [draft, worldBookId]);
+
   return (
     <div className="import-workbench">
       {/* Header */}
@@ -242,6 +298,83 @@ export default function ImportWorkbench() {
       {/* Results (shown when draft exists) */}
       {draft && (
         <>
+          {draftSummary && (
+            <section className="import-overview">
+              <div className="overview-card overview-card-primary">
+                <span className="overview-eyebrow">当前阶段</span>
+                <h2>分析草案已生成，尚未写入正式卡包</h2>
+                <p>
+                  这里展示的是导入器对 ST 原始数据的拆解结果。最终渲染是否稳定，取决于保存后的统一运行时模型，而不是单个补丁规则。
+                </p>
+                <div className="overview-stats" aria-label="草案摘要">
+                  <div className="overview-stat">
+                    <span>变量</span>
+                    <strong>{draftSummary.variableCount}</strong>
+                  </div>
+                  <div className="overview-stat">
+                    <span>状态映射</span>
+                    <strong>
+                      {draftSummary.stateFieldCount > 0
+                        ? `${draftSummary.mappedStateCount}/${draftSummary.stateFieldCount}`
+                        : '未检测'}
+                    </strong>
+                  </div>
+                  <div className="overview-stat">
+                    <span>动作</span>
+                    <strong>{draftSummary.actionCount}</strong>
+                  </div>
+                  <div className="overview-stat">
+                    <span>诊断</span>
+                    <strong>
+                      {draftSummary.diagnostics.error}/{draftSummary.diagnostics.warn}/{draftSummary.diagnostics.info}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="overview-card">
+                <span className="overview-eyebrow">保存会修改什么</span>
+                <h3>{draftSummary.saveTarget.label}</h3>
+                <p>{draftSummary.saveTarget.detail}</p>
+                <ul className="overview-list">
+                  <li>工作台重新解析只更新内存中的导入草案，不会立即写数据库。</li>
+                  <li>点击保存后，才会把原始卡数据、导入报告和平台卡包一起落库。</li>
+                  <li>前端实际展示会读取保存后的运行时模型，而不是这个页面上的临时视图。</li>
+                </ul>
+              </div>
+
+              <div className="overview-card">
+                <span className="overview-eyebrow">风险分层</span>
+                <div className="impact-list">
+                  <div className={`impact-item ${draftSummary.renderCritical.length > 0 ? 'impact-danger' : 'impact-ok'}`}>
+                    <strong>渲染关键</strong>
+                    <span>
+                      {draftSummary.renderCritical.length > 0
+                        ? draftSummary.renderCritical.map((stage) => stage.name).join('、')
+                        : '未发现会直接阻断容器渲染的阶段'}
+                    </span>
+                  </div>
+                  <div className={`impact-item ${draftSummary.runtimeWarnings.length > 0 ? 'impact-warn' : 'impact-ok'}`}>
+                    <strong>运行时行为</strong>
+                    <span>
+                      {draftSummary.runtimeWarnings.length > 0
+                        ? draftSummary.runtimeWarnings.map((stage) => stage.name).join('、')
+                        : '变量桥、动作桥、状态映射目前没有额外告警'}
+                    </span>
+                  </div>
+                  <div className={`impact-item ${draftSummary.apiWarnings > 0 ? 'impact-warn' : 'impact-ok'}`}>
+                    <strong>兼容与桥接</strong>
+                    <span>
+                      {draftSummary.apiWarnings > 0
+                        ? `检测到 ${draftSummary.apiWarnings} 条 API/兼容性提醒`
+                        : '未发现额外兼容性告警'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </section>
+          )}
+
           <main className="iw-tab-panel">
             {activeTab === 'section-pipeline' && (
               <PipelineVisualization stages={draft.import_report.stages} />
@@ -312,7 +445,44 @@ function RawPreviewFrame({
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(520);
+  const [viewportFitHeight, setViewportFitHeight] = useState(MIN_RAW_PREVIEW_IFRAME_HEIGHT);
   const documentHtml = useMemo(() => buildSandboxDocument(html, {}), [html]);
+
+  useEffect(() => {
+    let frame = 0;
+    const updateViewportFitHeight = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const iframe = iframeRef.current;
+        if (!iframe) return;
+        const rect = iframe.getBoundingClientRect();
+        const viewportHeight = window.visualViewport?.height || window.innerHeight || 0;
+        const bottomGutter = 24;
+        const available = viewportHeight - Math.max(0, rect.top) - bottomGutter;
+        if (Number.isFinite(available)) {
+          setViewportFitHeight(
+            Math.max(
+              MIN_RAW_PREVIEW_IFRAME_HEIGHT,
+              Math.min(MAX_RAW_PREVIEW_IFRAME_HEIGHT, available),
+            ),
+          );
+        }
+      });
+    };
+
+    updateViewportFitHeight();
+    window.addEventListener('resize', updateViewportFitHeight);
+    window.visualViewport?.addEventListener('resize', updateViewportFitHeight);
+    const observer = new ResizeObserver(updateViewportFitHeight);
+    if (iframeRef.current?.parentElement) observer.observe(iframeRef.current.parentElement);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      window.removeEventListener('resize', updateViewportFitHeight);
+      window.visualViewport?.removeEventListener('resize', updateViewportFitHeight);
+      observer.disconnect();
+    };
+  }, [documentHtml]);
 
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
@@ -320,7 +490,12 @@ function RawPreviewFrame({
       if (event.data?.type === 'sandbox-resize') {
         const next = Number(event.data.height);
         if (Number.isFinite(next)) {
-          setHeight(Math.max(360, Math.min(1800, next)));
+          setHeight(
+            Math.max(
+              MIN_RAW_PREVIEW_IFRAME_HEIGHT,
+              Math.min(MAX_RAW_PREVIEW_IFRAME_HEIGHT, next),
+            ),
+          );
         }
       }
       if (event.data?.type === 'card-sandbox-action' && typeof event.data.action === 'string') {
@@ -340,7 +515,22 @@ function RawPreviewFrame({
         srcDoc={documentHtml}
         sandbox="allow-scripts"
         className="raw-preview-iframe"
-        style={{ height }}
+        style={{ height: Math.max(height, viewportFitHeight) }}
+        onLoad={() => {
+          const iframe = iframeRef.current;
+          if (!iframe) return;
+          const rect = iframe.getBoundingClientRect();
+          const viewportHeight = window.visualViewport?.height || window.innerHeight || 0;
+          const available = viewportHeight - Math.max(0, rect.top) - 24;
+          if (Number.isFinite(available)) {
+            setViewportFitHeight(
+              Math.max(
+                MIN_RAW_PREVIEW_IFRAME_HEIGHT,
+                Math.min(MAX_RAW_PREVIEW_IFRAME_HEIGHT, available),
+              ),
+            );
+          }
+        }}
       />
       {notableEvents.length > 0 && (
         <div className="raw-preview-events">

@@ -145,6 +145,7 @@ pub struct JsAnalysisReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyntaxError {
+    pub file: String,
     pub message: String,
     pub line: usize,
     pub column: usize,
@@ -346,6 +347,7 @@ pub struct ConclaveCardPackage {
     pub manifest: PackageManifest,
     pub greetings: Vec<Greeting>,
     pub ui: PackageUi,
+    pub runtime_hints: PackageRuntimeHints,
     pub variables: Vec<VariableDeclaration>,
     pub state_schema: CardStateSchema,
     pub state_adapter: CardStateAdapter,
@@ -380,6 +382,19 @@ pub struct PackageUi {
     pub js: Vec<String>,
     pub entry: Option<String>,
     pub assets: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PackageRuntimeHints {
+    pub st_regex_scripts_present: bool,
+    pub opening_regex_matched: bool,
+    pub raw_opening_html_candidate: bool,
+    pub raw_opening_full_document: bool,
+    pub regex_opening_html_candidate: bool,
+    pub regex_opening_full_document: bool,
+    pub canonical_state_root: String,
+    pub projection_root: String,
+    pub runtime_local_root: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -106,6 +106,14 @@ async fn create_app(config: AppConfig) -> Router {
             put(messages::update_variables),
         )
         .route(
+            "/api/sessions/{id}/variable-changes",
+            post(messages::update_projection_changes),
+        )
+        .route(
+            "/api/sessions/{id}/variable-reads",
+            post(messages::read_variables),
+        )
+        .route(
             "/api/sessions/{id}/memory/events",
             get(messages::get_memory_events),
         )

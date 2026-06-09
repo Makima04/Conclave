@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import type { SandboxCardAction } from '../card-schema-types';
-import { buildTavernHelperDocument, type SandboxRuntimeContext } from '../sandbox-document';
+import { buildTavernHelperDocument } from '../sandbox-document';
+import type { SandboxRuntimeContext } from '../sandbox-runtime-types';
 import { DirectHtmlRuntimeHost } from './DirectHtmlRuntimeHost';
 
 export function TavernHelperRuntimeHost({

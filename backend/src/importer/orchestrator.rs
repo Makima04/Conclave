@@ -225,19 +225,15 @@ pub async fn run_import(
             suggestion,
         ));
     }
-    if js_analysis
-        .detected_apis
-        .iter()
-        .any(|api| api.name == "generateRaw")
-    {
+    if js_analysis.detected_apis.iter().any(|api| api.name == "generateRaw") {
         diagnostics.push(report::make_diagnostic(
             "api_scan",
-            DiagnosticLevel::Warn,
-            "legacy_secondary_generation_disabled",
-            "generateRaw was detected. Legacy secondary generation is disabled; card input should use Generate()/submitText so it goes through the main chat pipeline.",
+            DiagnosticLevel::Info,
+            "secondary_generation_bridge_detected",
+            "generateRaw was detected. It is bridged through the platform quiet-generation RPC instead of a direct SillyTavern side channel.",
             None,
-            Some("Automatic card-side summaries or variable analysis will receive an empty safe response instead of calling an LLM."),
-            Some("Map real user input controls to Generate()/submitText or data-xrp-submit-chat during card normalization."),
+            Some("Card-side summaries or analysis can request a background generation, but user-facing input should still use Generate()/submitText so it stays synchronized with the main chat pipeline."),
+            Some("Keep generateRaw for background analysis only; map visible send buttons to Generate()/submitText or data-xrp-submit-chat."),
         ));
     }
 
@@ -664,9 +660,9 @@ fn build_api_mappings(js_analysis: &JsAnalysisReport) -> Vec<ApiCompatibilityMap
             }),
             "generateRaw" => Some(ApiCompatibilityMapping {
                 api: api.name.clone(),
-                status: "disabled".to_string(),
-                replacement: "safe empty response".to_string(),
-                notes: "Legacy secondary generation is not allowed to call an LLM; card-side summaries or analysis receive an empty compatibility response.".to_string(),
+                status: "partial".to_string(),
+                replacement: "quietGenerate host RPC".to_string(),
+                notes: "Background card-side generation is routed through the platform quiet-generation endpoint. User-facing sends should still use Generate()/submitText.".to_string(),
             }),
             "getVariables" | "getAllVariables" => Some(ApiCompatibilityMapping {
                 api: api.name.clone(),

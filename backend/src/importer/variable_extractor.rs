@@ -1,5 +1,6 @@
 use crate::importer::types::*;
 use regex::Regex;
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 // ── Compiled patterns ───────────────────────────────────────────────────
@@ -36,6 +37,34 @@ static OBJ_KV_RE: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+/// Common state roots used by bundled ST/MVU HTML apps. These apps often keep
+/// their own state object in minified code, so there may be no simple
+/// getVariables(["path"]) call to extract.
+static BUNDLED_STATE_ROOTS: &[(&str, VariableType, Option<serde_json::Value>)] = &[
+    ("statusData", VariableType::Object, None),
+    ("memoryDB", VariableType::Object, None),
+    ("phoneMessages", VariableType::Object, None),
+    ("playerProfile", VariableType::Object, None),
+    ("runtimeFlags", VariableType::Object, None),
+    ("summaryStore", VariableType::Object, None),
+    ("musicPlayer", VariableType::Object, None),
+    ("plotLibrary", VariableType::Object, None),
+    ("characterCardLibrary", VariableType::Object, None),
+    ("uiMessages", VariableType::Array, None),
+    ("backgroundTasks", VariableType::Array, None),
+    ("activeRunId", VariableType::String, Some(serde_json::Value::Null)),
+    ("activeSaveId", VariableType::String, Some(serde_json::Value::Null)),
+    ("activeTab", VariableType::String, None),
+    ("phoneOpen", VariableType::Boolean, Some(serde_json::Value::Bool(false))),
+    ("phoneRoute", VariableType::String, None),
+    ("focusedMessageIndex", VariableType::Number, None),
+    ("draft", VariableType::String, Some(serde_json::Value::String(String::new()))),
+    ("generating", VariableType::Boolean, Some(serde_json::Value::Bool(false))),
+    ("currentGenerationId", VariableType::String, None),
+    ("finalizedGenerationId", VariableType::String, None),
+    ("notification", VariableType::Object, Some(serde_json::Value::Null)),
+];
+
 // ── Public API ──────────────────────────────────────────────────────────
 
 /// Extract variable declarations from JS analysis.
@@ -44,8 +73,9 @@ pub fn extract_variables(js: &[String], _analysis: &JsAnalysisReport) -> Vec<Var
     vars.extend(scan_variable_apis(js));
     vars.extend(scan_mvu_init(js));
     vars.extend(scan_state_init(js));
-    // Deduplicate by path
-    vars.dedup_by(|a, b| a.path == b.path);
+    vars.extend(scan_bundled_state_roots(js));
+    let mut seen = HashSet::new();
+    vars.retain(|var| seen.insert(var.path.clone()));
     vars
 }
 
@@ -214,6 +244,55 @@ fn scan_state_init(js_sources: &[String]) -> Vec<VariableDeclaration> {
     vars
 }
 
+/// Detect state roots in minified card apps where the state lives in a bundled
+/// object instead of obvious variable API calls.
+fn scan_bundled_state_roots(js_sources: &[String]) -> Vec<VariableDeclaration> {
+    let mut vars = Vec::new();
+
+    for (i, js) in js_sources.iter().enumerate() {
+        let source = format!("script_{}:bundled_state", i);
+        for (path, var_type, default_value) in BUNDLED_STATE_ROOTS {
+            if contains_state_root_reference(js, path) {
+                vars.push(VariableDeclaration {
+                    path: (*path).to_string(),
+                    var_type: var_type.clone(),
+                    default_value: default_value.clone(),
+                    label: None,
+                    source: source.clone(),
+                });
+            }
+        }
+
+        if contains_any(js, &["getMvuData", "replaceMvuData", "updateVariablesWith"])
+            && contains_any(js, &["stat_data", "display_data"])
+        {
+            vars.push(VariableDeclaration {
+                path: "stat_data".to_string(),
+                var_type: VariableType::Object,
+                default_value: None,
+                label: None,
+                source: source.clone(),
+            });
+        }
+    }
+
+    vars
+}
+
+fn contains_state_root_reference(js: &str, root: &str) -> bool {
+    let escaped = regex::escape(root);
+    let patterns = [
+        format!(r"(?:^|[{{,])\s*{}\s*:", escaped),
+        format!(r"\.\s*{}\s*=", escaped),
+        format!(r"\.\s*{}\b", escaped),
+    ];
+    patterns.iter().any(|pattern| {
+        Regex::new(pattern)
+            .map(|re| re.is_match(js))
+            .unwrap_or(false)
+    })
+}
+
 /// Extract typed value and VariableType from OBJ_KV_RE captures.
 fn infer_value_from_kv_captures(
     cap: &regex::Captures,
@@ -255,6 +334,10 @@ fn infer_type(value: &serde_json::Value) -> VariableType {
         serde_json::Value::Object(_) => VariableType::Object,
         serde_json::Value::Null => VariableType::String,
     }
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -360,5 +443,56 @@ mod tests {
         assert_eq!(vars.len(), 2);
         let level = vars.iter().find(|v| v.path == "level").unwrap();
         assert!(matches!(level.var_type, VariableType::Number));
+    }
+
+    #[test]
+    fn test_extract_bundled_runtime_state_roots() {
+        let js = vec![
+            r#"
+            const mp=wi(pc());
+            function wi(e){return{activeRunId:null,statusData:bn(cn),phoneMessages:di(),playerProfile:{name:''},runtimeFlags:{},memoryDB:sa(''),uiMessages:[ci()]}}
+            function save(){mp.statusData=bn(cn);mp.phoneMessages.draft='';}
+            "#
+            .to_string(),
+        ];
+        let report = analyze_js(&js);
+        let vars = extract_variables(&js, &report);
+        let paths: Vec<&str> = vars.iter().map(|v| v.path.as_str()).collect();
+        assert!(paths.contains(&"statusData"));
+        assert!(paths.contains(&"phoneMessages"));
+        assert!(paths.contains(&"playerProfile"));
+        assert!(paths.contains(&"runtimeFlags"));
+        assert!(paths.contains(&"memoryDB"));
+        assert!(paths.contains(&"uiMessages"));
+        assert!(paths.contains(&"activeRunId"));
+    }
+
+    #[test]
+    fn test_real_bundled_card_state_roots_when_available() {
+        let Ok(html) = std::fs::read_to_string("/tmp/card_628e2cee_replaceString.html") else {
+            return;
+        };
+        let Some(start) = html.find("<script") else {
+            return;
+        };
+        let Some(open_end) = html[start..].find('>').map(|offset| start + offset + 1) else {
+            return;
+        };
+        let Some(close) = html[open_end..].find("</script>").map(|offset| open_end + offset)
+        else {
+            return;
+        };
+        let js = vec![html[open_end..close].to_string()];
+        let report = analyze_js(&js);
+        let vars = extract_variables(&js, &report);
+        let paths: Vec<&str> = vars.iter().map(|v| v.path.as_str()).collect();
+        assert!(
+            paths.contains(&"statusData"),
+            "real bundled card should expose statusData root; got {:?}",
+            paths
+        );
+        assert!(paths.contains(&"memoryDB"));
+        assert!(paths.contains(&"phoneMessages"));
+        assert!(paths.contains(&"stat_data"));
     }
 }

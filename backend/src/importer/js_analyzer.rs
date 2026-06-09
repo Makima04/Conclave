@@ -218,7 +218,7 @@ fn check_syntax(js: &str, file_label: &str) -> Vec<SyntaxError> {
 fn likely_regex_literal_start(chars: &[char], offset: usize) -> bool {
     match previous_significant_char(chars, offset) {
         None => true,
-        Some(ch) => matches!(
+        Some(ch) if matches!(
             ch,
             '(' | '{'
                 | '['
@@ -238,7 +238,15 @@ fn likely_regex_literal_start(chars: &[char], offset: usize) -> bool {
                 | '~'
                 | '<'
                 | '>'
-        ),
+        ) => true,
+        Some(_) => previous_identifier(chars, offset)
+            .map(|identifier| {
+                matches!(
+                    identifier.as_str(),
+                    "return" | "throw" | "case" | "delete" | "typeof" | "void" | "new" | "in"
+                )
+            })
+            .unwrap_or(false),
     }
 }
 
@@ -251,6 +259,28 @@ fn previous_significant_char(chars: &[char], offset: usize) -> Option<char> {
         }
     }
     None
+}
+
+fn previous_identifier(chars: &[char], offset: usize) -> Option<String> {
+    let mut i = offset;
+    while i > 0 {
+        i -= 1;
+        if !chars[i].is_whitespace() {
+            break;
+        }
+    }
+    if i == 0 || !(chars[i].is_ascii_alphanumeric() || chars[i] == '_' || chars[i] == '$') {
+        return None;
+    }
+    let end = i + 1;
+    while i > 0 {
+        let ch = chars[i - 1];
+        if !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '$') {
+            break;
+        }
+        i -= 1;
+    }
+    Some(chars[i..end].iter().collect())
 }
 
 fn skip_regex_literal(chars: &[char], i: &mut usize, line: &mut usize, col: &mut usize) {
@@ -474,11 +504,11 @@ fn detect_apis(js: &str, file_label: &str) -> Vec<DetectedApi> {
         ("sessionStorage", ApiClassification::BrowserShim),
         ("indexedDB", ApiClassification::BrowserShim),
         ("openDatabase", ApiClassification::BrowserShim),
-        // Unsupported
-        ("generateRaw", ApiClassification::Unsupported),
-        ("eventOn", ApiClassification::Unsupported),
-        ("eventOnce", ApiClassification::Unsupported),
-        ("eventRemoveListener", ApiClassification::Unsupported),
+        // Runtime bridge shims
+        ("generateRaw", ApiClassification::PlatformNative),
+        ("eventOn", ApiClassification::PlatformNative),
+        ("eventOnce", ApiClassification::PlatformNative),
+        ("eventRemoveListener", ApiClassification::PlatformNative),
         // Dangerous
         ("eval", ApiClassification::Dangerous),
         ("document.write", ApiClassification::Dangerous),
@@ -651,15 +681,29 @@ mod tests {
 
     #[test]
     fn test_detect_unsupported_apis() {
-        let js = "eventOn('click', handler);".to_string();
+        let js = "eval(code);".to_string();
         let report = analyze_js(&[js]);
         let unsupported: Vec<&str> = report
             .detected_apis
             .iter()
-            .filter(|a| matches!(a.classification, ApiClassification::Unsupported))
+            .filter(|a| matches!(a.classification, ApiClassification::Dangerous))
             .map(|a| a.name.as_str())
             .collect();
-        assert!(unsupported.contains(&"eventOn"));
+        assert!(unsupported.contains(&"eval"));
+    }
+
+    #[test]
+    fn test_detect_runtime_bridge_apis() {
+        let js = "eventOn('stream_token_received', handler); generateRaw({ prompt });".to_string();
+        let report = analyze_js(&[js]);
+        let bridged: Vec<&str> = report
+            .detected_apis
+            .iter()
+            .filter(|a| matches!(a.classification, ApiClassification::PlatformNative))
+            .map(|a| a.name.as_str())
+            .collect();
+        assert!(bridged.contains(&"eventOn"));
+        assert!(bridged.contains(&"generateRaw"));
     }
 
     #[test]
@@ -736,6 +780,45 @@ const rows = items.map(item => ({ id: item.id, html: `<div data-id="${item.id}">
         assert!(
             report.syntax_valid,
             "Nested template expressions from bundled UI code should not trip the heuristic parser"
+        );
+    }
+
+    #[test]
+    fn test_bundled_template_followed_by_regex_literal() {
+        let js = r#"
+function et(e,t){return e?`- ${t}: ${e.id} ${e.title}${e.summary?`：${e.summary}`:''}`:''}
+function tt(e){return e.match(/\d{4}-\d{2}-\d{2}/)?.[0]??''}
+function nt(e,t){const n=new Date(`${e}T00:00:00`),a=new Date(`${t}T00:00:00`);return n<a}
+"#
+        .to_string();
+        let report = analyze_js(&[js]);
+        assert!(
+            report.syntax_valid,
+            "Bundled template output followed by regex literals should not desynchronize delimiter tracking: {:?}",
+            report.syntax_errors
+        );
+    }
+
+    #[test]
+    fn test_real_bundled_card_script_when_available() {
+        let Ok(html) = std::fs::read_to_string("/tmp/card_628e2cee_replaceString.html") else {
+            return;
+        };
+        let Some(start) = html.find("<script") else {
+            return;
+        };
+        let Some(open_end) = html[start..].find('>').map(|offset| start + offset + 1) else {
+            return;
+        };
+        let Some(close) = html[open_end..].find("</script>").map(|offset| open_end + offset) else {
+            return;
+        };
+        let js = html[open_end..close].to_string();
+        let report = analyze_js(&[js]);
+        assert!(
+            report.syntax_valid,
+            "Real bundled card script should not produce heuristic parse errors: {:?}",
+            report.syntax_errors
         );
     }
 

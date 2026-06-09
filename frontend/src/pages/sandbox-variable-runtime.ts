@@ -1,4 +1,110 @@
 export const SANDBOX_VARIABLE_RUNTIME_SOURCE = String.raw`
+  const normalizeVariableScope = (scope = 'projection') => {
+    const value = String(scope || 'projection');
+    if (value === 'chat') return 'projection';
+    return value;
+  };
+  const parseVariablePathPart = (part) => {
+    const source = String(part || '');
+    const open = source.lastIndexOf('[');
+    if (open >= 0 && source.endsWith(']')) {
+      const key = source.slice(0, open);
+      const rawIndex = source.slice(open + 1, -1);
+      const index = /^\\d+$/.test(rawIndex) ? Number(rawIndex) : null;
+      return { key, index };
+    }
+    return { key: source, index: null };
+  };
+  const getValueAtPath = (root, path) => {
+    if (!path) return root;
+    let current = root;
+    for (const part of String(path).split('.').filter(Boolean)) {
+      if (!current || typeof current !== 'object') return undefined;
+      const { key, index } = parseVariablePathPart(part);
+      current = current?.[key];
+      if (index != null) {
+        if (!Array.isArray(current)) return undefined;
+        current = current[index];
+      }
+    }
+    return current;
+  };
+  const ensureBridgeObject = (value) => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const ensureBridgeArray = (value) => Array.isArray(value) ? value : [];
+  const setValueAtPath = (root, path, value) => {
+    const base = ensureBridgeObject(cloneJson(root ?? {}));
+    const parts = String(path || '').split('.').filter(Boolean);
+    if (parts.length === 0) return base;
+    let current = base;
+    for (let i = 0; i < parts.length; i += 1) {
+      const { key, index } = parseVariablePathPart(parts[i]);
+      if (!key) continue;
+      const isLast = i === parts.length - 1;
+      if (isLast) {
+        if (index != null) {
+          current[key] = ensureBridgeArray(current[key]);
+          while (current[key].length <= index) current[key].push(null);
+          current[key][index] = value;
+        } else {
+          current[key] = value;
+        }
+        break;
+      }
+      if (index != null) {
+        current[key] = ensureBridgeArray(current[key]);
+        while (current[key].length <= index) current[key].push({});
+        current[key][index] = ensureBridgeObject(current[key][index]);
+        current = current[key][index];
+      } else {
+        current[key] = ensureBridgeObject(current[key]);
+        current = current[key];
+      }
+    }
+    return base;
+  };
+  const collectBridgeLeafChanges = (value, prefix = '') => {
+    if (Array.isArray(value) || value == null || typeof value !== 'object') {
+      return prefix ? [{ path: prefix, value }] : [];
+    }
+    const entries = Object.entries(value);
+    if (entries.length === 0) return prefix ? [{ path: prefix, value }] : [];
+    return entries.flatMap(([key, child]) => {
+      const next = prefix ? prefix + '.' + key : key;
+      return collectBridgeLeafChanges(child, next);
+    });
+  };
+  const isProjectionPathAllowed = (path, contract) => {
+    const allowed = contract?.writableProjectionPaths || [];
+    if (allowed.length === 0) return true;
+    return allowed.some(item =>
+      path === item
+        || path.startsWith(item + '.')
+        || path.startsWith(item + '[')
+    );
+  };
+  const applyBridgeChanges = (current, changes, scope, contract = null) => {
+    const normalizedScope = normalizeVariableScope(scope);
+    const leafChanges = Array.isArray(changes)
+      ? changes.flatMap((change) => {
+          const path = String(change?.path ?? change?.target ?? '').trim();
+          if (!path) return [];
+          return [{ path, value: change?.value ?? change?.to ?? null }];
+        })
+      : collectBridgeLeafChanges(changes);
+    let next = cloneJson(current ?? {});
+    const applied = [];
+    const rejected = [];
+    for (const change of leafChanges) {
+      if (!change.path) continue;
+      if (normalizedScope === 'projection' && !isProjectionPathAllowed(change.path, contract)) {
+        rejected.push(change.path);
+        continue;
+      }
+      next = setValueAtPath(next, change.path, cloneJson(change.value));
+      applied.push(change.path);
+    }
+    return { next, applied, rejected };
+  };
   const messageVariablesOf = (message) => {
     if (!message || typeof message !== 'object') return {};
     if (message.variables && typeof message.variables === 'object') return message.variables;

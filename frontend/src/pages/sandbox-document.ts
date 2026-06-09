@@ -449,10 +449,10 @@ ${SANDBOX_VARIABLE_RUNTIME_SOURCE}
     return cloneJsonString(runtimeMessagesByIdJson.get(String(id)) || runtimeMessageJson) || cloneJson(runtimeMessage);
   };
   exposeGlobal('getChatMessage', getChatMessage);
-  const getVariables = async (option = { type: 'projection' }) => cloneJson(getVariableStore(option));
+  const getVariables = (option = { type: 'projection' }) => cloneJson(getVariableStore(option));
   exposeGlobal('getVariables', getVariables);
-  exposeGlobal('getProjectionVariables', async () => cloneJson(getVariableStore({ type: 'projection' })));
-  exposeGlobal('getLocalVariables', async () => cloneJson(getVariableStore({ type: 'local' })));
+  exposeGlobal('getProjectionVariables', () => cloneJson(getVariableStore({ type: 'projection' })));
+  exposeGlobal('getLocalVariables', () => cloneJson(getVariableStore({ type: 'local' })));
   exposeGlobal('readVariables', readBridgeVariables);
   exposeGlobal('writeVariables', writeBridgeVariables);
   exposeGlobal('getAllVariables', getAllVariables);
@@ -535,7 +535,7 @@ ${SANDBOX_VARIABLE_RUNTIME_SOURCE}
   exposeGlobal('generate', generate);
   exposeGlobal('generateRaw', quietGenerateRaw);
 
-  const getMvuData = async (options = {}) => {
+  const getMvuData = (options = {}) => {
     const message = resolveRuntimeMessage(options);
     const messageVariables = getVariableStore({
       ...normalizeVariableOption(options || {}),
@@ -551,7 +551,7 @@ ${SANDBOX_VARIABLE_RUNTIME_SOURCE}
     });
   };
   exposeGlobal('getMvuData', getMvuData);
-  const replaceMvuData = async (data, options = {}) => {
+  const replaceMvuData = (data, options = {}) => {
     const next = data?.stat_data || data?.variables || data || {};
     const normalized = normalizeVariableOption(options || {});
     const targetType = normalized.type && normalized.type !== 'projection'

@@ -23,9 +23,9 @@ const API_MAPPING_CATALOG: Record<string, ApiCompatibilityMapping> = {
   },
   generateRaw: {
     api: 'generateRaw',
-    status: 'disabled',
-    replacement: 'safe empty response',
-    notes: '旧副生成链路已禁用，避免绕过主消息、变量更新和渲染同步。',
+    status: 'partial',
+    replacement: 'quietGenerate host RPC',
+    notes: '后台分析生成会走平台 quiet-generation；可见发送仍应走主消息链路。',
   },
   getVariables: {
     api: 'getVariables',

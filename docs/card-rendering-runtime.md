@@ -20,18 +20,103 @@
 1. `render_mode = text`：只渲染格式化文本，不挂载 iframe。
 2. `render_mode = schema`：只渲染平台 schema/status/cover，不执行卡片 HTML app。
 3. `render_mode = sandbox`：优先执行原始沙盒 HTML。
-4. `render_mode = auto`：优先使用导入期生成的 `characterCard.conclave_package.ui`，再回退到 ST regex sandbox、schema/status/text。
+4. `render_mode = auto`：优先使用导入期生成的 `characterCard.conclave_package.ui`；无 conclave_package 时降级为原始 sandbox。不存在 schema 回退。
 
-复杂 HTML 卡当前以 iframe 运行，入口包括：
+复杂 HTML 卡当前以 iframe 或直接 DOM 注入运行，入口包括：
 
-- `frontend/src/pages/components/PlatformPackageRenderer.tsx`
+- `frontend/src/pages/components/MessageHtmlAppRenderer.tsx`（消息级 iframe 渲染，替代已删除的 `PlatformPackageRenderer`）
+- `frontend/src/pages/components/IframeHtmlRuntimeHost.tsx`（iframe 宿主，srcDoc 注入）
+- `frontend/src/pages/components/DirectHtmlRuntimeHost.tsx`（DOMParser 直接插入宿主，非 iframe）
+- `frontend/src/pages/components/PersistentCardRuntimeHost.tsx`（会话级持久卡片宿主，使用 DirectHtmlRuntimeHost）
+- `frontend/src/pages/components/SessionTavernHelperRuntimeHost.tsx`（TavernHelper 脚本宿主）
 - `frontend/src/pages/components/SandboxHtmlRenderer.tsx`
-- `frontend/src/pages/components/TavernHelperRuntimeHost.tsx`
 - `frontend/src/pages/sandbox-document.ts`
 
 `ConclaveCardPackage` 是当前产品主路径；“完全转成平台 schema”是长期方向，不是当前已经完成的状态。
 
 当角色卡在 `extensions.tavern_helper.scripts` 声明启用脚本时，聊天页会挂载一个隐藏的 TavernHelper 脚本宿主 iframe。宿主只负责执行卡片声明的脚本并提供通用 ST/TavernHelper/MVU 桥接，不解析某张卡的变量名，也不替代作者脚本绘制 UI。若脚本自己创建浮动 iframe、状态栏、相册或自动正则，这些 UI 由脚本自身负责。
+
+---
+
+## 渲染宿主架构
+
+平台提供两种 HTML 渲染宿主，由上层组件根据场景选择：
+
+### IframeHtmlRuntimeHost
+
+- 使用 `<iframe sandbox="allow-scripts allow-same-origin">` + `srcDoc` 注入。
+- 通过 `postMessage` 与宿主通信。
+- 高度自适应：`ResizeObserver` + `requestAnimationFrame` 节流，最小 360px，消息级最大 720px。
+- 视口适配：基于 `visualViewport` 计算可用高度。
+- 使用场景：`MessageHtmlAppRenderer`（消息级卡片）。
+
+### DirectHtmlRuntimeHost
+
+- 使用 `DOMParser` 解析 HTML，直接将节点插入宿主 DOM。
+- 通过 `CustomEvent`（`window.dispatchEvent`）与宿主通信，不使用 `postMessage`。
+- Script 节点通过 `document.createElement('script')` 动态执行。
+- 支持 `preserveTavernGlobals` 模式：`SessionTavernHelperRuntimeHost` 使用此模式，卸载时通过 `MutationObserver` 清理向 `document.head` / `document.body` 注入的外部节点。
+- 使用场景：`PersistentCardRuntimeHost`（会话级持久卡片）、`SessionTavernHelperRuntimeHost`。
+
+### MessageHtmlAppRenderer
+
+消息级角色卡 HTML app 渲染器（替代已删除的 `PlatformPackageRenderer`）：
+
+- 读取 `card.conclave_package.ui.html` 构建 sandbox document。
+- 使用 `IframeHtmlRuntimeHost` 渲染。
+- mountKey 由 `cardId:messageId:swipeId` 组成，确保每条消息独立实例。
+- 流式输出期间不重建 iframe。
+
+### PersistentCardRuntimeHost
+
+会话级持久角色卡宿主：
+
+- 使用 `DirectHtmlRuntimeHost`（非 iframe），在会话内保持 DOM 状态。
+- mountKey 由 `cardId:sessionId:scriptName` 组成。
+- 用于需要在消息间保持状态的卡片 UI。
+
+---
+
+## __XRPDirectRuntimeBridge 机制
+
+`DirectHtmlRuntimeHost` 在宿主 window 上设置 `__XRPDirectRuntimeBridge` 对象，沙盒 JS 通过它进行通信（而非 `parent.postMessage`）：
+
+```ts
+interface XRPDirectRuntimeBridge {
+  messageEventName: string;   // 自定义消息事件名
+  updateEventName: string;    // 运行时更新事件名
+  disposeEventName: string;   // 销毁事件名
+  preserveTavernGlobals: boolean;
+  post: (message: unknown) => void;  // 发送沙盒动作
+}
+```
+
+`sandbox-document.ts` 中的早期桥接代码检测此对象：
+
+- 如果 `__XRPDirectRuntimeBridge` 存在且有 `post` 方法，使用 `CustomEvent` 发送。
+- 否则回退到 `parent.postMessage`（iframe 场景）。
+
+---
+
+## SandboxRuntimeSubmission 状态机
+
+沙盒可感知当前生成状态，用于 UI 反馈：
+
+```ts
+interface SandboxRuntimeSubmission {
+  status: 'idle' | 'pending' | 'streaming' | 'finalizing' | 'error' | 'done';
+  sourceMessageId?: string | number | null;
+  generationId?: string | number | null;
+  userMessage?: string;
+  assistantMessage?: string;
+  error?: string | null;
+  updatedAt?: number;
+}
+```
+
+状态转换：`idle` -> `pending` -> `streaming` -> `finalizing` -> `done`（或任意阶段 -> `error`）。
+
+宿主通过 `xrp-runtime-update` 消息将 `submission` 状态推入沙盒，卡片 JS 可据此显示加载动画、进度或错误信息。
 
 ---
 
@@ -75,8 +160,17 @@
 | `substituteMacros` | 提供基础 `{{user}}` / `{{char}}` 宏替换。 |
 | `localStorage/sessionStorage` | 可用时使用浏览器实现，不可用时使用内存 shim。 |
 | `indexedDB` | 可用时使用浏览器实现，不可用时使用内存 shim。 |
+| `z` (Zod shim) | 提供 Zod 风格 schema 声明的 passthrough shim，`parse` / `safeParse` 直接返回输入值。 |
+| `eventSource` | 完整事件源对象，含 `on` / `once` / `off` / `emit` / `emitAndWait` / `makeLast` / `removeListener` 方法。 |
+| `event_types` / `eventTypes` | ST 常见事件名常量（`APP_INITIALIZED`、`CHAT_CHANGED`、`GENERATION_STARTED` 等）。 |
+| `iframe_events` | iframe 渲染事件常量（`MESSAGE_IFRAME_RENDER_STARTED`、`GENERATION_STARTED` 等）。 |
+| `SillyTavern` | SillyTavern 全局对象 shim。 |
+| `Generate` / `generate` / `generateRaw` | LLM 生成 API 桥接（`generateRaw` 标记为 unsupported）。 |
+| Vue runtime | 注入 Vue 3 global production runtime（`vue/dist/vue.global.prod.js`），供依赖 Vue 的卡片使用。 |
 
 兼容层不能为了单张卡无限新增私有 API。新增 API 前必须确认它能服务一类卡，并写入本文或导入标准化文档。
+
+沙盒注入的所有全局变量（`SillyTavern`、`TavernHelper`、`Mvu`、`z`、`eventSource` 等共 22 个）在注入前会通过 `__XRPOriginalGlobals` 保存原始 descriptor。沙盒销毁时（`dispose` 事件）自动恢复原始全局状态，防止多卡片实例之间的全局污染。`DirectHtmlRuntimeHost` 的 `preserveTavernGlobals` 模式例外：`SessionTavernHelperRuntimeHost` 的全局变量在会话内保持不销毁。
 
 TavernHelper 脚本宿主使用 iframe 执行卡片声明的脚本，并在 `StatusPlaceHolderImpl` 占位处挂载。宿主保持 `allow-scripts` 隔离；若某类卡明确需要同源 iframe 权限，应先评估通用安全边界再扩展权限。
 
@@ -156,5 +250,6 @@ SillyTavern 卡常把存档写进同源 `localStorage` / `IndexedDB`，所以不
 
 - 改 `sandbox-document.ts` 时先考虑是否会影响所有 HTML 卡。
 - 改 shared save 时优先保持轻量和可中断，避免把会话全量数据塞进 iframe。
-- 改 `PlatformPackageRenderer` / `SandboxHtmlRenderer` 时避免让 `srcDoc` 因无关状态变化重建。
+- 改 `MessageHtmlAppRenderer` / `SandboxHtmlRenderer` / `DirectHtmlRuntimeHost` 时避免让 `srcDoc` 或 DOM 因无关状态变化重建。
+- 改 `__XRPDirectRuntimeBridge` 通信协议时同步更新 iframe 和直接 DOM 两条路径。
 - 需要用户视觉验证时，让用户刷新当前页面后测试，不要求自动浏览器工具必须接管。

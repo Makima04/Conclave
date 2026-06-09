@@ -123,11 +123,24 @@ Conclave Card Package
     "assets": []
   },
   "variables": [],
+  "state_schema": {
+    "roots": [],
+    "fields": []
+  },
+  "state_adapter": {
+    "adapter_version": "0.1.0",
+    "source_format": "sillytavern",
+    "read_rules": [],
+    "write_rules": [],
+    "variable_rules": [],
+    "warnings": []
+  },
   "actions": [],
   "compatibility": {
     "required_apis": [],
     "unsupported_apis": [],
-    "warnings": []
+    "warnings": [],
+    "api_mappings": []
   }
 }
 ```
@@ -138,12 +151,15 @@ Conclave Card Package
 |---|---|
 | `manifest.source` | 原始来源，如 `sillytavern`、`rentry`、`custom_json`。 |
 | `manifest.source_hash` | 原始卡内容 hash，用于去重、缓存和审计。 |
+| `manifest.importer_version` | 导入器版本。 |
 | `greetings` | 从 `first_mes` 和 `alternate_greetings` 转换而来。 |
-| `ui.type` | `schema`、`html_app`、`text` 之一。 |
-| `ui.html/css/js` | 已拆分、转译、资源重写后的平台 UI。 |
-| `variables` | 平台变量 schema，不直接暴露 ST 内部存储结构。 |
-| `actions` | 平台动作声明，如开始、读档、写变量、设置消息。 |
-| `compatibility` | 导入报告，记录缺口和降级行为。 |
+| `ui.type` | `schema`、`html_app`、`html_fragment`、`text`、`raw_preview` 五种。 |
+| `ui.html/css/js` | 已拆分、分析后的平台 UI。资源重写待实现。 |
+| `variables` | 平台变量 schema，含 `default_value` 和 `source`。 |
+| `state_schema` | 卡状态字段与 root 声明，含 `default_value` 和 `source`。 |
+| `state_adapter` | 状态读写映射规则，含 `source_format` 标识。 |
+| `actions` | 平台动作声明，含 `form_submit` 类型。 |
+| `compatibility` | 导入报告，含 API 兼容映射表。 |
 
 ---
 
@@ -167,10 +183,22 @@ JSON 卡：
 type ExternalCard = {
   name: string;
   description: string;
+  personality: string;
+  scenario: string;
   firstMes: string;
   alternateGreetings: string[];
+  systemPrompt: string;
+  postHistoryInstructions: string;
+  creatorNotes: string;
+  mesExample: string;
+  creator: string;
+  characterVersion: string;
+  tags: string[];
+  spec: string;              // "chara_card_v2" / "chara_card_v3"
   extensions: Record<string, unknown>;
-  assets: Array<{ id: string; url: string; kind: string }>;
+  avatar: string;
+  sourceFormat: "png_ccv3" | "png_chara" | "json_v2" | "json_v3";
+  sourceHash: string;        // sha256 hash for dedup
 };
 ```
 
@@ -187,11 +215,17 @@ type ExternalCard = {
 输出：
 
 ```ts
+type RegexDiagnostic = {
+  level: "info" | "warn" | "error";
+  message: string;
+  script_index?: number;
+};
+
 type RegexExecutionResult = {
   matched: boolean;
   output: string;
   scriptsUsed: string[];
-  diagnostics: string[];
+  diagnostics: RegexDiagnostic[];  // 结构体数组，非 string[]
 };
 ```
 
@@ -201,9 +235,23 @@ type RegexExecutionResult = {
 
 - 识别 `<!doctype>`、`<html>`、`<head>`、`<body>`。
 - 拆分 `<style>` 为 `ui/index.css`。
-- 拆分 `<script>` 为 `ui/index.js`。
-- 保留 `<div id="app">` 等入口节点。
+- 拆分 `<script>` 为 `ui/index.js`，记录 `script_types`（`module` / `classic`）。
+- 保留 `<div id="app">` 等入口节点，记录 `entry_node`。
 - 不在运行时二次包装成嵌套文档。
+- 自动剥离 markdown code fence（如 ` ```html ` / ` ``` ` 包裹）。
+
+输出 `HtmlAppSplit`：
+
+```ts
+type HtmlAppSplit = {
+  html: string;
+  css: string[];
+  js: string[];
+  script_types: string[];   // "module", "classic", or ""
+  entry_node?: string;
+  is_full_document: boolean;
+};
+```
 
 如果输出是简单 HTML：
 
@@ -214,7 +262,9 @@ type RegexExecutionResult = {
 
 - 降级为 `text` 或 `raw_preview`，并写入 compatibility warnings。
 
-### 4. 资源重写
+### 4. 资源扫描
+
+> 当前状态：仅检测 URL，资源复制/下载/代理/重写待实现。
 
 导入器应扫描：
 
@@ -222,25 +272,62 @@ type RegexExecutionResult = {
 - CSS `url(...)`
 - `<audio src>`
 - `<video src>`
-- JS 中明显的静态资源 URL
+- `<link href>`
+- `<script src>`
+- JS 中明显的静态资源 URL（如 `new Audio("...")`）
 
-处理策略：
+当前实现（`resource_scanner.rs`）产出 `ResourceManifest`：
+
+```ts
+type ResourceEntry = {
+  url: string;
+  kind: "image" | "audio" | "video" | "css_url" | "js_static" | "font";
+  source: string;   // "html" | "css" | "js"
+  offset?: number;
+};
+```
+
+**待实现**处理策略：
 
 - 包内资源复制到 `assets/`。
 - 远程资源可选择下载、代理、或保留 URL。
 - 所有资源写入 manifest。
 - 不允许绝对本地路径和 `..` 逃逸路径。
 
-### 5. JS 转译与隔离
+### 5. JS 分析
 
-导入期可以使用 esbuild / Babel 对卡片 JS 做一次转译：
+> 当前状态：仅启发式 API 检测，esbuild/Babel 转译待实现。
 
+当前实现（`js_analyzer.rs`）对卡片 JS 做启发式分析：
+
+- 括号平衡检查（非完整 parser，跳过字符串/模板字面量/注释/正则）。
+- 已知 API 模式检测，按分类标注：
+  - `platform_native`：`getVariables`、`setVariables`、`TavernHelper`、`Mvu` 等。
+  - `browser_shim`：`localStorage`、`sessionStorage`、`indexedDB`。
+  - `unsupported`：`generateRaw`、`eventOn` 等。
+  - `dangerous`：`eval`、`document.write`、`innerHTML`。
+- 动态 `import()` 调用扫描。
+
+输出 `JsAnalysisReport`：
+
+```ts
+type JsAnalysisReport = {
+  syntax_valid: boolean;
+  syntax_errors: SyntaxError[];
+  detected_apis: DetectedApi[];
+  dynamic_imports: DynamicImport[];
+};
+```
+
+**待实现**：
+
+- 使用 esbuild / Babel 对卡片 JS 做正式转译。
 - 目标浏览器由平台决定。
 - 保留 source map 到导入报告。
 - 报告无法转译的语法。
 - 将动态 `import(...)`、远程脚本、危险 API 标记为 compatibility warning。
 
-运行时只加载转译后的 `ui/index.js`，不直接运行原始 bundle。
+运行时只加载分析/转译后的 `ui/index.js`，不直接运行原始 bundle。
 
 ### 6. 动作抽取
 
@@ -250,9 +337,9 @@ type RegexExecutionResult = {
 type CardAction = {
   id: string;
   label: string;
-  kind: "start" | "load_save" | "set_message" | "set_variable" | "open_panel" | "unknown";
+  kind: "start" | "load_save" | "set_message" | "set_variable" | "open_panel" | "form_submit" | "unknown";
   selector?: string;
-  source?: "html" | "js" | "llm";
+  source: "html" | "js" | "regex";
 };
 ```
 
@@ -287,13 +374,15 @@ LLM 不得负责执行 JS 或决定安全权限。
 type CardVariable = {
   path: string;
   type: "string" | "number" | "boolean" | "object" | "array";
-  defaultValue?: unknown;
+  default_value?: unknown;
   label?: string;
-  source?: string;
+  source: string;           // 变量来源标识（如 "regex"、"mvu"、"init"）
 };
 ```
 
 变量 schema 是平台运行时契约，不能直接依赖 ST 的内部全局对象。
+
+> 补充：导入器还会从 HTML 中抽取 `initvar` 类变量初始化（如 `data-initvar` 属性），作为变量来源之一。
 
 ### 8. 状态转换层生成
 
@@ -310,8 +399,10 @@ type CardStateSchema = {
     path: string;
     canonical_path?: string;
     type: "string" | "number" | "boolean" | "object" | "array";
-    role: "time" | "location" | "relationship_score" | "memory_entry" | "summary_entry" | "ui_flag" | "custom";
+    default_value?: unknown;
+    role: "time" | "location" | "character_name" | "relationship_score" | "relationship_stage" | "inventory_item" | "memory_entry" | "summary_entry" | "ui_flag" | "custom";
     writable: boolean;
+    source: string;          // 字段来源标识
     confidence: number;
   }>;
 };
@@ -320,6 +411,7 @@ type CardStateSchema = {
 ```ts
 type CardStateAdapter = {
   adapter_version: string;
+  source_format: string;      // 原始卡格式标识
   read_rules: StateMappingRule[];
   write_rules: StateMappingRule[];
   variable_rules: VariableRule[];
@@ -387,24 +479,62 @@ LLM 只用于语义理解和补全，不用于执行或安全判断。
 
 ## 导入报告
 
-每次导入必须生成 `import-report.json`：
+每次导入必须生成 `ImportReport`：
 
-```json
-{
-  "status": "success",
-  "source": "sillytavern",
-  "source_hash": "sha256:...",
-  "steps": [
-    { "name": "parse_png_metadata", "status": "success" },
-    { "name": "execute_regex_scripts", "status": "success" },
-    { "name": "split_html_app", "status": "success" },
-    { "name": "transpile_js", "status": "warning", "message": "dynamic import preserved" }
-  ],
-  "required_apis": ["localStorage", "indexedDB", "getVariables"],
-  "unsupported_apis": [],
-  "warnings": ["Remote audio URL preserved"],
-  "fallback": null
-}
+```ts
+type ImportReport = {
+  id: string;
+  status: "success" | "warning" | "fallback" | "blocked";
+  source: string;
+  source_hash: string;
+  stages: StageResult[];          // 各阶段执行结果
+  rule_traces: RuleTrace[];       // 确定性规则执行轨迹
+  diagnostics: ImportDiagnostic[]; // 结构化诊断信息
+  fallback?: string;
+};
+```
+
+各阶段结果：
+
+```ts
+type StageResult = {
+  id: string;
+  name: string;
+  status: "success" | "warning" | "error" | "skipped";
+  message?: string;
+  started_at?: string;
+  finished_at?: string;
+};
+```
+
+规则轨迹：
+
+```ts
+type RuleTrace = {
+  rule_id: string;
+  stage: string;
+  status: "matched" | "skipped" | "failed";
+  confidence: number;
+  input_ref?: string;
+  output_ref?: string;
+  diagnostics: string[];
+};
+```
+
+诊断信息：
+
+```ts
+type ImportDiagnostic = {
+  id: string;
+  stage: string;
+  level: "info" | "warn" | "error";
+  code: string;
+  message: string;
+  source?: { kind: string; script_name?: string; field?: string; offset?: number; };
+  impact?: string;
+  suggestion?: string;
+  rule_id?: string;
+};
 ```
 
 失败时：
@@ -413,8 +543,9 @@ LLM 只用于语义理解和补全，不用于执行或安全判断。
 {
   "status": "fallback",
   "fallback": "raw_sandbox_preview",
-  "reason": "JS parse failed after transpilation",
-  "unsupported_apis": ["unknownExtensionApi"]
+  "diagnostics": [
+    { "id": "...", "stage": "js_analysis", "level": "error", "code": "JS_PARSE_FAILED", "message": "JS parse failed after analysis" }
+  ]
 }
 ```
 

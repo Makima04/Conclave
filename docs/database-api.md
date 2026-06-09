@@ -45,8 +45,16 @@ sessions ──< turn_summaries
 sessions ──< sub_agents
 sessions ──< structured_events
 sessions ──< pending_proposals
+sessions ──< turn_jobs
+sessions ──< agent_call_debug_snapshots
+sessions ──< presets (可选，session_id)
+world_books ──< world_book_entries
+world_books 1──1 character_cards
+character_cards ──< import_reports
 provider_configs (独立)
-content_packs (独立，P3 预留)
+app_settings (独立，KV 配置)
+import_failure_samples (独立，调试用)
+agent_knowledge_events ── sessions
 ```
 
 ---
@@ -74,10 +82,12 @@ CREATE TABLE sessions (
 | 字段 | 说明 |
 |---|---|
 | `mode` | `single_agent` 或 `multi_agent`（动态总控 4 层流水线）。 |
-| `config` | JSON 配置：`max_context_turns`、`stream`、`temperature`、`top_p`、`max_tokens`、`frequency_penalty`、`presence_penalty`、`system_prompt`、`master_model`、`sub_agent_model`、`compression_model`、`cooldown_turns`（默认 10）、`user_auto_mode`（默认 "ask"）、`max_active_agents`（默认 8）、`parser_enabled`（默认 true）、`user_persona`、`user_setting_merge_strategy`（`user_overrides_worldbook` 或 `worldbook_overrides_user`）。 |
+| `character_pack_id` | **已弃用**，预留字段，当前未使用。 |
+| `graph_pack_id` | **已弃用**，预留字段，当前未使用。 |
+| `config` | JSON 配置：`max_context_turns`、`stream`、`temperature`、`top_p`、`max_tokens`、`frequency_penalty`、`presence_penalty`、`system_prompt`、`master_model`、`sub_agent_model`、`compression_model`、`variable_tool_model`（变量工具模型）、`render_mode`（`auto`/`schema`/`sandbox`/`text`，默认 `auto`）、`active_preset_id`（可选，当前激活的 preset ID）、`cooldown_turns`（默认 10）、`user_auto_mode`（默认 "ask"）、`max_active_agents`（默认 8）、`parser_enabled`（默认 true）、`user_persona`（JSON 对象：`name`、`avatar`、`address`、`background`、`style`）、`user_setting_merge_strategy`（`user_overrides_worldbook` 或 `worldbook_overrides_user`）。 |
 | `current_turn` | 当前轮次号，每轮递增。 |
 | `title_source` | `auto`（LLM 自动生成）或 `manual`（用户手动命名）。 |
-| `status` | `idle` 或 `processing`。后端启动时自动重置残留的 `processing` 状态。 |
+| `status` | `idle`、`processing`、`compressing`、`failed_generation`、`failed_compression`。后端启动时自动重置 `processing`/`compressing`/`failed_generation`/`failed_compression` 为 `idle`。 |
 
 ---
 
@@ -401,6 +411,310 @@ CREATE TABLE agent_knowledge_events (
 | `confidence` | 0-1 置信度。 |
 | `evidence` | 简短证据文本。 |
 
+> 注：`agent_knowledge_events` 表无公开 API 端点，仅由 Runtime 内部写入，通过上下文构建（`build_context`）注入 Agent prompt。
+
+---
+
+### world_books — 世界书
+
+```sql
+CREATE TABLE world_books (
+  id              TEXT PRIMARY KEY,
+  name            TEXT NOT NULL,
+  description     TEXT NOT NULL DEFAULT '',
+  original_format TEXT NOT NULL,
+  source_data     TEXT NOT NULL,
+  parse_status    TEXT NOT NULL DEFAULT 'none',
+  parsed_entries  TEXT NOT NULL DEFAULT '[]',
+  single_agent_parse_status TEXT NOT NULL DEFAULT 'none',
+  single_agent_parsed_entries TEXT NOT NULL DEFAULT '[]',
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+```
+
+| 字段 | 说明 |
+|---|---|
+| `original_format` | `ccv2`（Character Card V2/V3）或 `sillytavern`。 |
+| `source_data` | 原始导入 JSON 文本。 |
+| `parse_status` | `none`、`parsing`、`done`、`error`。LLM 分类多 Agent 条目的状态。 |
+| `parsed_entries` | JSON 数组，LLM 解析后的多 Agent 条目（含 `category`、`visibility`、`reason`）。 |
+| `single_agent_parse_status` | 单 Agent 路由解析状态，值同 `parse_status`。 |
+| `single_agent_parsed_entries` | JSON 数组，单 Agent 路由解析后的条目。 |
+
+---
+
+### world_book_entries — 世界书条目
+
+```sql
+CREATE TABLE world_book_entries (
+  id              TEXT PRIMARY KEY,
+  world_book_id   TEXT NOT NULL REFERENCES world_books(id) ON DELETE CASCADE,
+  keys            TEXT NOT NULL DEFAULT '[]',
+  content         TEXT NOT NULL DEFAULT '',
+  comment         TEXT NOT NULL DEFAULT '',
+  constant        INTEGER NOT NULL DEFAULT 0,
+  priority        INTEGER NOT NULL DEFAULT 100,
+  enabled         INTEGER NOT NULL DEFAULT 1,
+  position        TEXT NOT NULL DEFAULT 'before_char',
+  selective       INTEGER NOT NULL DEFAULT 0,
+  secondary_keys  TEXT NOT NULL DEFAULT '[]',
+  selective_logic INTEGER NOT NULL DEFAULT 0,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+
+CREATE INDEX idx_wb_entries_book ON world_book_entries(world_book_id);
+```
+
+| 字段 | 说明 |
+|---|---|
+| `keys` | JSON 数组，触发关键词列表。 |
+| `constant` | 0/1，是否始终注入。 |
+| `priority` | 优先级，数值越大越优先。 |
+| `position` | 插入位置：`before_char`、`after_char`、`@D`、`@A` 等 SillyTavern 标准位。 |
+| `selective` | 0/1，是否需要同时匹配 `secondary_keys`。 |
+| `selective_logic` | 0 = AND ANY，1 = AND ALL，2 = NOT ANY。 |
+
+---
+
+### character_cards — 角色卡
+
+```sql
+CREATE TABLE character_cards (
+  id                        TEXT PRIMARY KEY,
+  world_book_id             TEXT NOT NULL UNIQUE REFERENCES world_books(id) ON DELETE CASCADE,
+  name                      TEXT NOT NULL DEFAULT '',
+  description               TEXT NOT NULL DEFAULT '',
+  personality               TEXT NOT NULL DEFAULT '',
+  scenario                  TEXT NOT NULL DEFAULT '',
+  first_mes                 TEXT NOT NULL DEFAULT '',
+  avatar                    TEXT NOT NULL DEFAULT 'none',
+  creator                   TEXT NOT NULL DEFAULT '',
+  character_version         TEXT NOT NULL DEFAULT '',
+  tags                      TEXT NOT NULL DEFAULT '[]',
+  alternate_greetings       TEXT NOT NULL DEFAULT '[]',
+  system_prompt             TEXT NOT NULL DEFAULT '',
+  post_history_instructions TEXT NOT NULL DEFAULT '',
+  creator_notes             TEXT NOT NULL DEFAULT '',
+  mes_example               TEXT NOT NULL DEFAULT '',
+  extensions                TEXT NOT NULL DEFAULT '{}',
+  spec                      TEXT NOT NULL DEFAULT 'chara_card_v2',
+  source_data               TEXT NOT NULL DEFAULT '{}',
+  created_at                TEXT NOT NULL,
+  updated_at                TEXT NOT NULL
+);
+
+CREATE INDEX idx_cc_wb ON character_cards(world_book_id);
+```
+
+| 字段 | 说明 |
+|---|---|
+| `world_book_id` | 1:1 关联 `world_books`，角色卡的世界书条目存在 `world_book_entries` 中。 |
+| `spec` | CCv2/CCv3 规范版本标识。 |
+| `source_data` | 原始导入 JSON。 |
+| `tags` | JSON 数组。 |
+| `alternate_greetings` | JSON 数组，可选开场白。 |
+| `extensions` | JSON 对象，CCv2 扩展字段。 |
+
+---
+
+### presets — 预设
+
+```sql
+CREATE TABLE presets (
+  id              TEXT PRIMARY KEY,
+  session_id      TEXT,
+  name            TEXT NOT NULL,
+  source_format   TEXT NOT NULL DEFAULT 'sillytavern',
+  raw_json        TEXT NOT NULL,
+  model_params    TEXT NOT NULL DEFAULT '{}',
+  parse_status    TEXT NOT NULL DEFAULT 'none',
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+
+CREATE INDEX idx_presets_session ON presets(session_id);
+```
+
+| 字段 | 说明 |
+|---|---|
+| `session_id` | 可选，关联到特定会话的预设。 |
+| `source_format` | 导入来源格式，默认 `sillytavern`。 |
+| `raw_json` | 原始导入 JSON。 |
+| `model_params` | JSON 对象，模型采样参数覆盖。 |
+| `parse_status` | `none`、`parsing`、`done`、`error`。LLM 模块分类状态。 |
+
+---
+
+### preset_modules — 预设模块
+
+```sql
+CREATE TABLE preset_modules (
+  id              TEXT PRIMARY KEY,
+  preset_id       TEXT NOT NULL REFERENCES presets(id) ON DELETE CASCADE,
+  identifier      TEXT NOT NULL,
+  name            TEXT NOT NULL,
+  role            TEXT NOT NULL DEFAULT 'user',
+  content         TEXT NOT NULL DEFAULT '',
+  target_agents   TEXT NOT NULL DEFAULT '[]',
+  enabled         INTEGER NOT NULL DEFAULT 1,
+  injection_order INTEGER NOT NULL DEFAULT 100,
+  classification  TEXT NOT NULL DEFAULT 'rule',
+  reason          TEXT NOT NULL DEFAULT '',
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+
+CREATE INDEX idx_preset_modules_preset ON preset_modules(preset_id);
+```
+
+| 字段 | 说明 |
+|---|---|
+| `identifier` | 模块标识符（原始预设中的 key）。 |
+| `role` | `system` 或 `user`。 |
+| `target_agents` | JSON 数组，该模块应注入的 Agent 类型列表（如 `["npc", "writer"]`）。 |
+| `injection_order` | 注入顺序，数值越小越靠前。 |
+| `classification` | LLM 分类结果：`rule`、`jailbreak`、`impersonation`、`narrative`、`other`。 |
+
+---
+
+### import_reports — 导入报告
+
+```sql
+CREATE TABLE import_reports (
+  id                TEXT PRIMARY KEY,
+  character_card_id TEXT REFERENCES character_cards(id) ON DELETE CASCADE,
+  status            TEXT NOT NULL DEFAULT 'pending',
+  source_format     TEXT NOT NULL DEFAULT '',
+  source_hash       TEXT NOT NULL DEFAULT '',
+  report_json       TEXT NOT NULL DEFAULT '{}',
+  package_json      TEXT NOT NULL DEFAULT '{}',
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+
+CREATE INDEX idx_import_reports_card ON import_reports(character_card_id);
+CREATE INDEX idx_import_reports_hash ON import_reports(source_hash);
+```
+
+| 字段 | 说明 |
+|---|---|
+| `status` | `success`、`warning`、`fallback`、`blocked`。 |
+| `report_json` | JSON 对象，完整导入诊断报告（阶段状态、规则追踪、诊断信息）。 |
+| `package_json` | JSON 对象，生成的 Conclave 卡包数据。 |
+
+---
+
+### import_failure_samples — 导入失败样本
+
+```sql
+CREATE TABLE import_failure_samples (
+  id            TEXT PRIMARY KEY,
+  source_hash   TEXT NOT NULL,
+  filename      TEXT NOT NULL DEFAULT '',
+  raw_bytes     BLOB,
+  report_json   TEXT NOT NULL DEFAULT '{}',
+  user_notes    TEXT NOT NULL DEFAULT '',
+  created_at    TEXT NOT NULL
+);
+```
+
+> 调试用途表，无公开 API（通过 `/api/charactercards/import/{import_id}/save-failure` 写入）。
+
+---
+
+### app_settings — 应用设置
+
+```sql
+CREATE TABLE app_settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+```
+
+| 字段 | 说明 |
+|---|---|
+| `key` | 设置键名，如 `llm_concurrency_limit`。 |
+| `value` | 设置值，JSON 或纯文本字符串。 |
+
+---
+
+### turn_jobs — 后台任务队列
+
+```sql
+CREATE TABLE turn_jobs (
+  id          TEXT PRIMARY KEY,
+  session_id  TEXT NOT NULL REFERENCES sessions(id),
+  turn_number INTEGER NOT NULL,
+  job_type    TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'pending',
+  payload     TEXT NOT NULL DEFAULT '{}',
+  error       TEXT,
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
+CREATE INDEX idx_turn_jobs_status ON turn_jobs(status);
+CREATE INDEX idx_turn_jobs_session ON turn_jobs(session_id, turn_number);
+```
+
+| 字段 | 说明 |
+|---|---|
+| `job_type` | `compression`（首次压缩）或 `recompression`（编辑后重压缩）。 |
+| `status` | `pending`、`running`、`completed`、`failed`。 |
+| `attempts` | 已重试次数。 |
+
+---
+
+### agent_call_debug_snapshots — Agent 调试快照
+
+```sql
+CREATE TABLE agent_call_debug_snapshots (
+  id                     TEXT PRIMARY KEY,
+  session_id             TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  turn_number            INTEGER NOT NULL,
+  phase                  TEXT NOT NULL DEFAULT 'sub_agent',
+  level_index            INTEGER,
+  agent_id               TEXT,
+  agent_type             TEXT NOT NULL DEFAULT '',
+  agent_label            TEXT NOT NULL DEFAULT '',
+  model                  TEXT NOT NULL DEFAULT '',
+  task                   TEXT NOT NULL DEFAULT '',
+  system_prompt          TEXT NOT NULL DEFAULT '',
+  user_prompt            TEXT NOT NULL DEFAULT '',
+  injected_from_json     TEXT NOT NULL DEFAULT '[]',
+  injected_outputs_json  TEXT NOT NULL DEFAULT '[]',
+  preset_modules_json    TEXT NOT NULL DEFAULT '[]',
+  worldbook_entries_json TEXT NOT NULL DEFAULT '[]',
+  recent_messages_json   TEXT NOT NULL DEFAULT '[]',
+  recalled_events_json   TEXT NOT NULL DEFAULT '[]',
+  state_slice_json       TEXT NOT NULL DEFAULT '{}',
+  raw_output             TEXT NOT NULL DEFAULT '',
+  tool_calls_json        TEXT NOT NULL DEFAULT '[]',
+  duration_ms            INTEGER,
+  prompt_tokens          INTEGER NOT NULL DEFAULT 0,
+  completion_tokens      INTEGER NOT NULL DEFAULT 0,
+  created_at             TEXT NOT NULL
+);
+
+CREATE INDEX idx_agent_debug_session_turn
+  ON agent_call_debug_snapshots(session_id, turn_number, created_at);
+CREATE INDEX idx_agent_debug_agent
+  ON agent_call_debug_snapshots(session_id, agent_id, turn_number);
+```
+
+| 字段 | 说明 |
+|---|---|
+| `phase` | `sub_agent`、`master`、`state`、`parser`、`director`、`variable_tool` 等执行阶段。 |
+| `level_index` | DAG 执行层级，同层并行。 |
+| `injected_from_json` | JSON 数组，注入了哪些上游 Agent 输出。 |
+| `preset_modules_json` | JSON 数组，注入的预设模块列表。 |
+| `worldbook_entries_json` | JSON 数组，注入的世界书条目。 |
+| `tool_calls_json` | JSON 数组，LLM 工具调用记录。 |
+
 ---
 
 ## API 规范
@@ -445,17 +759,25 @@ POST /api/sessions
 ```json
 {
   "title": "旧档案馆之夜",
-  "mode": "multi_agent"
+  "mode": "multi_agent",
+  "world_pack_id": "uuid-of-world-book",
+  "config": { "temperature": 0.8, "render_mode": "sandbox" }
 }
 ```
 
 响应 `200`：返回会话对象，包含默认 `config` 和 `status: "idle"`。
 
+- `world_pack_id`：可选，关联世界书。设置后自动使用该世界书的条目和角色卡。
+- `config`：可选，`SessionConfig` 对象，未提供的字段使用全局默认值。
+
 #### 获取会话列表
 
 ```text
-GET /api/sessions?limit=20
+GET /api/sessions?limit=20&world_pack_id=uuid
 ```
+
+- `limit`：可选，分页大小。
+- `world_pack_id`：可选，按关联世界书过滤。
 
 响应 `200`：`{ "items": [SessionResponse] }`
 
@@ -516,8 +838,11 @@ Accept: text/event-stream
 | `turn_start` | `{"turn_number": N}` | 新轮次开始。 |
 | `agent_status` | `{"agent_type":"parser","label":"解析器","status":"working"}` | Agent 开始/结束工作。`status` 为 `working` 或 `done`。 |
 | `message_delta` | `{"content":"推开门的瞬间..."}` | 最终叙事文本的增量推送。 |
-| `turn_end` | `{"turn_number":N,"token_usage":{...}}` | 轮次结束。 |
-| `error` | `{"code":"...","message":"..."}` | 错误。 |
+| `memory_start` | `{"turn_number": N}` | 记忆压缩阶段开始（Runtime 收到最终回复后触发）。 |
+| `state_update` | `{"turn_number": N, "status":"done"}` | 结构化状态更新完成。`status` 为 `done` 或 `error`。 |
+| `turn_ready` | `{"turn_number": N}` | 轮次所有后处理完成，前端可刷新数据。 |
+| `turn_end` | `{"turn_number": N, "message_content":"..."}` | 轮次结束，`message_content` 为最终完整回复文本。 |
+| `stream_error` | `{"error":"错误描述"}` | 流式过程中的错误。 |
 
 #### SSE 重连
 
@@ -571,6 +896,50 @@ PUT /api/sessions/:id/messages/:msg_id/switch_variant
 { "index": 0 }
 ```
 
+#### 应用开场白
+
+```text
+POST /api/sessions/:id/opening
+```
+
+```json
+{ "content": "这是开场白文本" }
+```
+
+写入一条 `role: "system"` 的开场白消息。前端角色卡使用 `first_mes` 或 `alternate_greetings` 时调用。
+
+#### 安静生成（不触发 SSE 流）
+
+```text
+POST /api/sessions/:id/quiet-generate
+```
+
+非流式 LLM 调用，用于后台任务（如标题生成、世界书解析辅助）。返回 JSON 而非 SSE 流。
+
+#### 更新会话变量
+
+```text
+PUT /api/sessions/:id/variables
+```
+
+```json
+{ "hp": 100, "location": "tavern" }
+```
+
+直接写入结构化状态中的变量，同步更新 `state_snapshots` 和角色卡变量。
+
+#### 更新消息 metadata
+
+```text
+PUT /api/sessions/:id/messages/:msg_id/metadata
+```
+
+```json
+{ "model": "gpt-4o", "custom_key": "value" }
+```
+
+部分更新消息的 `metadata` JSON 字段。
+
 ---
 
 ### Agent 管理
@@ -581,7 +950,9 @@ PUT /api/sessions/:id/messages/:msg_id/switch_variant
 GET /api/sessions/:id/agents
 ```
 
-响应 `200`：`{ "items": [SubAgent] }`
+响应 `200`：`{ "items": [AgentResponse] }`
+
+`AgentResponse` 字段：`id`、`session_id`、`agent_type`、`character_id`、`label`、`status`、`last_active_turn`、`context`（完整上下文文本）、`context_preview`（截断到 100 字符）、`config`（JSON 对象）、`fixed`（bool，`user` 类型 Agent 固定为 true，不可删除）。
 
 #### 创建 Agent
 
@@ -594,9 +965,14 @@ POST /api/sessions/:id/agents
   "agent_type": "npc",
   "character_id": "merchant",
   "label": "酒馆老板",
+  "context": "你是酒馆老板，热情好客，知道很多小道消息...",
   "system_prompt": "你是酒馆老板，热情好客..."
 }
 ```
+
+- `context`：可选，Agent 的角色上下文描述（注入到 prompt）。
+- `system_prompt`：可选，自定义 system prompt（留空使用默认模板）。
+- `model`：可选，覆盖该 Agent 使用的模型。
 
 #### 更新 Agent
 
@@ -706,6 +1082,12 @@ POST /api/providers
 }
 ```
 
+#### 获取单个 Provider
+
+```text
+GET /api/providers/:id
+```
+
 #### 更新 Provider
 
 ```text
@@ -733,6 +1115,309 @@ POST /api/providers/fetch-models
 
 响应 `200`：`{ "models": ["gpt-4o", "gpt-4o-mini"] }`
 
+> **安全说明**：Provider 响应中 `api_key` 字段被替换为 `api_key_set: bool`，表示是否已配置密钥，不暴露明文。
+
+---
+
+### 世界书
+
+#### 获取世界书列表
+
+```text
+GET /api/worldbooks
+```
+
+响应 `200`：`{ "items": [WorldBookSummary] }`
+
+#### 导入世界书
+
+```text
+POST /api/worldbooks
+```
+
+```json
+{
+  "data": { "character_book": { "entries": [...] }, "name": "..." }
+}
+```
+
+支持 SillyTavern 原生格式和 Character Card V2/V3 格式。响应 `200`：返回完整 `WorldBookDetail`。
+
+#### 获取世界书详情
+
+```text
+GET /api/worldbooks/:id
+```
+
+响应包含 `entries`（原始条目）、`parsed_entries`（多 Agent 解析结果）、`single_agent_parsed_entries`、`has_character_card`、`character_card_id`。
+
+#### 更新世界书
+
+```text
+PATCH /api/worldbooks/:id
+```
+
+```json
+{ "name": "新名称", "description": "新描述" }
+```
+
+#### 删除世界书
+
+```text
+DELETE /api/worldbooks/:id
+```
+
+#### 导出世界书
+
+```text
+GET /api/worldbooks/:id/export
+```
+
+#### 解析世界书（多 Agent）
+
+```text
+POST /api/worldbooks/:id/parse
+```
+
+触发 LLM 对条目进行分类（NPC/用户/全局等），结果存入 `parsed_entries`。
+
+#### 解析世界书（单 Agent 路由）
+
+```text
+POST /api/worldbooks/:id/parse-single-agent
+```
+
+#### 获取世界书关联的角色卡
+
+```text
+GET /api/worldbooks/:id/character-card
+```
+
+#### 更新世界书条目
+
+```text
+PUT /api/worldbooks/:id/entries/:entry_id
+```
+
+#### 删除世界书条目
+
+```text
+DELETE /api/worldbooks/:id/entries/:entry_id
+```
+
+---
+
+### 角色卡
+
+#### 获取角色卡列表
+
+```text
+GET /api/charactercards
+```
+
+响应 `200`：`{ "items": [{ "id", "name", "creator", "created_at" }] }`
+
+#### 获取单个角色卡
+
+```text
+GET /api/charactercards/:id
+```
+
+响应 `200`：`CharacterCardResponse`，自动附带最新的 `conclave_package` 和 `import_report`。
+
+#### 更新角色卡
+
+```text
+PATCH /api/charactercards/:id
+```
+
+可更新字段：`name`、`description`、`personality`、`scenario`、`first_mes`、`system_prompt`、`post_history_instructions`、`creator_notes`、`mes_example`。
+
+---
+
+### 角色卡导入
+
+#### 发起导入
+
+```text
+POST /api/charactercards/import
+```
+
+```json
+{
+  "file_bytes": "base64...",
+  "filename": "character.png",
+  "source_format": "png_ccv3"
+}
+```
+
+响应 `200`：`{ "import_id": "uuid", "package_draft": {...}, "import_report": {...} }`
+
+#### 确认导入
+
+```text
+POST /api/charactercards/import/:import_id/confirm
+```
+
+```json
+{ "degrade_to_schema": false }
+```
+
+将内存中的导入草稿持久化到数据库（创建 `world_books`、`character_cards`、`import_reports`）。
+
+#### 重新导入已有角色卡
+
+```text
+POST /api/charactercards/:id/run-import
+```
+
+对已有角色卡重新执行导入流程。
+
+#### LLM 辅助
+
+```text
+POST /api/charactercards/import/:import_id/llm-assist
+```
+
+请求 LLM 对导入中的待分类字段提供分类建议。
+
+#### 获取导入报告
+
+```text
+GET /api/charactercards/import/:import_id/report
+```
+
+#### 原始预览
+
+```text
+POST /api/charactercards/import/:import_id/raw-preview
+```
+
+#### 保存失败样本
+
+```text
+POST /api/charactercards/import/:import_id/save-failure
+```
+
+---
+
+### 预设
+
+#### 获取预设列表
+
+```text
+GET /api/presets?session_id=uuid
+```
+
+`session_id` 可选，过滤特定会话的预设。响应 `200`：`{ "items": [PresetSummary] }`
+
+#### 导入预设
+
+```text
+POST /api/presets
+```
+
+```json
+{
+  "data": { "injection_prompts": [...], "model_params": {...} },
+  "session_id": "uuid-or-null",
+  "file_name": "preset.json"
+}
+```
+
+#### 获取预设详情
+
+```text
+GET /api/presets/:id
+```
+
+响应包含 `modules`（模块列表）和 `model_params`。
+
+#### 更新预设
+
+```text
+PATCH /api/presets/:id
+```
+
+```json
+{ "name": "新名称" }
+```
+
+#### 删除预设
+
+```text
+DELETE /api/presets/:id
+```
+
+#### 解析预设模块
+
+```text
+POST /api/presets/:id/parse
+```
+
+触发 LLM 对模块进行分类（target_agents 分配）。
+
+#### 更新预设模块
+
+```text
+PUT /api/presets/:id/modules/:mid
+```
+
+#### 删除预设模块
+
+```text
+DELETE /api/presets/:id/modules/:mid
+```
+
+---
+
+### 运行时设置
+
+#### 获取运行时设置
+
+```text
+GET /api/settings/runtime
+```
+
+响应 `200`：`{ "llm_concurrency_limit": 4 }`
+
+#### 更新运行时设置
+
+```text
+PUT /api/settings/runtime
+```
+
+```json
+{ "llm_concurrency_limit": 8 }
+```
+
+---
+
+### 调试
+
+#### 获取会话调试概览
+
+```text
+GET /api/sessions/:id/debug
+```
+
+响应 `200`：
+
+```json
+{
+  "messages": [{ "id", "turn_number", "role", "content", "created_at" }],
+  "turns": [{ "turn_number", "call_count", "agent_count", "total_prompt_tokens", "total_completion_tokens", "total_duration_ms" }]
+}
+```
+
+#### 获取轮次调试详情
+
+```text
+GET /api/sessions/:id/debug/:turn
+```
+
+响应 `200`：`{ "items": [AgentCallDebugSnapshot] }`，包含每轮所有 Agent 调用的完整快照（system_prompt、user_prompt、注入上下文、raw_output、tool_calls 等）。
+
 ---
 
 ### 健康检查
@@ -745,10 +1430,11 @@ GET /api/health
 
 ## 数据迁移策略
 
-- 当前使用内联迁移（`db.rs` 中的 `run_migrations`），运行 001-005 SQL 文件 + 条件 ALTER TABLE。
+- 当前使用内联迁移（`db.rs` 中的 `run_migrations`），运行 001-015 SQL 文件 + 条件 ALTER TABLE。
 - 新增列使用 `pragma_table_info` 检查后条件添加，确保幂等。
-- 后端启动时自动重置残留的 `processing` 会话状态。
-- 迁移文件：`backend/migrations/001_initial.sql` ~ `005_structured_events.sql`。
+- 后端启动时自动重置残留的 `processing`/`compressing`/`failed_generation`/`failed_compression` 会话状态为 `idle`。
+- 迁移文件：`backend/migrations/001_initial.sql` ~ `015_agent_debug_snapshots.sql`。
+- 迁移文件编号：001（initial）、002（variants）、003（proposals）、004（sub_agents）、005（structured_events）、006（visibility）、007（session_status）、008（world_books）、009（concurrency_reliability）、010（character_cards）、011（presets）、012（agent_knowledge）、013（card_import）、014（app_settings）、015（agent_debug_snapshots）。
 
 ---
 

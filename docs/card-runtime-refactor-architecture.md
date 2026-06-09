@@ -1,6 +1,6 @@
 # 角色卡兼容运行时重构架构
 
-> 定义角色卡从导入到前端渲染再到动态变量回流渲染的整体重构方案。本文是目标架构文档，描述我们接下来要收敛的单一运行时模型，而不是当前分散补丁实现的复述。
+> 定义角色卡从导入到前端渲染再到动态变量回流渲染的整体重构方案。本文现在同时承担两件事：描述目标架构，以及记录已经落地的第一阶段重构边界。
 
 `Card Import` · `SillyTavern Compatibility` · `Frontend Regex Runtime` · `Canonical State` · `Card Projection` · `Runtime Adapter`
 
@@ -27,6 +27,29 @@
 2. SillyTavern 风格 regex 显示语义只保留一个执行入口。
 3. 所有卡片脚本只运行在一个统一的运行时模型上。
 4. 动态变量采用 canonical state + card projection 模型，而不是把 ST 变量直接当平台真相源。
+
+---
+
+## 当前落地状态
+
+截至 2026-06-09，第一阶段已经落地的部分如下：
+
+- 导入器新增 `runtime_hints`，不再只依赖 opening regex 结果做最终前端显示裁决。
+- `ui.type` 只反映已提取出的静态 UI 载体，不再承担完整 ST 运行时语义。
+- 前端新增统一 `card runtime resolver`，把 html app / sandbox html / text 渲染路径收敛到一个入口。
+- session state 写入接口已改为优先经过 `card_state_adapter` 归一化，避免前端直接绕过 canonical state。
+- 前端 sandbox 变量运行时已明确区分：
+  - `projection`
+  - `message`
+  - `local`
+- `chat` 仍作为兼容别名保留，但默认语义已切换到 `projection`。
+- 运行时容器样式已增加统一上限和溢出边界，先压住无限延伸类问题。
+
+尚未完成的部分：
+
+- `sandbox bridge` 仍保留部分历史兼容命名，需要继续统一事件和宿主约定。
+- `readVariables/writeVariables` 还没有完全升级为 adapter-aware 的细粒度路径桥。
+- message runtime / session runtime 虽已共享大部分约定，但宿主实现仍有 direct/iframe 双轨。
 
 ---
 
@@ -425,4 +448,3 @@ UI 类变量只保留在前端，不落库。
 | LLM tool 改变量 | canonical state 更新后，卡片 projection 自动刷新并重渲染。 |
 | 卡片脚本改变量 | 已声明映射路径能受控回写；未知路径不会污染真实状态。 |
 | session/message 两类宿主 | 同一张卡在两类挂载场景下核心语义一致。 |
-

@@ -24,9 +24,13 @@
 - [Agent 边界](agent-boundaries.md)
 - [实现优先级](implementation-priority.md)
 - [数据库与 API](database-api.md)
+- [内容包规范](content-packages.md)
 - [卡片导入标准化](card-import-normalization.md)
 - [角色卡渲染运行时](card-rendering-runtime.md)
 - [角色卡兼容运行时重构架构](card-runtime-refactor-architecture.md)
+- [Artifact Renderer](artifact-renderer.md)
+- [测试与评测](testing.md)
+- [文档维护规则](docs-sync.md)
 
 ---
 
@@ -45,8 +49,8 @@
 ## 总体架构
 
 - **Web Client** — 聊天界面、会话管理、Agent 管理面板、Provider 设置。
-- **Backend API** — 会话、消息、Agent 管理、Provider、提案、记忆、trace、SSE 流式输出。
-- **RP Runtime Core** — 动态总控 4 层流水线（Parser → Master → Sub-agents → Writer → Compression）、上下文装配、状态变更、trace 记录。
+- **Backend API** — 会话、消息、Agent 管理、Provider、提案、记忆、trace、SSE 流式输出、世界书(worldbooks)、角色卡(charactercards)、预设(presets)、卡片导入(card_import)、设置(settings)。
+- **RP Runtime Core** — 动态总控 4 层流水线（Parser → Master → Sub-agents → Writer → Compression）、上下文装配、状态变更、trace 记录。子系统包括：turn_service（回合服务编排）、background_jobs（后台任务）、knowledge（知识检索）、llm_limiter（LLM 调用限流）、variable_tool_agent（变量工具 Agent）、worldbook_parser（世界书解析）、preset_parser（预设解析）、card_state_adapter（卡片状态适配）。
 - **Memory Layer** — 结构化状态、事件账本、伏笔、场景摘要、结构化事件召回。
 - **Provider Adapter** — LLM 模型路由，支持会话级独立模型配置。
 

@@ -1,5 +1,10 @@
 import React, { useState, useMemo, useCallback } from 'react';
-import type { ApiCompatibilityMapping, CompatibilityReport, ConclaveCardPackage } from '../../api/types';
+import type {
+  ApiCompatibilityMapping,
+  CompatibilityReport,
+  ConclaveCardPackage,
+  ExtractedSignal,
+} from '../../api/types';
 import PaginationControls, { paginateSlice, totalPagesOf } from './PaginationControls';
 
 const API_MAPPING_CATALOG: Record<string, ApiCompatibilityMapping> = {
@@ -129,6 +134,75 @@ function deriveApiMappings(compatibility: CompatibilityReport) {
   };
 }
 
+function formatSignalPath(signal: ExtractedSignal) {
+  return signal.path || signal.label || signal.id;
+}
+
+function formatSignalMeta(signal: ExtractedSignal) {
+  const details = signal.details && !Array.isArray(signal.details) ? signal.details as Record<string, unknown> : null;
+  const parts: string[] = [];
+  if (details?.source_kind && typeof details.source_kind === 'string') parts.push(details.source_kind);
+  if (details?.type && typeof details.type === 'string') parts.push(details.type);
+  if (details?.root && typeof details.root === 'string') parts.push(`root:${details.root}`);
+  if (details?.path_depth && typeof details.path_depth === 'number') parts.push(`depth:${details.path_depth}`);
+  if (details?.selector && typeof details.selector === 'string') parts.push(details.selector);
+  return parts.join(' · ');
+}
+
+function SignalSection({
+  title,
+  signals,
+  emptyText,
+}: {
+  title: string;
+  signals: ExtractedSignal[];
+  emptyText: string;
+}) {
+  return (
+    <div className="signal-section">
+      <div className="package-section-heading">
+        <h5>{title}</h5>
+        <span className="signal-count">{signals.length} 条</span>
+      </div>
+      {signals.length > 0 ? (
+        <div className="signal-list">
+          {signals.map(signal => {
+            const meta = formatSignalMeta(signal);
+            const details = signal.details && !Array.isArray(signal.details)
+              ? signal.details as Record<string, unknown>
+              : null;
+            return (
+              <div key={signal.id} className="signal-item">
+                <div className="signal-main">
+                  <code className="signal-path" title={formatSignalPath(signal)}>{formatSignalPath(signal)}</code>
+                  <span className="signal-kind">{signal.kind}</span>
+                  <span className="signal-confidence">{(signal.confidence * 100).toFixed(0)}%</span>
+                </div>
+                <div className="signal-sub">
+                  <span className="signal-source" title={signal.source}>{signal.label || signal.source}</span>
+                  {meta && <span className="signal-meta">{meta}</span>}
+                </div>
+                {(signal.excerpt || details?.default_value !== undefined) && (
+                  <div className="signal-detail-line">
+                    {details?.default_value !== undefined && (
+                      <code className="signal-default" title={JSON.stringify(details.default_value)}>
+                        default={JSON.stringify(details.default_value)}
+                      </code>
+                    )}
+                    {signal.excerpt && <span className="signal-excerpt" title={signal.excerpt}>{signal.excerpt}</span>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="api-mapping-empty">{emptyText}</div>
+      )}
+    </div>
+  );
+}
+
 export function PackagePreview({ packageDraft }: { packageDraft: ConclaveCardPackage }) {
   const [showJson, setShowJson] = useState(false);
   const [actionPage, setActionPage] = useState(1);
@@ -139,6 +213,7 @@ export function PackagePreview({ packageDraft }: { packageDraft: ConclaveCardPac
   const { mappings: apiMappings, source: apiMappingSource } = deriveApiMappings(packageDraft.compatibility);
   const stateFields = packageDraft.state_schema?.fields || [];
   const stateAdapter = packageDraft.state_adapter;
+  const extractionLayers = packageDraft.extraction_layers;
   const writableStateFields = stateFields.filter(field => field.writable).length;
   const mappedStateFields = stateFields.filter(field => field.canonical_path).length;
   const stateAdapterWarnings = stateAdapter?.warnings?.length || 0;
@@ -236,6 +311,13 @@ export function PackagePreview({ packageDraft }: { packageDraft: ConclaveCardPac
           </span>
         </div>
         <div className="summary-item">
+          <span className="summary-label">提取信号</span>
+          <span className="summary-value">
+            {extractionLayers.state_signals.length + extractionLayers.ui_signals.length + extractionLayers.action_signals.length}
+            {' '}个
+          </span>
+        </div>
+        <div className="summary-item">
           <span className="summary-label">动作</span>
           <span className="summary-value">{packageDraft.actions.length} 个</span>
         </div>
@@ -303,6 +385,42 @@ export function PackagePreview({ packageDraft }: { packageDraft: ConclaveCardPac
           </div>
         )}
       </div>
+
+      {(extractionLayers.state_signals.length > 0
+        || extractionLayers.ui_signals.length > 0
+        || extractionLayers.action_signals.length > 0
+        || extractionLayers.unresolved_signals.length > 0) && (
+        <div className="package-variables">
+          <h4>提取信号层</h4>
+          <p className="signal-overview">
+            导入器先保留原始可分析信号，再由后续解析器和运行时决定哪些进入正式契约。
+          </p>
+          <SignalSection
+            title="状态信号"
+            signals={extractionLayers.state_signals}
+            emptyText="没有提取到状态路径。"
+          />
+          <SignalSection
+            title="UI 信号"
+            signals={extractionLayers.ui_signals}
+            emptyText="没有提取到 UI 依赖。"
+          />
+          <SignalSection
+            title="动作信号"
+            signals={extractionLayers.action_signals}
+            emptyText="没有提取到动作提示。"
+          />
+          <SignalSection
+            title="未解析信号"
+            signals={extractionLayers.unresolved_signals}
+            emptyText="当前没有未解析信号。"
+          />
+          <details className="package-json">
+            <summary>查看提取信号详情</summary>
+            <pre>{JSON.stringify(extractionLayers, null, 2)}</pre>
+          </details>
+        </div>
+      )}
 
       {/* Actions - paginated */}
       {actionTotal > 0 && (

@@ -185,23 +185,37 @@ pub async fn run_import(
         let (code, impact, suggestion) = match api.classification {
             ApiClassification::PlatformNative => (
                 "platform_api_detected",
-                Some("This API is part of the platform bridge surface and should resolve through the unified runtime model."),
-                Some("Prefer keeping this call on the main runtime path; no legacy ST side channel is needed."),
+                Some(
+                    "This API is part of the platform bridge surface and should resolve through the unified runtime model.",
+                ),
+                Some(
+                    "Prefer keeping this call on the main runtime path; no legacy ST side channel is needed.",
+                ),
             ),
             ApiClassification::BrowserShim => (
                 "browser_shim_api_detected",
-                Some("This API depends on the sandbox/browser shim layer rather than the canonical card state bridge."),
-                Some("Verify the card still behaves correctly inside the sandbox if it relies on client-side persistence."),
+                Some(
+                    "This API depends on the sandbox/browser shim layer rather than the canonical card state bridge.",
+                ),
+                Some(
+                    "Verify the card still behaves correctly inside the sandbox if it relies on client-side persistence.",
+                ),
             ),
             ApiClassification::Unsupported => (
                 "unsupported_api",
-                Some("This API is not guaranteed to preserve SillyTavern semantics in the platform runtime."),
+                Some(
+                    "This API is not guaranteed to preserve SillyTavern semantics in the platform runtime.",
+                ),
                 Some("Replace it with a bridged platform API or keep it in raw preview only."),
             ),
             ApiClassification::Dangerous => (
                 "dangerous_api_detected",
-                Some("This API can mutate DOM or execute code in ways that make sandbox behavior and layout harder to stabilize."),
-                Some("Review and normalize this code before trusting runtime behavior or auto-sizing."),
+                Some(
+                    "This API can mutate DOM or execute code in ways that make sandbox behavior and layout harder to stabilize.",
+                ),
+                Some(
+                    "Review and normalize this code before trusting runtime behavior or auto-sizing.",
+                ),
             ),
         };
         diagnostics.push(report::make_diagnostic(
@@ -225,7 +239,11 @@ pub async fn run_import(
             suggestion,
         ));
     }
-    if js_analysis.detected_apis.iter().any(|api| api.name == "generateRaw") {
+    if js_analysis
+        .detected_apis
+        .iter()
+        .any(|api| api.name == "generateRaw")
+    {
         diagnostics.push(report::make_diagnostic(
             "api_scan",
             DiagnosticLevel::Info,
@@ -348,6 +366,15 @@ pub async fn run_import(
         },
     ));
 
+    let extraction_layers = build_extraction_layers(
+        &card,
+        &regex_scripts,
+        &variables,
+        &actions,
+        &html_split,
+        &resources,
+    );
+
     // Stage 8: Build platform state schema + adapter
     let (state_schema, state_adapter) = state_adapter::build_state_conversion(&card, &variables);
     for field in &state_schema.fields {
@@ -374,29 +401,54 @@ pub async fn run_import(
         "State Adapter Build",
         if state_schema.fields.is_empty() {
             StageStatus::Warning
-        } else if state_adapter.write_rules.is_empty() {
-            StageStatus::Warning
         } else {
             StageStatus::Success
         },
         if state_schema.fields.is_empty() {
             Some("No card state fields were detected".to_string())
         } else if state_adapter.write_rules.is_empty() {
-            Some("Only card-private or read-only state fields were detected".to_string())
+            Some("Card-private runtime fields were detected; no platform Agent write mappings were generated".to_string())
         } else {
             None
         },
     ));
 
-    for warning in &state_adapter.warnings {
+    let card_private_fields = state_schema
+        .fields
+        .iter()
+        .filter(|field| field.canonical_path.is_none())
+        .map(|field| field.path.as_str())
+        .collect::<Vec<_>>();
+    if !card_private_fields.is_empty() {
+        let preview = card_private_fields
+            .iter()
+            .take(12)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let overflow = card_private_fields.len().saturating_sub(12);
+        let message = if overflow > 0 {
+            format!(
+                "{} card-private runtime fields detected: {} ... (+{} more)",
+                card_private_fields.len(),
+                preview,
+                overflow
+            )
+        } else {
+            format!(
+                "{} card-private runtime fields detected: {}",
+                card_private_fields.len(),
+                preview
+            )
+        };
         diagnostics.push(report::make_diagnostic(
             "state_adapter",
-            DiagnosticLevel::Warn,
-            "state_field_manual_review",
-            warning,
+            DiagnosticLevel::Info,
+            "card_private_state_detected",
+            &message,
             None,
-            Some("This field will not be written by platform Agents until a safe mapping is confirmed"),
-            Some("Review the generated state_schema/state_adapter and add a reusable mapping rule if the field is meaningful"),
+            Some("These fields are preserved as card runtime state/projection fields, but platform Agents will not write them automatically."),
+            Some("Add explicit adapter mappings only for fields that should be updated by the platform State Agent."),
         ));
     }
 
@@ -428,6 +480,7 @@ pub async fn run_import(
         &html_split,
         &resources,
         &actions,
+        &extraction_layers,
         &variables,
         &state_schema,
         &state_adapter,
@@ -714,6 +767,392 @@ fn build_api_mappings(js_analysis: &JsAnalysisReport) -> Vec<ApiCompatibilityMap
     mappings
 }
 
+fn build_extraction_layers(
+    card: &ExternalCard,
+    regex_scripts: &[RegexScript],
+    variables: &[VariableDeclaration],
+    actions: &[ActionDeclaration],
+    html_split: &HtmlAppSplit,
+    resources: &ResourceManifest,
+) -> ExtractionLayers {
+    let mut state_signals = variables
+        .iter()
+        .map(|var| ExtractedSignal {
+            id: format!("state:{}", var.path),
+            kind: if var.path.starts_with("stat_data.") || var.path == "stat_data" {
+                ExtractedSignalKind::StateSchemaPath
+            } else {
+                ExtractedSignalKind::VariablePath
+            },
+            path: Some(var.path.clone()),
+            label: var.label.clone(),
+            source: var.source.clone(),
+            confidence: 0.8,
+            excerpt: None,
+            details: Some(serde_json::json!({
+                "type": var.var_type,
+                "default_value": var.default_value,
+                "declared_label": var.label,
+                "path_depth": var.path.split('.').count(),
+                "root": var.path.split('.').next().unwrap_or(""),
+                "is_schema_root": !var.path.contains('.'),
+                "source_kind": if var.source.contains("mvu_schema") {
+                    "mvu_schema"
+                } else if var.source.contains("bundled_state") {
+                    "bundled_state"
+                } else {
+                    "runtime_api"
+                },
+            })),
+        })
+        .collect::<Vec<_>>();
+
+    let mut action_signals = actions
+        .iter()
+        .map(|action| ExtractedSignal {
+            id: format!("action:{}", action.id),
+            kind: ExtractedSignalKind::ActionHint,
+            path: action.selector.clone(),
+            label: Some(action.label.clone()),
+            source: serde_json::to_string(&action.source).unwrap_or_else(|_| "unknown".to_string()),
+            confidence: 0.9,
+            excerpt: None,
+            details: Some(serde_json::json!({
+                "kind": action.kind,
+                "selector": action.selector,
+            })),
+        })
+        .collect::<Vec<_>>();
+
+    let mut ui_signals = Vec::new();
+    if !html_split.html.trim().is_empty() {
+        ui_signals.push(ExtractedSignal {
+            id: "ui:html".to_string(),
+            kind: ExtractedSignalKind::UiDependency,
+            path: None,
+            label: Some("html".to_string()),
+            source: "html_split".to_string(),
+            confidence: 1.0,
+            excerpt: Some(html_split.html.chars().take(240).collect()),
+            details: Some(serde_json::json!({
+                "is_full_document": html_split.is_full_document,
+                "css_count": html_split.css.len(),
+                "js_count": html_split.js.len(),
+                "entry_node": html_split.entry_node,
+                "script_types": html_split.script_types,
+            })),
+        });
+    }
+
+    for (index, script) in regex_scripts.iter().enumerate() {
+        let categories = classify_regex_script_categories(script);
+        ui_signals.push(ExtractedSignal {
+            id: format!("ui:regex_script:{}", index),
+            kind: ExtractedSignalKind::UiDependency,
+            path: None,
+            label: Some(script.script_name.clone()),
+            source: "regex_script".to_string(),
+            confidence: 0.82,
+            excerpt: Some(script.replace_string.chars().take(220).collect()),
+            details: Some(serde_json::json!({
+                "script_name": script.script_name,
+                "find_regex": script.find_regex,
+                "disabled": script.disabled,
+                "prompt_only": script.prompt_only,
+                "markdown_only": script.markdown_only,
+                "min_depth": script.min_depth,
+                "max_depth": script.max_depth,
+                "categories": categories,
+                "replace_length": script.replace_string.len(),
+            })),
+        });
+    }
+
+    let helper_scripts = extract_tavern_helper_scripts(card);
+    for (index, script) in helper_scripts.iter().enumerate() {
+        let categories = classify_tavern_helper_categories(&script.content);
+        let state_categories = categories
+            .iter()
+            .copied()
+            .filter(|category| matches!(*category, "mvu_schema" | "state_api" | "runtime_root"))
+            .collect::<Vec<_>>();
+        let action_categories = categories
+            .iter()
+            .copied()
+            .filter(|category| matches!(*category, "generation_api" | "message_bridge" | "submit_handler"))
+            .collect::<Vec<_>>();
+        let ui_categories = categories
+            .iter()
+            .copied()
+            .filter(|category| matches!(*category, "status_renderer" | "dom_ui" | "html_launcher"))
+            .collect::<Vec<_>>();
+
+        ui_signals.push(ExtractedSignal {
+            id: format!("ui:tavern_helper:{}", index),
+            kind: ExtractedSignalKind::UiDependency,
+            path: None,
+            label: Some(script.name.clone()),
+            source: "tavern_helper".to_string(),
+            confidence: 0.78,
+            excerpt: Some(script.content.chars().take(220).collect()),
+            details: Some(serde_json::json!({
+                "script_name": script.name,
+                "categories": categories,
+                "ui_categories": ui_categories,
+                "content_length": script.content.len(),
+            })),
+        });
+
+        if !state_categories.is_empty() {
+            let runtime_roots = extract_runtime_roots_from_script(&script.content);
+            state_signals.push(ExtractedSignal {
+                id: format!("state:tavern_helper:{}", index),
+                kind: if runtime_roots.is_empty() {
+                    ExtractedSignalKind::StateSchemaPath
+                } else {
+                    ExtractedSignalKind::RuntimeRoot
+                },
+                path: runtime_roots.first().cloned(),
+                label: Some(script.name.clone()),
+                source: "tavern_helper".to_string(),
+                confidence: 0.76,
+                excerpt: Some(script.content.chars().take(220).collect()),
+                details: Some(serde_json::json!({
+                    "script_name": script.name,
+                    "categories": state_categories,
+                    "runtime_roots": runtime_roots,
+                    "source_kind": "tavern_helper_script",
+                })),
+            });
+        }
+
+        if !action_categories.is_empty() {
+            action_signals.push(ExtractedSignal {
+                id: format!("action:tavern_helper:{}", index),
+                kind: ExtractedSignalKind::ActionHint,
+                path: None,
+                label: Some(script.name.clone()),
+                source: "tavern_helper".to_string(),
+                confidence: 0.74,
+                excerpt: Some(script.content.chars().take(220).collect()),
+                details: Some(serde_json::json!({
+                    "categories": action_categories,
+                    "script_name": script.name,
+                })),
+            });
+        }
+    }
+
+    for (index, resource) in resources.resources.iter().enumerate() {
+        ui_signals.push(ExtractedSignal {
+            id: format!("ui:asset:{}", index),
+            kind: ExtractedSignalKind::UiDependency,
+            path: Some(resource.url.clone()),
+            label: Some(format!("{:?}", resource.kind)),
+            source: resource.source_location.file.clone(),
+            confidence: 0.7,
+            excerpt: Some(resource.source_location.excerpt.clone()),
+            details: Some(serde_json::json!({
+                "offset": resource.source_location.offset,
+            })),
+        });
+    }
+
+    let mut unresolved_signals = if variables.is_empty() {
+        vec![ExtractedSignal {
+            id: "unresolved:variables".to_string(),
+            kind: ExtractedSignalKind::Unresolved,
+            path: None,
+            label: Some("变量提取为空".to_string()),
+            source: "variable_extract".to_string(),
+            confidence: 1.0,
+            excerpt: None,
+            details: Some(serde_json::json!({
+                "reason": "No variable declarations were extracted from JS or InitVar",
+            })),
+        }]
+    } else {
+        vec![]
+    };
+
+    if !helper_scripts.is_empty() {
+        let unclassified_helpers = helper_scripts
+            .iter()
+            .enumerate()
+            .filter(|(_, script)| classify_tavern_helper_categories(&script.content).is_empty())
+            .collect::<Vec<_>>();
+        if !unclassified_helpers.is_empty() {
+            unresolved_signals.push(ExtractedSignal {
+                id: "unresolved:tavern_helper".to_string(),
+                kind: ExtractedSignalKind::Unresolved,
+                path: None,
+                label: Some("存在未分类的 TavernHelper 脚本".to_string()),
+                source: "tavern_helper".to_string(),
+                confidence: 0.64,
+                excerpt: None,
+                details: Some(serde_json::json!({
+                    "count": unclassified_helpers.len(),
+                    "script_names": unclassified_helpers.into_iter().map(|(_, script)| script.name.clone()).collect::<Vec<_>>(),
+                    "reason": "Script content was retained but did not match current state/ui/action classifiers",
+                })),
+            });
+        }
+    }
+
+    ExtractionLayers {
+        state_signals,
+        ui_signals,
+        action_signals,
+        unresolved_signals,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TavernHelperScript {
+    name: String,
+    content: String,
+}
+
+fn extract_tavern_helper_scripts(card: &ExternalCard) -> Vec<TavernHelperScript> {
+    let Some(scripts) = card
+        .extensions
+        .get("tavern_helper")
+        .and_then(|value| value.get("scripts"))
+        .and_then(|value| value.as_array())
+    else {
+        return vec![];
+    };
+
+    scripts
+        .iter()
+        .filter_map(|script| {
+            let disabled = script
+                .get("disabled")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+                || script
+                    .get("enabled")
+                    .and_then(|value| value.as_bool())
+                    .map(|value| !value)
+                    .unwrap_or(false);
+            if disabled {
+                return None;
+            }
+            let content = script
+                .get("content")
+                .and_then(|value| value.as_str())
+                .or_else(|| script.get("script").and_then(|value| value.as_str()))
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if content.is_empty() {
+                return None;
+            }
+            Some(TavernHelperScript {
+                name: script
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .or_else(|| script.get("script_name").and_then(|value| value.as_str()))
+                    .or_else(|| script.get("scriptName").and_then(|value| value.as_str()))
+                    .unwrap_or("TavernHelper Script")
+                    .to_string(),
+                content,
+            })
+        })
+        .collect()
+}
+
+fn classify_regex_script_categories(script: &RegexScript) -> Vec<&'static str> {
+    let mut categories = Vec::new();
+    let lower_find = script.find_regex.to_ascii_lowercase();
+    let lower_replace = script.replace_string.to_ascii_lowercase();
+    if lower_replace.contains("<!doctype")
+        || lower_replace.contains("<html")
+        || lower_replace.contains("<script")
+    {
+        categories.push("html_app");
+    }
+    if lower_replace.contains("status-card")
+        || lower_find.contains("statusplaceholderimpl")
+        || lower_replace.contains("statusplaceholderimpl")
+    {
+        categories.push("status_renderer");
+    }
+    if lower_find.contains("gamestart")
+        || lower_find.contains("开局")
+        || lower_replace.contains("gamestart")
+    {
+        categories.push("opening_trigger");
+    }
+    if lower_replace.contains("updatevariable") || lower_replace.contains("setvariables") {
+        categories.push("variable_macro");
+    }
+    if script.replace_string.len() > 1200 {
+        categories.push("large_replacement");
+    }
+    categories
+}
+
+fn classify_tavern_helper_categories(content: &str) -> Vec<&'static str> {
+    let lower = content.to_ascii_lowercase();
+    let mut categories = Vec::new();
+    if lower.contains("registermvuschema") {
+        categories.push("mvu_schema");
+    }
+    if contains_any_ci(
+        &lower,
+        &[
+            "getvariables",
+            "getallvariables",
+            "setvariables",
+            "updatevariableswith",
+            "replacemvudata",
+        ],
+    ) {
+        categories.push("state_api");
+    }
+    if contains_any_ci(&lower, &["stat_data", "display_data", "variables.", "statusdata"]) {
+        categories.push("runtime_root");
+    }
+    if contains_any_ci(
+        &lower,
+        &["generate(", "submittext", "generateraw", "setchatmessage", "setchatmessages"],
+    ) {
+        categories.push("generation_api");
+    }
+    if contains_any_ci(&lower, &["form.addEventListener(\"submit\"", "onsubmit", "requestsubmit"]) {
+        categories.push("submit_handler");
+    }
+    if contains_any_ci(&lower, &["status-card", "statusplaceholderimpl", "renderstatus"]) {
+        categories.push("status_renderer");
+    }
+    if contains_any_ci(&lower, &["innerhtml", "createelement", "queryselector", "appendchild"]) {
+        categories.push("dom_ui");
+    }
+    if contains_any_ci(&lower, &["cx-launcher", "view-container", "<html", "<script"]) {
+        categories.push("html_launcher");
+    }
+    if contains_any_ci(&lower, &["setchatmessage", "setchatmessages"]) {
+        categories.push("message_bridge");
+    }
+    categories
+}
+
+fn extract_runtime_roots_from_script(content: &str) -> Vec<String> {
+    let lower = content.to_ascii_lowercase();
+    let mut roots = Vec::new();
+    for candidate in ["stat_data", "display_data", "statusData", "memoryDB", "phoneMessages"] {
+        if lower.contains(&candidate.to_ascii_lowercase()) {
+            roots.push(candidate.to_string());
+        }
+    }
+    roots
+}
+
+fn contains_any_ci(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -831,6 +1270,47 @@ mod tests {
                 .stages
                 .iter()
                 .any(|stage| { stage.id == "js_parse" && stage.status == StageStatus::Skipped })
+        );
+    }
+
+    #[tokio::test]
+    async fn card_private_state_roots_are_informational() {
+        let html = r#"```html
+<!doctype html>
+<html>
+<body>
+<div id="app"></div>
+<script>
+const mp = { activeRunId: null, statusData: {}, phoneMessages: {}, memoryDB: {}, uiMessages: [] };
+function render(){ mp.statusData = {}; mp.phoneMessages.draft = ''; }
+</script>
+</body>
+</html>
+```"#;
+        let bytes = json_card_with_regex(r"\[开局\]", html, "[开局]");
+
+        let (package, report, _card) = run_import(bytes, "card.json").await.unwrap();
+
+        assert!(package.variables.iter().any(|var| var.path == "statusData"));
+        assert!(
+            package
+                .variables
+                .iter()
+                .any(|var| var.path == "phoneMessages")
+        );
+        assert!(
+            report.stages.iter().any(|stage| {
+                stage.id == "state_adapter" && stage.status == StageStatus::Success
+            })
+        );
+        assert!(report.diagnostics.iter().any(|diagnostic| diagnostic.code
+            == "card_private_state_detected"
+            && diagnostic.level == DiagnosticLevel::Info));
+        assert!(
+            !report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "state_field_manual_review")
         );
     }
 }

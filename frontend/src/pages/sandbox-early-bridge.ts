@@ -278,6 +278,95 @@ ${SANDBOX_HOST_BRIDGE_SOURCE}
   let earlyVariableStore = cloneEarlyJson(
     earlyInitialVariables && typeof earlyInitialVariables === 'object' ? earlyInitialVariables : {},
   ) || {};
+  const normalizeEarlyVariablePath = (path) => String(path || '')
+    .trim()
+    .replace(/^(?:stat_data|display_data|variables|chat_variables|projection|chat)\./, '');
+  const getEarlyValueAtPath = (root, path) => {
+    const normalizedPath = normalizeEarlyVariablePath(path);
+    if (!normalizedPath) return root;
+    let current = root;
+    for (const part of normalizedPath.split('.').filter(Boolean)) {
+      if (!current || typeof current !== 'object') return undefined;
+      const open = part.lastIndexOf('[');
+      const hasIndex = open >= 0 && part.endsWith(']');
+      const key = hasIndex ? part.slice(0, open) : part;
+      const index = hasIndex && /^\\d+$/.test(part.slice(open + 1, -1))
+        ? Number(part.slice(open + 1, -1))
+        : null;
+      current = current?.[key];
+      if (index != null) {
+        if (!Array.isArray(current)) return undefined;
+        current = current[index];
+      }
+    }
+    return current;
+  };
+  const setEarlyValueAtPath = (root, path, value) => {
+    const base = cloneEarlyJson(root && typeof root === 'object' && !Array.isArray(root) ? root : {}) || {};
+    const parts = normalizeEarlyVariablePath(path).split('.').filter(Boolean);
+    if (parts.length === 0) return base;
+    let current = base;
+    for (let i = 0; i < parts.length; i += 1) {
+      const part = parts[i];
+      const open = part.lastIndexOf('[');
+      const hasIndex = open >= 0 && part.endsWith(']');
+      const key = hasIndex ? part.slice(0, open) : part;
+      const index = hasIndex && /^\\d+$/.test(part.slice(open + 1, -1))
+        ? Number(part.slice(open + 1, -1))
+        : null;
+      if (!key) continue;
+      const isLast = i === parts.length - 1;
+      if (isLast) {
+        if (index != null) {
+          current[key] = Array.isArray(current[key]) ? current[key] : [];
+          while (current[key].length <= index) current[key].push(null);
+          current[key][index] = value;
+        } else {
+          current[key] = value;
+        }
+        break;
+      }
+      if (index != null) {
+        current[key] = Array.isArray(current[key]) ? current[key] : [];
+        while (current[key].length <= index) current[key].push({});
+        current[key][index] = current[key][index] && typeof current[key][index] === 'object' && !Array.isArray(current[key][index])
+          ? current[key][index]
+          : {};
+        current = current[key][index];
+      } else {
+        current[key] = current[key] && typeof current[key] === 'object' && !Array.isArray(current[key])
+          ? current[key]
+          : {};
+        current = current[key];
+      }
+    }
+    return base;
+  };
+  const unwrapEarlyVariablePayload = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    const preferred = value.stat_data || value.display_data || value.variables || value.chat_variables;
+    if (
+      preferred
+      && typeof preferred === 'object'
+      && !Array.isArray(preferred)
+      && Object.keys(preferred).length > 0
+    ) {
+      const wrapperKeys = new Set(['stat_data', 'display_data', 'variables', 'chat_variables']);
+      const ownKeys = Object.keys(value).filter(key => !wrapperKeys.has(key));
+      if (ownKeys.length === 0) return preferred;
+    }
+    return value;
+  };
+  const withEarlyVariableAliases = (variables) => {
+    const store = cloneEarlyJson(variables && typeof variables === 'object' ? variables : {}) || {};
+    return {
+      ...store,
+      stat_data: cloneEarlyJson(store),
+      display_data: cloneEarlyJson(store),
+      variables: cloneEarlyJson(store),
+      chat_variables: cloneEarlyJson(store),
+    };
+  };
   const normalizeEarlyMessageId = (messageId) => {
     const number = Number(messageId);
     if (!Number.isFinite(number)) return null;
@@ -396,9 +485,21 @@ ${SANDBOX_HOST_BRIDGE_SOURCE}
   exposeEarlyGlobal('getChatMessages', earlyGetChatMessages);
   exposeEarlyGlobal('setChatMessages', earlySetChatMessages);
   exposeEarlyGlobal('setChatMessage', earlySetChatMessage);
-  const earlyGetVariables = async () => cloneEarlyJson(earlyVariableStore);
+  const earlyGetVariables = async () => withEarlyVariableAliases(earlyVariableStore);
+  const earlyGetvar = (path, options = {}) => {
+    const value = getEarlyValueAtPath(earlyVariableStore, path);
+    if (value !== undefined) return cloneEarlyJson(value);
+    if (options && typeof options === 'object' && 'defaults' in options) return cloneEarlyJson(options.defaults);
+    if (options && typeof options === 'object' && 'default' in options) return cloneEarlyJson(options.default);
+    return undefined;
+  };
+  const earlySetvar = async (path, value) => {
+    earlyVariableStore = setEarlyValueAtPath(earlyVariableStore, path, cloneEarlyJson(value));
+    window.eventEmit?.('VARIABLE_UPDATE_ENDED', { stat_data: earlyVariableStore, variables: earlyVariableStore });
+    return cloneEarlyJson(value);
+  };
   const earlySetVariables = async (variables) => {
-    earlyVariableStore = cloneEarlyJson(variables && typeof variables === 'object' ? variables : {}) || {};
+    earlyVariableStore = cloneEarlyJson(unwrapEarlyVariablePayload(variables)) || {};
     window.eventEmit?.('VARIABLE_UPDATE_ENDED', { stat_data: earlyVariableStore, variables: earlyVariableStore });
     return true;
   };
@@ -421,8 +522,10 @@ ${SANDBOX_HOST_BRIDGE_SOURCE}
     return true;
   };
   exposeEarlyGlobal('getVariables', earlyGetVariables);
+  exposeEarlyGlobal('getvar', earlyGetvar);
   exposeEarlyGlobal('getAllVariables', earlyGetVariables);
   exposeEarlyGlobal('setVariables', earlySetVariables);
+  exposeEarlyGlobal('setvar', earlySetvar);
   exposeEarlyGlobal('getMvuData', earlyGetMvuData);
   exposeEarlyGlobal('replaceMvuData', earlyReplaceMvuData);
   const earlyMvu = window.Mvu || {

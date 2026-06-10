@@ -13,6 +13,7 @@ import { PipelineVisualization } from './import/PipelineVisualization';
 import { RuleTracePanel } from './import/RuleTracePanel';
 import { DiagnosticsPanel } from './import/DiagnosticsPanel';
 import { PackagePreview } from './import/PackagePreview';
+import { ContractWorkbench } from './import/ContractWorkbench';
 import { LlmAssistPanel } from './import/LlmAssistPanel';
 import { ActionBar } from './import/ActionBar';
 import { buildSandboxDocument } from './sandbox-document';
@@ -187,6 +188,10 @@ export default function ImportWorkbench() {
     const stateFieldCount = packageDraft.state_schema?.fields.length || 0;
     const mappedStateCount =
       packageDraft.state_schema?.fields.filter((field) => Boolean(field.canonical_path)).length || 0;
+    const extractedSignalCount =
+      (packageDraft.extraction_layers?.state_signals.length || 0)
+      + (packageDraft.extraction_layers?.ui_signals.length || 0)
+      + (packageDraft.extraction_layers?.action_signals.length || 0);
     const apiWarnings =
       packageDraft.compatibility.unsupported_apis.length + packageDraft.compatibility.warnings.length;
     const renderCritical = draft.import_report.stages.filter(
@@ -213,6 +218,7 @@ export default function ImportWorkbench() {
       variableCount,
       stateFieldCount,
       mappedStateCount,
+      extractedSignalCount,
       actionCount: packageDraft.actions.length,
       apiWarnings,
       renderCritical,
@@ -324,6 +330,10 @@ export default function ImportWorkbench() {
                     <strong>{draftSummary.actionCount}</strong>
                   </div>
                   <div className="overview-stat">
+                    <span>提取信号</span>
+                    <strong>{draftSummary.extractedSignalCount}</strong>
+                  </div>
+                  <div className="overview-stat">
                     <span>诊断</span>
                     <strong>
                       {draftSummary.diagnostics.error}/{draftSummary.diagnostics.warn}/{draftSummary.diagnostics.info}
@@ -391,6 +401,7 @@ export default function ImportWorkbench() {
             {activeTab === 'section-package-draft' && (
               <>
                 <PackagePreview packageDraft={draft.package_draft} />
+                <ContractWorkbench packageDraft={draft.package_draft} />
                 <LlmAssistPanel result={llmResult} loading={llmLoading} />
               </>
             )}

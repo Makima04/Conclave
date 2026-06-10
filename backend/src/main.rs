@@ -88,6 +88,7 @@ async fn create_app(config: AppConfig) -> Router {
         .route("/api/health", get(health::health_check))
         .route("/api/sessions", post(sessions::create_session))
         .route("/api/sessions", get(sessions::list_sessions))
+        .route("/api/session-shared-saves", get(sessions::list_shared_saves))
         .route("/api/sessions/{id}", get(sessions::get_session))
         .route(
             "/api/sessions/{id}",

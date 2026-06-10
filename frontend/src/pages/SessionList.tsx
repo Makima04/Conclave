@@ -7,7 +7,6 @@ import type { AppShellOutletContext } from '../components/AppShell';
 import { NewSessionDialog, type NewSessionDraft } from '../components/NewSessionDialog';
 import { loadGlobalSessionDefaults } from '../settings/sessionDefaults';
 import { useToast } from '../components/Toast';
-import '../styles/session-list.css';
 
 function relativeTime(dateStr: string): string {
   const now = Date.now();

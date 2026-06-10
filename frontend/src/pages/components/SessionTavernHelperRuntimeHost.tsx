@@ -15,9 +15,13 @@ export function SessionTavernHelperRuntimeHost({
   runtime?: SandboxRuntimeContext;
   onAction?: (action: SandboxCardAction) => void;
 }) {
+  const variableSignature = useMemo(() => {
+    if (!variables || typeof variables !== 'object') return '';
+    return Object.keys(variables).sort().join('|');
+  }, [variables]);
   const documentHtml = useMemo(
     () => scripts.length ? buildTavernHelperDocument(scripts, variables || {}, runtime) : '',
-    [scripts],
+    [scripts, runtime?.sessionId, variableSignature],
   );
 
   useEffect(() => {

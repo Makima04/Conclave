@@ -31,6 +31,17 @@ function isOpeningPreviewRuntime(runtime?: SandboxRuntimeContext): boolean {
   return id === 'opening-preview';
 }
 
+function isHtmlAppInternalRuntime(runtime?: SandboxRuntimeContext): boolean {
+  const current = runtime?.currentMessage;
+  const data = current?.data;
+  return Boolean(
+    data
+      && typeof data === 'object'
+      && !Array.isArray(data)
+      && (data as Record<string, unknown>).html_app_internal === true,
+  );
+}
+
 function hasPackageHtmlApp(card: CharacterCard | null): boolean {
   return Boolean(
     card?.conclave_package?.ui?.type === 'html_app'
@@ -39,11 +50,11 @@ function hasPackageHtmlApp(card: CharacterCard | null): boolean {
 }
 
 function shouldBootHtmlApp(card: CharacterCard | null, content: string, runtime?: SandboxRuntimeContext): boolean {
-  const hints = card?.conclave_package?.runtime_hints;
   const triggerMatch = HTML_APP_TRIGGER_RE.test(content);
   if (!hasPackageHtmlApp(card)) return false;
-  if (isOpeningPreviewRuntime(runtime) || triggerMatch) return true;
-  return Boolean(hints?.regex_opening_full_document || hints?.raw_opening_full_document);
+  if (isOpeningPreviewRuntime(runtime)) return true;
+  if (isHtmlAppInternalRuntime(runtime)) return true;
+  return false;
 }
 
 function stripHtmlAppTriggers(content: string): string {
@@ -64,10 +75,13 @@ export function resolveCardRenderPlan({
   runtime?: SandboxRuntimeContext;
   renderMode: RenderMode;
 }): CardRenderPlan {
+  const triggerMatch = HTML_APP_TRIGGER_RE.test(content);
+  const strippedHtmlAppContent = triggerMatch ? stripHtmlAppTriggers(content) : content;
+
   if (renderMode === 'text') {
     return {
       kind: 'text',
-      displayContent: content,
+      displayContent: strippedHtmlAppContent,
     };
   }
 
@@ -94,7 +108,7 @@ export function resolveCardRenderPlan({
 
   return {
     kind: 'text',
-    displayContent: content,
+    displayContent: strippedHtmlAppContent,
   };
 }
 

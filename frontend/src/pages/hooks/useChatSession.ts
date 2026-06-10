@@ -9,6 +9,16 @@ import { DEFAULT_SESSION_CONFIG } from '../../api/types';
 import { loadGlobalSessionDefaults, loadUserPersonaPresets, normalizeRenderMode, normalizeSessionConfig, saveGlobalSessionDefaults, type UserPersonaPreset } from '../../settings/sessionDefaults';
 import { useProviders } from '../../contexts/AppContext';
 import { getParsedGreetings } from '../st-html-app-runtime';
+import { cleanCardDisplayText } from '../card-content';
+
+const HTML_APP_TRIGGER_RE = /(?:^|\n)\s*(?:\[attachment\]|\[开局\]|【GameStart】|【游戏开始】)\s*(?:\n|$)/gi;
+
+function cleanComparableMessageText(content: string): string {
+  return cleanCardDisplayText(content)
+    .replace(HTML_APP_TRIGGER_RE, '\n')
+    .replace(/\s+/g, '')
+    .trim();
+}
 
 export function useChatSession() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -265,6 +275,26 @@ export function useChatSession() {
     const greetings = getParsedGreetings(characterCard);
     return greetings[selectedGreetingIndex + 1] || greetings[0] || '';
   }
+
+  useEffect(() => {
+    if (!characterCard) {
+      setSelectedGreetingIndex(prev => (prev === -1 ? prev : -1));
+      return;
+    }
+    const openingMessage = messages.find(msg => msg.turn_number === 0 && msg.role === 'assistant');
+    if (!openingMessage) {
+      setSelectedGreetingIndex(prev => (prev === -1 ? prev : -1));
+      return;
+    }
+
+    const comparableOpening = cleanComparableMessageText(openingMessage.content);
+    const greetings = getParsedGreetings(characterCard);
+    const matchedGreetingIndex = greetings.findIndex(greeting =>
+      cleanComparableMessageText(greeting) === comparableOpening
+    );
+    const nextIndex = matchedGreetingIndex >= 0 ? matchedGreetingIndex - 1 : -1;
+    setSelectedGreetingIndex(prev => (prev === nextIndex ? prev : nextIndex));
+  }, [characterCard, messages]);
 
   return {
     sessionId,

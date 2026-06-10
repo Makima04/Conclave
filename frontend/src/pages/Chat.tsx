@@ -91,6 +91,12 @@ export default function Chat() {
   const openingLocked = React.useMemo(() => messages.some(msg => msg.turn_number > 0), [messages]);
   const canApplyOpening = !openingLocked;
   const cardProjectionVariables = sessionState?.variables || emptyVariables;
+  const cardPlatformState = sessionState?.platform_state && typeof sessionState.platform_state === 'object'
+    ? sessionState.platform_state
+    : emptyVariables;
+  const cardWritableState = sessionState?._state_agent_writable && typeof sessionState._state_agent_writable === 'object'
+    ? sessionState._state_agent_writable
+    : emptyVariables;
   const cardVariableContract = React.useMemo(() => ({
     writableProjectionPaths: Array.isArray(characterCard?.conclave_package?.state_adapter?.write_rules)
       ? characterCard!.conclave_package!.state_adapter.write_rules.map(rule => rule.card_path)
@@ -119,19 +125,12 @@ export default function Chat() {
   const activePresetMissing = Boolean(config.active_preset_id && !activePreset);
   const loadSharedSaves = React.useCallback(async () => {
     const worldBookId = activeWorldBookId || characterCard?.world_book_id;
-    if (!sessionId || !worldBookId || !characterCard) {
+    if (!worldBookId || !characterCard) {
       return [];
     }
-    const sessionData = await api.listSessions({ worldPackId: worldBookId, limit: 50 });
-    const relevantSessions = (sessionData.items || []).filter(item => item.world_pack_id === worldBookId);
-    const saves = await Promise.all(relevantSessions.map(async item => {
-      const sessionMessages = item.id === sessionId
-        ? messages
-        : (await api.listMessages(item.id).catch(() => ({ items: [] }))).items;
-      return buildSharedSave(item, sessionMessages || []);
-    }));
-    return saves;
-  }, [activeWorldBookId, characterCard?.id, characterCard?.world_book_id, sessionId, userPersona.name, messages]);
+    const sharedSaveData = await api.listSharedSaves({ worldPackId: worldBookId, limit: 50 });
+    return sharedSaveData.items || [];
+  }, [activeWorldBookId, characterCard?.id, characterCard?.world_book_id]);
   const greetingOptions = React.useMemo(() => {
     if (!characterCard) return [];
     const options: Array<{ value: number; label: string }> = [];
@@ -186,9 +185,11 @@ export default function Chat() {
         currentMessageId: message.id,
         sharedSaves: runtimeSharedSaves,
         variableContract: cardVariableContract,
+        platformState: cardPlatformState,
+        writableState: cardWritableState,
       } satisfies SandboxRuntimeContext];
     })),
-    [messages, sandboxRuntimeMessages, sandboxRuntimeById, runtimeSharedSaves, sessionId, cardVariableContract],
+    [messages, sandboxRuntimeMessages, sandboxRuntimeById, runtimeSharedSaves, sessionId, cardVariableContract, cardPlatformState, cardWritableState],
   );
   const openingPreviewContent = selectedGreetingText || getParsedOpeningContent(characterCard);
   const sandboxSubmissionRuntime = React.useMemo<SandboxRuntimeSubmission | null>(() => {
@@ -207,16 +208,34 @@ export default function Chat() {
   const isSandboxInlineStreaming = Boolean(sandboxSubmission);
   const openingPreviewRuntime = React.useMemo(
     () => buildEmptySessionPreviewRuntime(openingPreviewContent),
-    [openingPreviewContent, runtimeSharedSaves, cardProjectionVariables, characterCard?.name, sandboxSubmissionRuntime, sessionId, cardVariableContract],
+    [openingPreviewContent, runtimeSharedSaves, cardProjectionVariables, cardPlatformState, cardWritableState, characterCard?.name, sandboxSubmissionRuntime, sessionId, cardVariableContract],
   );
-  const sessionTavernHelperRuntime = React.useMemo<SandboxRuntimeContext>(() => withSandboxSubmission({
+  const sessionTavernHelperRuntime = React.useMemo<SandboxRuntimeContext>(() => {
+    if (sandboxRuntimeMessages.length === 0 && characterCard) {
+      return buildEmptySessionPreviewRuntime(openingPreviewContent);
+    }
+    return withSandboxSubmission({
+      sessionId,
+      messages: sandboxRuntimeMessages,
+      currentMessage: sandboxRuntimeMessages[sandboxRuntimeMessages.length - 1] || null,
+      currentMessageId: sandboxRuntimeMessages[sandboxRuntimeMessages.length - 1]?.message_id ?? null,
+      sharedSaves: runtimeSharedSaves,
+      variableContract: cardVariableContract,
+      platformState: cardPlatformState,
+      writableState: cardWritableState,
+    });
+  }, [
     sessionId,
-    messages: sandboxRuntimeMessages,
-    currentMessage: sandboxRuntimeMessages[sandboxRuntimeMessages.length - 1] || null,
-    currentMessageId: sandboxRuntimeMessages[sandboxRuntimeMessages.length - 1]?.message_id ?? null,
-    sharedSaves: runtimeSharedSaves,
-    variableContract: cardVariableContract,
-  }), [sessionId, sandboxRuntimeMessages, runtimeSharedSaves, sandboxSubmissionRuntime, sandboxSubmissionSourceId, cardVariableContract]);
+    sandboxRuntimeMessages,
+    runtimeSharedSaves,
+    sandboxSubmissionRuntime,
+    sandboxSubmissionSourceId,
+    cardVariableContract,
+    cardPlatformState,
+    cardWritableState,
+    characterCard,
+    openingPreviewContent,
+  ]);
 
   // --- local helpers ---
   const handleRailClick = React.useCallback((tab: InspectorTab) => {
@@ -289,9 +308,11 @@ export default function Chat() {
   function buildSandboxRuntimeMessage(msg: Message, index: number): SandboxRuntimeMessage {
     const chatVariables = cardProjectionVariables;
     const metadata = parseMessageMetadata(msg);
-    const messageVariables = metadata.variables && typeof metadata.variables === 'object'
+    const rawMessageVariables = metadata.variables && typeof metadata.variables === 'object'
       ? metadata.variables
       : {};
+    const hasMessageVariables = Object.keys(rawMessageVariables).length > 0;
+    const messageVariables = hasMessageVariables ? rawMessageVariables : chatVariables;
     const runtimeContent = msg.role === 'assistant' && msg.content.trim() === 'false' ? '' : msg.content;
     const roleName = msg.role === 'user'
       ? (userPersona.name || '你')
@@ -331,6 +352,8 @@ export default function Chat() {
         display_data: messageVariables,
         variables: messageVariables,
         chat_variables: chatVariables,
+        platform_state: cardPlatformState,
+        writable_state: cardWritableState,
         index,
       },
       variables: messageVariables,
@@ -376,6 +399,8 @@ export default function Chat() {
         stat_data: projectionVariables,
         display_data: projectionVariables,
         variables: projectionVariables,
+        platform_state: cardPlatformState,
+        writable_state: cardWritableState,
       },
       variables: projectionVariables,
     };
@@ -387,12 +412,21 @@ export default function Chat() {
       currentMessageId: 'streaming',
       sharedSaves: runtimeSharedSaves,
       variableContract: cardVariableContract,
+      platformState: cardPlatformState,
+      writableState: cardWritableState,
       submission: syntheticSubmission,
     };
   }
 
   function buildEmptySessionPreviewRuntime(content: string): SandboxRuntimeContext {
     const projectionVariables = cardProjectionVariables;
+    const openingSwipes = characterCard
+      ? getParsedGreetings(characterCard)
+      : [];
+    const comparableContent = cleanComparableMessageText(content);
+    const matchedOpeningIndex = openingSwipes.findIndex(swipe =>
+      cleanComparableMessageText(swipe) === comparableContent
+    );
     if (hasHtmlAppInternalMessages) {
       const currentMessage = sandboxRuntimeMessages[sandboxRuntimeMessages.length - 1];
       return withSandboxSubmission({
@@ -402,14 +436,16 @@ export default function Chat() {
         currentMessageId: currentMessage?.message_id ?? currentMessage?.id ?? 'opening-preview',
         sharedSaves: runtimeSharedSaves,
         variableContract: cardVariableContract,
+        platformState: cardPlatformState,
+        writableState: cardWritableState,
         submission: sandboxSubmissionRuntime,
       });
     }
     const previewMessage: SandboxRuntimeMessage = {
       id: 'opening-preview',
       message_id: 'opening-preview',
-      swipe_id: 0,
-      swipes: [],
+      swipe_id: matchedOpeningIndex >= 0 ? matchedOpeningIndex : 0,
+      swipes: openingSwipes,
       role: 'assistant',
       name: characterCard?.name || '助手',
       message: content,
@@ -420,6 +456,8 @@ export default function Chat() {
         stat_data: projectionVariables,
         display_data: projectionVariables,
         variables: projectionVariables,
+        platform_state: cardPlatformState,
+        writable_state: cardWritableState,
       },
       variables: projectionVariables,
     };
@@ -431,6 +469,8 @@ export default function Chat() {
       currentMessageId: previewMessage.id,
       sharedSaves: runtimeSharedSaves,
       variableContract: cardVariableContract,
+      platformState: cardPlatformState,
+      writableState: cardWritableState,
       submission: sandboxSubmissionRuntime,
     };
   }

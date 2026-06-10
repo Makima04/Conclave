@@ -29,17 +29,7 @@ pub fn build_state_conversion(
         .iter()
         .map(variable_rule)
         .collect::<Vec<VariableRule>>();
-    let warnings = fields
-        .iter()
-        .filter(|field| field.canonical_path.is_none())
-        .take(20)
-        .map(|field| {
-            format!(
-                "State field '{}' is card-private and requires adapter review before Agent writes.",
-                field.path
-            )
-        })
-        .collect();
+    let warnings = build_adapter_warnings(variables, &fields, &read_rules, &write_rules);
 
     (
         CardStateSchema { roots, fields },
@@ -52,6 +42,58 @@ pub fn build_state_conversion(
             warnings,
         },
     )
+}
+
+fn build_adapter_warnings(
+    variables: &[VariableDeclaration],
+    fields: &[StateFieldDeclaration],
+    read_rules: &[StateMappingRule],
+    write_rules: &[StateMappingRule],
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let total = fields.len();
+    let mapped = fields.iter().filter(|field| field.canonical_path.is_some()).count();
+    let writable = fields.iter().filter(|field| field.writable).count();
+    let manual_review = fields
+        .iter()
+        .filter(|field| field.canonical_path.is_none())
+        .map(|field| field.path.as_str())
+        .collect::<Vec<_>>();
+
+    if total == 0 && !variables.is_empty() {
+        warnings.push("检测到变量，但未生成任何 state_schema 字段。".to_string());
+    }
+    if total > 0 && mapped == 0 {
+        warnings.push("state_schema 已生成，但没有任何字段映射到平台 canonical_path。".to_string());
+    }
+    if total > 0 && mapped < total {
+        warnings.push(format!(
+            "state_schema 仅部分完成映射: {}/{} 字段有 canonical_path。",
+            mapped, total
+        ));
+    }
+    if writable > 0 && write_rules.is_empty() {
+        warnings.push("存在可写字段，但未生成 write_rules。".to_string());
+    }
+    if !read_rules.is_empty() && write_rules.is_empty() {
+        warnings.push("已生成 read_rules，但没有对应 write_rules。".to_string());
+    }
+    if !manual_review.is_empty() {
+        let preview = manual_review
+            .iter()
+            .take(6)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let suffix = if manual_review.len() > 6 {
+            format!(" ... (+{} more)", manual_review.len() - 6)
+        } else {
+            String::new()
+        };
+        warnings.push(format!("仍需人工审查的字段: {}{}", preview, suffix));
+    }
+
+    warnings
 }
 
 fn classify_variable(var: &VariableDeclaration) -> StateFieldDeclaration {
@@ -346,6 +388,13 @@ mod tests {
             adapter.variable_rules[0].update_policy,
             VariableUpdatePolicy::ManualReview
         ));
-        assert!(!adapter.warnings.is_empty());
+        assert!(
+            adapter
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("人工审查") || warning.contains("manual") || warning.contains("审查")),
+            "expected manual review warning, got {:?}",
+            adapter.warnings
+        );
     }
 }

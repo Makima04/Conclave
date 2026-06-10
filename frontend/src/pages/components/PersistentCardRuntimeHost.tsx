@@ -3,7 +3,7 @@ import type { SandboxCardAction } from '../card-schema-types';
 import { buildSandboxDocument } from '../sandbox-document';
 import type { SandboxRuntimeContext } from '../sandbox-runtime-types';
 import type { StHtmlAppManifest } from '../st-html-app-runtime';
-import { DirectHtmlRuntimeHost } from './DirectHtmlRuntimeHost';
+import { IframeHtmlRuntimeHost } from './IframeHtmlRuntimeHost';
 
 interface PersistentCardRuntimeHostProps {
   manifest: StHtmlAppManifest;
@@ -53,13 +53,14 @@ export function PersistentCardRuntimeHost({
 
   return (
     <section className="persistent-card-runtime" aria-label="角色卡局内界面">
-      <DirectHtmlRuntimeHost
+      <IframeHtmlRuntimeHost
         key={mountKey}
-        className="persistent-card-runtime-direct"
+        className="persistent-card-runtime-frame"
         documentHtml={documentHtml}
         variables={variables || {}}
         runtime={runtime}
         allowedActions={ALLOWED_ACTIONS}
+        fillAvailableHeight
         onAction={onAction}
       />
     </section>

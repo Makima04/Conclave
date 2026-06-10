@@ -5,6 +5,8 @@ import { ToastProvider } from './components/Toast';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import AppShell from './components/AppShell';
 import './styles/global.css';
+import './styles/session-list.css';
+import './styles/session-debug.css';
 
 const SessionList = React.lazy(() => import('./pages/SessionList'));
 const Chat = React.lazy(() => import('./pages/Chat'));

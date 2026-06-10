@@ -7,6 +7,7 @@ import type {
   RuntimeSettings,
   DebugMessage, DebugTurnSummary, AgentDebugSnapshot,
 } from './types';
+import type { SandboxSharedSave } from '../pages/sandbox-runtime-types';
 import { consumeSseResponse, type ChatSseHandler } from './sse';
 
 const BASE_URL = '/api';
@@ -44,6 +45,13 @@ export async function listSessions(params?: { limit?: number; worldPackId?: stri
   if (params?.worldPackId) query.set('world_pack_id', params.worldPackId);
   const suffix = query.toString() ? `?${query.toString()}` : '';
   return request(`/sessions${suffix}`);
+}
+
+export async function listSharedSaves(params: { worldPackId: string; limit?: number }): Promise<{ items: SandboxSharedSave[] }> {
+  const query = new URLSearchParams();
+  query.set('world_pack_id', params.worldPackId);
+  if (params.limit) query.set('limit', String(params.limit));
+  return request(`/session-shared-saves?${query.toString()}`);
 }
 
 export async function getSession(id: string): Promise<Session> {

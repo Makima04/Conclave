@@ -120,13 +120,9 @@ fn check_syntax(js: &str, file_label: &str) -> Vec<SyntaxError> {
 
         // ── Skip template literal, but parse ${...} expressions ──
         if ch == '`' {
-            if let Err(template_error) = skip_template_literal(
-                &chars,
-                &mut i,
-                &mut line,
-                &mut col,
-                &mut stack,
-            ) {
+            if let Err(template_error) =
+                skip_template_literal(&chars, &mut i, &mut line, &mut col, &mut stack)
+            {
                 if errors.len() < 10 {
                     errors.push(SyntaxError {
                         file: file_label.to_string(),
@@ -156,8 +152,7 @@ fn check_syntax(js: &str, file_label: &str) -> Vec<SyntaxError> {
 
         // ── Track closing delimiters ──
         if ch == ')' || ch == '}' || ch == ']' {
-            if let Some((expected, _open_off, _open_line, _open_col, _is_template)) = stack.last()
-            {
+            if let Some((expected, _open_off, _open_line, _open_col, _is_template)) = stack.last() {
                 if *expected == ch {
                     stack.pop();
                 } else {
@@ -218,27 +213,31 @@ fn check_syntax(js: &str, file_label: &str) -> Vec<SyntaxError> {
 fn likely_regex_literal_start(chars: &[char], offset: usize) -> bool {
     match previous_significant_char(chars, offset) {
         None => true,
-        Some(ch) if matches!(
-            ch,
-            '(' | '{'
-                | '['
-                | ','
-                | ';'
-                | ':'
-                | '='
-                | '!'
-                | '?'
-                | '+'
-                | '-'
-                | '*'
-                | '%'
-                | '&'
-                | '|'
-                | '^'
-                | '~'
-                | '<'
-                | '>'
-        ) => true,
+        Some(ch)
+            if matches!(
+                ch,
+                '(' | '{'
+                    | '['
+                    | ','
+                    | ';'
+                    | ':'
+                    | '='
+                    | '!'
+                    | '?'
+                    | '+'
+                    | '-'
+                    | '*'
+                    | '%'
+                    | '&'
+                    | '|'
+                    | '^'
+                    | '~'
+                    | '<'
+                    | '>'
+            ) =>
+        {
+            true
+        }
         Some(_) => previous_identifier(chars, offset)
             .map(|identifier| {
                 matches!(
@@ -810,7 +809,10 @@ function nt(e,t){const n=new Date(`${e}T00:00:00`),a=new Date(`${t}T00:00:00`);r
         let Some(open_end) = html[start..].find('>').map(|offset| start + offset + 1) else {
             return;
         };
-        let Some(close) = html[open_end..].find("</script>").map(|offset| open_end + offset) else {
+        let Some(close) = html[open_end..]
+            .find("</script>")
+            .map(|offset| open_end + offset)
+        else {
             return;
         };
         let js = html[open_end..close].to_string();

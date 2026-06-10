@@ -459,7 +459,7 @@ export function useMessageStream({
           return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
         });
       });
-      loadSessionState();
+      await loadSessionState();
       setStreamError(null);
     } catch (err) {
       setStreamError(err instanceof Error ? err.message : errorMessage);

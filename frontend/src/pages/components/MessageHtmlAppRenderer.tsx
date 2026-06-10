@@ -66,6 +66,7 @@ export function MessageHtmlAppRenderer({
         variables={variables || {}}
         runtime={runtime}
         allowedActions={ALLOWED_ACTIONS}
+        fillAvailableHeight
         onAction={onAction}
       />
     </section>

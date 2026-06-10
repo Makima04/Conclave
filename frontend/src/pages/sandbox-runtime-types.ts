@@ -44,5 +44,6 @@ export interface SandboxRuntimeContext {
   sharedSaves?: SandboxSharedSave[];
   submission?: SandboxRuntimeSubmission | null;
   variableContract?: SandboxVariableContract | null;
+  platformState?: Record<string, unknown> | null;
+  writableState?: Record<string, unknown> | null;
 }
-

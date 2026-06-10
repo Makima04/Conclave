@@ -390,6 +390,32 @@ export interface VariableDeclaration {
   source: string;
 }
 
+export type ExtractedSignalKind =
+  | 'variable_path'
+  | 'state_schema_path'
+  | 'action_hint'
+  | 'ui_dependency'
+  | 'runtime_root'
+  | 'unresolved';
+
+export interface ExtractedSignal {
+  id: string;
+  kind: ExtractedSignalKind;
+  path?: string;
+  label?: string;
+  source: string;
+  confidence: number;
+  excerpt?: string;
+  details?: Record<string, unknown> | unknown[];
+}
+
+export interface ExtractionLayers {
+  state_signals: ExtractedSignal[];
+  ui_signals: ExtractedSignal[];
+  action_signals: ExtractedSignal[];
+  unresolved_signals: ExtractedSignal[];
+}
+
 export type StateRootRole =
   | 'world'
   | 'character_collection'
@@ -494,6 +520,7 @@ export interface ConclaveCardPackage {
   greetings: Greeting[];
   ui: PackageUi;
   runtime_hints: PackageRuntimeHints;
+  extraction_layers: ExtractionLayers;
   variables: VariableDeclaration[];
   state_schema: CardStateSchema;
   state_adapter: CardStateAdapter;

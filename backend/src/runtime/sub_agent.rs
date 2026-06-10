@@ -174,15 +174,18 @@ pub async fn execute_sub_agent(
         "Sub-agent executed"
     );
 
-    Ok((AgentOutput {
-        agent_id: agent.id.clone(),
-        agent_type: agent.agent_type,
-        text,
-        tool_calls: response_tool_calls,
-        prompt_tokens: pt,
-        completion_tokens: ct,
-        duration_ms,
-    }, debug_snapshot))
+    Ok((
+        AgentOutput {
+            agent_id: agent.id.clone(),
+            agent_type: agent.agent_type,
+            text,
+            tool_calls: response_tool_calls,
+            prompt_tokens: pt,
+            completion_tokens: ct,
+            duration_ms,
+        },
+        debug_snapshot,
+    ))
 }
 
 /// Format recent conversation messages into a readable transcript.
@@ -265,7 +268,10 @@ fn format_visible_knowledge(agent: &SubAgent, context: &ContextBundle) -> String
         .join("\n")
 }
 
-fn visible_preset_modules(agent: &SubAgent, context: &ContextBundle) -> Vec<crate::runtime::types::PresetModuleContext> {
+fn visible_preset_modules(
+    agent: &SubAgent,
+    context: &ContextBundle,
+) -> Vec<crate::runtime::types::PresetModuleContext> {
     context
         .preset_modules
         .iter()
@@ -279,7 +285,10 @@ fn visible_preset_modules(agent: &SubAgent, context: &ContextBundle) -> Vec<crat
         .collect()
 }
 
-fn visible_worldbook_entries(agent: &SubAgent, context: &ContextBundle) -> Vec<crate::runtime::types::WorldBookContextEntry> {
+fn visible_worldbook_entries(
+    agent: &SubAgent,
+    context: &ContextBundle,
+) -> Vec<crate::runtime::types::WorldBookContextEntry> {
     context
         .world_book_entries
         .iter()

@@ -224,6 +224,7 @@ export function renderInlineDecorators(content: string): React.ReactNode {
   let cursor = 0;
   const innerRegex = /<inner>([\s\S]*?)<\/inner>/gi;
   const source = content
+    .replace(/<StatusPlaceHolderImpl\/>/g, '')
     .replace(/<UpdateVariable(?:variable)?\b[^>]*>[\s\S]*?<\/UpdateVariable(?:variable)?>/gi, '')
     .replace(/<options\b[^>]*>[\s\S]*?<\/options>/gi, '')
     .replace(/<\/?正文>/g, '')
@@ -254,6 +255,7 @@ export function renderInlineDecorators(content: string): React.ReactNode {
 
 export function renderCardFormattedContent(card: CharacterCard | null, content: string): React.ReactNode {
   const normalized = content
+    .replace(/<StatusPlaceHolderImpl\/>/g, '')
     .replace(/<\/?正文>/g, '')
     .replace(/<options\b[^>]*>[\s\S]*?<\/options>/gi, '')
     .replace(/{{user}}/g, '你')

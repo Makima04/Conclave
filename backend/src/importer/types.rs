@@ -218,6 +218,37 @@ pub struct VariableDeclaration {
     pub source: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtractedSignalKind {
+    VariablePath,
+    StateSchemaPath,
+    ActionHint,
+    UiDependency,
+    RuntimeRoot,
+    Unresolved,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedSignal {
+    pub id: String,
+    pub kind: ExtractedSignalKind,
+    pub path: Option<String>,
+    pub label: Option<String>,
+    pub source: String,
+    pub confidence: f64,
+    pub excerpt: Option<String>,
+    pub details: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtractionLayers {
+    pub state_signals: Vec<ExtractedSignal>,
+    pub ui_signals: Vec<ExtractedSignal>,
+    pub action_signals: Vec<ExtractedSignal>,
+    pub unresolved_signals: Vec<ExtractedSignal>,
+}
+
 // ─── State conversion layer ───
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -348,6 +379,8 @@ pub struct ConclaveCardPackage {
     pub greetings: Vec<Greeting>,
     pub ui: PackageUi,
     pub runtime_hints: PackageRuntimeHints,
+    #[serde(default)]
+    pub extraction_layers: ExtractionLayers,
     pub variables: Vec<VariableDeclaration>,
     pub state_schema: CardStateSchema,
     pub state_adapter: CardStateAdapter,

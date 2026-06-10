@@ -229,38 +229,42 @@ fn quiet_messages_from_request(body: &QuietGenerateRequest) -> Vec<ChatMessage> 
     }
 
     if let Some(input_messages) = body.messages.as_ref() {
-        messages.extend(input_messages.iter().filter_map(|item| match item {
-            QuietPromptInput::Text(text) => quiet_chat_message(Some("user"), text.clone()),
-            QuietPromptInput::Object {
-                role,
-                content,
-                text,
-                prompt,
-            } => quiet_chat_message(
-                role.as_deref(),
-                content
-                    .clone()
-                    .or_else(|| text.clone())
-                    .or_else(|| prompt.clone())
-                    .unwrap_or_default(),
-            ),
+        messages.extend(input_messages.iter().filter_map(|item| {
+            match item {
+                QuietPromptInput::Text(text) => quiet_chat_message(Some("user"), text.clone()),
+                QuietPromptInput::Object {
+                    role,
+                    content,
+                    text,
+                    prompt,
+                } => quiet_chat_message(
+                    role.as_deref(),
+                    content
+                        .clone()
+                        .or_else(|| text.clone())
+                        .or_else(|| prompt.clone())
+                        .unwrap_or_default(),
+                ),
+            }
         }));
     } else if let Some(ordered_prompts) = body.ordered_prompts.as_ref() {
-        messages.extend(ordered_prompts.iter().filter_map(|item| match item {
-            QuietOrderedPrompt::Text(text) => quiet_chat_message(Some("user"), text.clone()),
-            QuietOrderedPrompt::Object {
-                role,
-                content,
-                text,
-                prompt,
-            } => quiet_chat_message(
-                role.as_deref(),
-                content
-                    .clone()
-                    .or_else(|| text.clone())
-                    .or_else(|| prompt.clone())
-                    .unwrap_or_default(),
-            ),
+        messages.extend(ordered_prompts.iter().filter_map(|item| {
+            match item {
+                QuietOrderedPrompt::Text(text) => quiet_chat_message(Some("user"), text.clone()),
+                QuietOrderedPrompt::Object {
+                    role,
+                    content,
+                    text,
+                    prompt,
+                } => quiet_chat_message(
+                    role.as_deref(),
+                    content
+                        .clone()
+                        .or_else(|| text.clone())
+                        .or_else(|| prompt.clone())
+                        .unwrap_or_default(),
+                ),
+            }
         }));
     } else {
         let prompt = body
@@ -299,7 +303,9 @@ fn quiet_custom_api_target(body: &QuietGenerateRequest) -> Option<(OpenAiProvide
 
 fn quiet_u32(value: Option<&serde_json::Value>) -> Option<u32> {
     match value {
-        Some(serde_json::Value::Number(number)) => number.as_u64().and_then(|n| u32::try_from(n).ok()),
+        Some(serde_json::Value::Number(number)) => {
+            number.as_u64().and_then(|n| u32::try_from(n).ok())
+        }
         Some(serde_json::Value::String(text)) => text.trim().parse::<u32>().ok(),
         _ => None,
     }
@@ -472,12 +478,6 @@ pub async fn apply_opening(
         return Err(AppError::BadRequest("对话开始后不能切换开场白".to_string()));
     }
 
-    if let Err(e) =
-        state_initializer::initialize_session_state_from_world_book(&state.pool, &session_id).await
-    {
-        tracing::warn!(session = %session_id, "Failed to initialize session state before applying opening: {}", e);
-    }
-
     let now = chrono::Utc::now().to_rfc3339();
     let extraction = variable_update::extract(content);
     let display_content = if extraction.display_text.is_empty() {
@@ -485,6 +485,37 @@ pub async fn apply_opening(
     } else {
         extraction.display_text.clone()
     };
+    match state_initializer::initialize_session_state_from_content(
+        &state.pool,
+        &session_id,
+        content,
+        true,
+    )
+    .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            if let Err(e) = state_initializer::reinitialize_session_state_from_world_book(
+                &state.pool,
+                &session_id,
+            )
+            .await
+            {
+                tracing::warn!(session = %session_id, "Failed to initialize session state before applying opening: {}", e);
+            }
+        }
+        Err(e) => {
+            tracing::warn!(session = %session_id, "Failed to initialize session state from opening content: {}", e);
+            if let Err(fallback_err) = state_initializer::reinitialize_session_state_from_world_book(
+                &state.pool,
+                &session_id,
+            )
+            .await
+            {
+                tracing::warn!(session = %session_id, "Fallback world-book initialization failed before applying opening: {}", fallback_err);
+            }
+        }
+    }
     let existing_id: Option<String> = sqlx::query_scalar(
         "SELECT id FROM messages WHERE session_id = ? AND turn_number = 0 AND role = 'assistant' ORDER BY created_at ASC LIMIT 1"
     )
@@ -725,13 +756,14 @@ pub async fn send_message(
             };
 
             // Finalize: user msg + assistant msg + traces + current_turn in one transaction
-            let (commit_traces, commit_debug_snapshots, commit_compression, compression_job) = commit_data
-                .as_ref()
-                .and_then(|data| data.lock().ok().and_then(|guard| guard.clone()))
-                .map(|(traces, debug_snapshots, compression, job)| {
-                    (Some(traces), Some(debug_snapshots), compression, job)
-                })
-                .unwrap_or((None, None, None, None));
+            let (commit_traces, commit_debug_snapshots, commit_compression, compression_job) =
+                commit_data
+                    .as_ref()
+                    .and_then(|data| data.lock().ok().and_then(|guard| guard.clone()))
+                    .map(|(traces, debug_snapshots, compression, job)| {
+                        (Some(traces), Some(debug_snapshots), compression, job)
+                    })
+                    .unwrap_or((None, None, None, None));
             let is_multi_agent_commit = commit_data.is_some();
             if !is_multi_agent_commit {
                 let _ = broadcast_tx.send(crate::runtime::sse_types::SseEvent::StateUpdate {
@@ -1060,6 +1092,21 @@ pub async fn get_state(
     .await
     {
         value = card_state_adapter::build_normalized_state(&value, &contract, None);
+        let platform_state_empty = value
+            .get("platform_state")
+            .and_then(|item| item.as_object())
+            .map(|item| item.is_empty())
+            .unwrap_or(true);
+        if platform_state_empty
+            && contract.adapter.read_rules.is_empty()
+            && contract.adapter.write_rules.is_empty()
+        {
+            if let Some(variables) = value.get("variables").cloned() {
+                if let Some(obj) = value.as_object_mut() {
+                    obj.insert("platform_state".to_string(), variables);
+                }
+            }
+        }
     }
 
     Ok(Json(value))
@@ -1117,7 +1164,11 @@ pub async fn update_variables(
     .await?;
 
     let next_state = if let Some(contract) = contract.as_ref() {
-        card_state_adapter::build_normalized_state(&state_value, contract, Some(next_projection.clone()))
+        card_state_adapter::build_normalized_state(
+            &state_value,
+            contract,
+            Some(next_projection.clone()),
+        )
     } else {
         let mut raw = state_value.clone();
         if let Some(obj) = raw.as_object_mut() {
@@ -1210,10 +1261,14 @@ pub async fn update_projection_changes(
         .into_iter()
         .map(|change| (change.path, change.value))
         .collect::<Vec<_>>();
-    let (next_projection, rejected_paths) =
-        card_state_adapter::apply_projection_change_set(&current_projection, &raw_changes, contract);
+    let (next_projection, rejected_paths) = card_state_adapter::apply_projection_change_set(
+        &current_projection,
+        &raw_changes,
+        contract,
+    );
 
-    let next_state = card_state_adapter::build_normalized_state(&state_value, contract, Some(next_projection));
+    let next_state =
+        card_state_adapter::build_normalized_state(&state_value, contract, Some(next_projection));
 
     let max_version: Option<i32> =
         sqlx::query_scalar("SELECT MAX(version) FROM state_snapshots WHERE session_id = ?")
@@ -1275,9 +1330,12 @@ pub async fn read_variables(
     }
 
     let fallback_variables = state_value.get("variables").cloned();
-    let contract =
-        card_state_adapter::load_session_contract(&state.pool, &session_id, fallback_variables.as_ref())
-            .await?;
+    let contract = card_state_adapter::load_session_contract(
+        &state.pool,
+        &session_id,
+        fallback_variables.as_ref(),
+    )
+    .await?;
     if let Some(contract) = contract.as_ref() {
         state_value = card_state_adapter::build_normalized_state(&state_value, contract, None);
     }
@@ -1287,10 +1345,26 @@ pub async fn read_variables(
         .as_deref()
         .map(|value| value.trim().to_lowercase())
         .unwrap_or_else(|| "projection".to_string());
+    let should_fallback_platform_to_projection = contract.as_ref().is_some_and(|contract| {
+        contract.adapter.read_rules.is_empty() && contract.adapter.write_rules.is_empty()
+    });
     let source = match scope.as_str() {
         "canonical" | "platform" | "platform_state" => state_value
             .get("platform_state")
             .cloned()
+            .filter(|value| {
+                !value
+                    .as_object()
+                    .map(|obj| obj.is_empty())
+                    .unwrap_or(false)
+            })
+            .or_else(|| {
+                if should_fallback_platform_to_projection {
+                    state_value.get("variables").cloned()
+                } else {
+                    None
+                }
+            })
             .unwrap_or_else(|| serde_json::json!({})),
         "message" => serde_json::json!({}),
         "projection" | "chat" => state_value
@@ -1467,7 +1541,7 @@ pub async fn get_debug_overview(
            FROM agent_call_debug_snapshots
            WHERE session_id = ?
            GROUP BY turn_number
-           ORDER BY turn_number ASC"#
+           ORDER BY turn_number ASC"#,
     )
     .bind(&session_id)
     .fetch_all(&state.pool)
@@ -1520,7 +1594,7 @@ pub async fn get_debug_turn(
            tool_calls_json, duration_ms, prompt_tokens, completion_tokens, created_at
            FROM agent_call_debug_snapshots
            WHERE session_id = ? AND turn_number = ?
-           ORDER BY COALESCE(level_index, 9999), created_at ASC"#
+           ORDER BY COALESCE(level_index, 9999), created_at ASC"#,
     )
     .bind(&session_id)
     .bind(turn)

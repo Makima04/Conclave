@@ -210,7 +210,7 @@ export interface CharacterCard {
   post_history_instructions: string;
   creator_notes: string;
   mes_example: string;
-  extensions: any;
+  extensions: Record<string, unknown>;
   spec: string;
   conclave_package?: ConclaveCardPackage | null;
   import_report?: ImportReport | null;
@@ -390,32 +390,6 @@ export interface VariableDeclaration {
   source: string;
 }
 
-export type ExtractedSignalKind =
-  | 'variable_path'
-  | 'state_schema_path'
-  | 'action_hint'
-  | 'ui_dependency'
-  | 'runtime_root'
-  | 'unresolved';
-
-export interface ExtractedSignal {
-  id: string;
-  kind: ExtractedSignalKind;
-  path?: string;
-  label?: string;
-  source: string;
-  confidence: number;
-  excerpt?: string;
-  details?: Record<string, unknown> | unknown[];
-}
-
-export interface ExtractionLayers {
-  state_signals: ExtractedSignal[];
-  ui_signals: ExtractedSignal[];
-  action_signals: ExtractedSignal[];
-  unresolved_signals: ExtractedSignal[];
-}
-
 export type StateRootRole =
   | 'world'
   | 'character_collection'
@@ -515,25 +489,16 @@ export interface ApiCompatibilityMapping {
   notes: string;
 }
 
-export interface RawCardSource {
-  character_book?: unknown;
-  first_mes: string;
-  alternate_greetings: string[];
-  extensions: unknown;
-}
-
 export interface ConclaveCardPackage {
   manifest: PackageManifest;
   greetings: Greeting[];
   ui: PackageUi;
   runtime_hints: PackageRuntimeHints;
-  extraction_layers: ExtractionLayers;
   variables: VariableDeclaration[];
   state_schema: CardStateSchema;
   state_adapter: CardStateAdapter;
   actions: ActionDeclaration[];
   compatibility: CompatibilityReport;
-  raw_source: RawCardSource;
 }
 
 export interface ImportReport {

@@ -167,6 +167,34 @@ pub fn apply_agent_changes(
     );
 }
 
+/// Re-project card_variables from the current platform_state after an external
+/// write (e.g. proposal approval) that mutated platform_state without going
+/// through [`apply_agent_changes`].
+///
+/// Runs all write_rules (platform -> card direction) to keep card_variables
+/// in sync, then refreshes the adapter metadata block.
+pub fn reproject_card_variables(state: &mut Value, contract: &SessionStateContract) {
+    ensure_object(state);
+
+    let platform_state = state
+        .get(PLATFORM_ROOT)
+        .cloned()
+        .unwrap_or_else(|| default_platform_state(&contract.schema));
+
+    let base_card_variables = state
+        .get(CARD_VARIABLES_ROOT)
+        .cloned()
+        .unwrap_or_else(|| default_card_variables(&contract.schema));
+
+    let card_variables = project_card_variables(&base_card_variables, &platform_state, contract);
+    set_top_level(state, CARD_VARIABLES_ROOT, card_variables);
+    set_top_level(
+        state,
+        ADAPTER_META_ROOT,
+        adapter_metadata(contract, &platform_state),
+    );
+}
+
 pub async fn persist_normalized_changes_tx(
     tx: &mut Transaction<'_, Sqlite>,
     session_id: &str,
@@ -491,7 +519,7 @@ fn restore_card_value(
         }
         _ => {
             if let Some(Value::Array(existing_arr)) = existing {
-                if existing_arr.len() >= 2 {
+                if !existing_arr.is_empty() {
                     let mut arr = existing_arr.clone();
                     arr[0] = value;
                     return Value::Array(arr);
@@ -504,7 +532,7 @@ fn restore_card_value(
 
 fn primary_value(value: Value) -> Value {
     if let Value::Array(arr) = &value {
-        if arr.len() >= 2 {
+        if arr.len() >= 1 {
             return arr.first().cloned().unwrap_or(Value::Null);
         }
     }

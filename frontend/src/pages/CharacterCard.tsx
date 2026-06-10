@@ -176,7 +176,7 @@ export default function CharacterCardPage() {
       </div>
 
       {/* Extensions */}
-      {card.extensions?.world && (
+      {typeof card.extensions?.world === 'string' && (
         <div className="cc-ext-section">
           <div className="cc-section-label">🌐 关联世界</div>
           <p className="cc-ext-text">{card.extensions.world}</p>

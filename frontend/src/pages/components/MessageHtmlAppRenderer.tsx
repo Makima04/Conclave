@@ -36,6 +36,7 @@ const ALLOWED_ACTIONS = new Set([
   'generate',
   'generateRaw',
   'generateQuietPrompt',
+  'rendered',
 ]);
 
 function runtimeKey(runtime?: SandboxRuntimeContext): string {
@@ -43,6 +44,13 @@ function runtimeKey(runtime?: SandboxRuntimeContext): string {
   const messageId = runtime?.currentMessageId ?? current?.message_id ?? current?.id ?? 'preview';
   const swipeId = current?.swipe_id ?? 0;
   return `${messageId}:${swipeId}`;
+}
+
+/** Derive a CSS-safe scope class from the message ID for style isolation. */
+function messageScopeSelector(runtime?: SandboxRuntimeContext): string {
+  const current = runtime?.currentMessage;
+  const messageId = runtime?.currentMessageId ?? current?.message_id ?? current?.id ?? 'preview';
+  return `.sandbox-msg-${String(messageId).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
 }
 
 export function MessageHtmlAppRenderer({
@@ -53,9 +61,10 @@ export function MessageHtmlAppRenderer({
 }: MessageHtmlAppRendererProps) {
   const html = String(card.conclave_package?.ui?.html || '').trim();
   const mountKey = `${card.id}:${runtimeKey(runtime)}`;
+  const scopeSelector = messageScopeSelector(runtime);
   const documentHtml = useMemo(
-    () => buildSandboxDocument(html, variables || {}, runtime),
-    [html, variables, mountKey, runtime?.sessionId],
+    () => buildSandboxDocument(html, variables || {}, runtime, scopeSelector),
+    [html, mountKey, runtime?.sessionId],
   );
 
   if (!html) return null;

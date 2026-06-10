@@ -56,6 +56,14 @@ pub struct RegexScript {
     pub markdown_only: bool,
     pub min_depth: Option<i32>,
     pub max_depth: Option<i32>,
+    #[serde(default)]
+    pub placement: Option<Vec<i32>>,
+    #[serde(default)]
+    pub trim_strings: Option<Vec<String>>,
+    #[serde(default)]
+    pub substitute_regex: Option<serde_json::Value>,
+    #[serde(default)]
+    pub run_on_edit: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

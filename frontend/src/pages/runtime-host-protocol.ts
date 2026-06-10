@@ -26,3 +26,11 @@ export function buildRuntimeResponsePayload(
     error: error ? String(error) : null,
   };
 }
+
+export function buildRenderedActionPayload() {
+  return {
+    type: 'card-sandbox-action' as const,
+    action: 'rendered' as const,
+    payload: { at: Date.now() },
+  };
+}

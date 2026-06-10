@@ -14,6 +14,7 @@ import {
   stRegexPlacement,
   type RegexScript,
 } from './st-regex-executor';
+import { encodeStyleTags } from './sandbox-style-isolation';
 
 // --- GROUP 6: Character card inspection functions ---
 
@@ -49,7 +50,7 @@ export function getRegexScripts(card: CharacterCard | null): any[] {
 }
 
 export function getTavernHelperScripts(card: CharacterCard | null): Array<{ name: string; content: string }> {
-  const scripts = card?.extensions?.tavern_helper?.scripts;
+  const scripts = (card?.extensions as Record<string, any> | undefined)?.tavern_helper?.scripts;
   if (!Array.isArray(scripts)) return [];
   return scripts.flatMap((script: any) => {
     const disabled = script?.disabled === true || script?.enabled === false;
@@ -103,7 +104,10 @@ export function getSandboxHtmlForContent(card: CharacterCard | null, content: st
 }
 
 export function sanitizeSandboxHtml(source: string, options: { allowScripts?: boolean } = {}): string {
-  const base = source
+  // Encode style tags early so they survive further sanitization and can be
+  // decoded + scoped when building the sandbox iframe document.
+  const encoded = encodeStyleTags(source);
+  const base = encoded
     .replace(/(href|src)\s*=\s*["']javascript:/gi, '$1="javascript:void(0);')
     .replace(/<link\b[^>]*href=["'][^"']*code\.jquery[^"']*["'][^>]*>/gi, '');
   const withoutDangerousAttrs = options.allowScripts
@@ -117,6 +121,8 @@ export function sanitizeSandboxHtml(source: string, options: { allowScripts?: bo
 
 export function sanitizeHtmlFragment(source: string): string {
   return sanitizeSandboxHtml(source)
+    .replace(/<style\b[\s\S]*?<\/style>/gi, '')
+    .replace(/<custom-style\b[\s\S]*?<\/custom-style>/gi, '')
     .replace(/<iframe\b[\s\S]*?<\/iframe>/gi, '')
     .replace(/<object\b[\s\S]*?<\/object>/gi, '')
     .replace(/<embed\b[\s\S]*?>/gi, '');

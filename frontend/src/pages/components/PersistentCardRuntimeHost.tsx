@@ -38,6 +38,7 @@ const ALLOWED_ACTIONS = new Set([
   'generate',
   'generateRaw',
   'generateQuietPrompt',
+  'rendered',
 ]);
 
 export function PersistentCardRuntimeHost({
@@ -49,8 +50,9 @@ export function PersistentCardRuntimeHost({
   onAction,
 }: PersistentCardRuntimeHostProps) {
   const mountKey = `${cardId}:${sessionId}:${manifest.scriptName}`;
+  const scopeSelector = `.sandbox-persist-${String(cardId).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
   const documentHtml = useMemo(
-    () => buildSandboxDocument(manifest.bootHtml, variables || {}, runtime),
+    () => buildSandboxDocument(manifest.bootHtml, variables || {}, runtime, scopeSelector),
     [manifest.bootHtml, variables, mountKey, runtime],
   );
 

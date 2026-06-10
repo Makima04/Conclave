@@ -33,6 +33,7 @@ export function IframeHtmlRuntimeHost({
   const [height, setHeight] = useState(520);
   const [viewportMaxHeight, setViewportMaxHeight] = useState(FALLBACK_MAX_IFRAME_HEIGHT);
   const [loaded, setLoaded] = useState(false);
+  const [isRendered, setIsRendered] = useState(false);
   const calculateViewportMaxHeight = useCallback(() => {
     const iframe = iframeRef.current;
     const viewportHeight = window.visualViewport?.height || window.innerHeight || 0;
@@ -57,6 +58,7 @@ export function IframeHtmlRuntimeHost({
 
   useEffect(() => {
     setLoaded(false);
+    setIsRendered(false);
   }, [documentHtml]);
 
   useEffect(() => {
@@ -101,6 +103,9 @@ export function IframeHtmlRuntimeHost({
         return;
       }
       if (data?.type !== 'card-sandbox-action' || typeof data.action !== 'string') return;
+      if (data.action === 'rendered') {
+        setIsRendered(true);
+      }
       if (allowedActions && !allowedActions.has(data.action)) return;
       if (data.action === 'runtimeError') {
         console.error('[Iframe Card Runtime Error]', data.payload?.message, data.payload);
@@ -143,7 +148,7 @@ export function IframeHtmlRuntimeHost({
   return (
     <iframe
       ref={iframeRef}
-      className={className}
+      className={`${className}${isRendered ? ' sandbox-rendered' : ''}`}
       srcDoc={documentHtml}
       sandbox="allow-scripts allow-same-origin"
       style={{

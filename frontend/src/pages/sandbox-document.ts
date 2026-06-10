@@ -2,6 +2,7 @@
 // Extracted from Chat.tsx GROUP 10
 
 import { serializeSandboxData } from './card-content';
+import { decodeStyleTags } from './sandbox-style-isolation';
 import type {
   SandboxRuntimeContext,
 } from './sandbox-runtime-types';
@@ -52,7 +53,7 @@ function escapeHtmlAttribute(source: string): string {
     .replace(/>/g, '&gt;');
 }
 
-export function buildTavernHelperDocument(scripts: TavernHelperScript[], variables: any, runtime: SandboxRuntimeContext = {}): string {
+export function buildTavernHelperDocument(scripts: TavernHelperScript[], variables: any, runtime: SandboxRuntimeContext = {}, scopeSelector?: string): string {
   const body = scripts
     .map((script, index) => {
       const name = script.name || `TavernHelper Script ${index + 1}`;
@@ -63,11 +64,16 @@ export function buildTavernHelperDocument(scripts: TavernHelperScript[], variabl
     `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>${body}</body></html>`,
     variables,
     runtime,
+    scopeSelector,
   );
 }
 
-export function buildSandboxDocument(innerHtml: string, variables: any, runtime: SandboxRuntimeContext = {}): string {
-  const body = normalizeSandboxHtml(innerHtml);
+export function buildSandboxDocument(innerHtml: string, variables: any, runtime: SandboxRuntimeContext = {}, scopeSelector?: string): string {
+  let body = normalizeSandboxHtml(innerHtml);
+  // Decode encoded style tags and scope CSS selectors to prevent global leakage
+  if (scopeSelector) {
+    body = decodeStyleTags(body, scopeSelector);
+  }
   const variablesJson = serializeSandboxData(variables);
   const runtimeJson = serializeSandboxData(runtime);
 
@@ -694,6 +700,11 @@ ${SANDBOX_INPUT_RUNTIME_SOURCE}
     __emitMany(['CHAT_CHANGED', window.event_types.CHAT_CHANGED]);
     __emitMany(['MESSAGE_SWIPED', window.event_types.MESSAGE_SWIPED]);
   });
+
+  // Notify the host that the sandbox content is rendered and visible
+  setTimeout(() => {
+    post({ type: 'card-sandbox-action', action: 'rendered', payload: { at: Date.now() } });
+  }, 100);
 })();
 </script>`;
 

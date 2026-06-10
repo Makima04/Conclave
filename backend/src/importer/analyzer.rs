@@ -536,6 +536,14 @@ fn extract_regex_scripts(card: &ExternalCard) -> Vec<RegexScript> {
                     .unwrap_or(false),
                 min_depth: s.get("minDepth").and_then(|v| v.as_i64()).map(|v| v as i32),
                 max_depth: s.get("maxDepth").and_then(|v| v.as_i64()).map(|v| v as i32),
+                placement: s.get("placement").and_then(|v| v.as_array()).map(|arr| {
+                    arr.iter().filter_map(|v| v.as_i64().map(|n| n as i32)).collect()
+                }),
+                trim_strings: s.get("trimStrings").and_then(|v| v.as_array()).map(|arr| {
+                    arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
+                }),
+                substitute_regex: s.get("substituteRegex").cloned(),
+                run_on_edit: s.get("runOnEdit").and_then(|v| v.as_bool()),
             })
         })
         .collect()

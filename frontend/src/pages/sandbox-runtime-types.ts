@@ -46,4 +46,6 @@ export interface SandboxRuntimeContext {
   variableContract?: SandboxVariableContract | null;
   platformState?: Record<string, unknown> | null;
   writableState?: Record<string, unknown> | null;
+  rendered?: boolean;
 }
+

@@ -1,7 +1,7 @@
 // Direct HTML renderer for SillyTavern regex UI.
 // Extracted from Chat.tsx GROUP 23
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import type { SandboxCardAction } from '../card-schema-types';
 import { buildSandboxDocument } from '../sandbox-document';
 import type { SandboxRuntimeContext } from '../sandbox-runtime-types';
@@ -31,10 +31,14 @@ const ALLOWED_ACTIONS = new Set([
   'generate',
   'generateRaw',
   'generateQuietPrompt',
+  'rendered',
 ]);
 
+let sandboxRendererCounter = 0;
+
 export function SandboxHtmlRenderer({ html, variables, runtime, onAction }: { html: string; variables: any; runtime?: SandboxRuntimeContext; onAction?: (action: SandboxCardAction) => void }) {
-  const documentHtml = useMemo(() => buildSandboxDocument(html, variables || {}, runtime), [html, variables, runtime]);
+  const scopeRef = useRef(`.sandbox-render-${++sandboxRendererCounter}`);
+  const documentHtml = useMemo(() => buildSandboxDocument(html, variables || {}, runtime, scopeRef.current), [html, variables, runtime]);
 
   return (
     <DirectHtmlRuntimeHost

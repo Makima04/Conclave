@@ -6,16 +6,29 @@ use regex::{NoExpand, Regex};
 /// Execute all non-disabled regex_scripts against content.
 ///
 /// Mirrors the TypeScript `executeStRegexScripts` semantics exactly:
-/// 1. Filter scripts (disabled, prompt_only, markdown_only)
-/// 2. For each script: parse findRegex, strip code fences from replaceString,
-///    substitute macros, test and replace
-/// 3. Return output with diagnostics
+/// 1. Filter scripts (disabled, prompt_only, markdown_only, placement)
+/// 2. For each script: parse findRegex (respecting substitute_regex mode),
+///    strip code fences from replaceString, substitute macros, test and replace
+/// 3. Apply trim_strings to matched output
+/// 4. Return output with diagnostics
 pub fn execute_regex_scripts(
     scripts: &[RegexScript],
     content: &str,
     options: &RegexOptions,
     is_prompt_mode: bool,
     is_markdown_mode: bool,
+) -> RegexExecutionResult {
+    execute_regex_scripts_with_placement(scripts, content, options, is_prompt_mode, is_markdown_mode, None)
+}
+
+/// Extended version that accepts an explicit placement index for filtering.
+pub fn execute_regex_scripts_with_placement(
+    scripts: &[RegexScript],
+    content: &str,
+    options: &RegexOptions,
+    is_prompt_mode: bool,
+    is_markdown_mode: bool,
+    placement: Option<i32>,
 ) -> RegexExecutionResult {
     let mut diagnostics = Vec::new();
     let mut scripts_used = Vec::new();
@@ -52,9 +65,15 @@ pub fn execute_regex_scripts(
         if script.find_regex.is_empty() || script.replace_string.is_empty() {
             continue;
         }
+        // Filter by placement if both script and caller specify it
+        if let (Some(script_placements), Some(p)) = (&script.placement, placement) {
+            if !script_placements.contains(&p) {
+                continue;
+            }
+        }
 
-        // Parse findRegex into a compiled regex
-        let regex = match parse_find_regex(&script.find_regex) {
+        // Parse findRegex into a compiled regex, respecting substitute_regex mode
+        let regex = match parse_find_regex_with_mode(&script.find_regex, script.substitute_regex.as_ref()) {
             Some(r) => r,
             None => {
                 diagnostics.push(RegexDiagnostic {
@@ -84,6 +103,8 @@ pub fn execute_regex_scripts(
                     .replace_all(&output, NoExpand(macroed.as_str()))
                     .into_owned()
             };
+            // Apply trim_strings to the output after replacement
+            output = apply_trim_strings(&output, script.trim_strings.as_deref(), user_name, char_name);
         } else if is_complex_html(&macroed) {
             diagnostics.push(RegexDiagnostic {
                 level: DiagnosticLevel::Info,
@@ -174,6 +195,57 @@ pub fn parse_find_regex(find_regex: &str) -> Option<Regex> {
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────
+
+/// Parse findRegex respecting the substitute_regex mode.
+///
+/// - `None` / `Some(0)` / `Some("0")` → normal regex parsing
+/// - `Some(1)` / `Some("1")` → string literal mode (escape all regex metacharacters)
+/// - `Some(2)` / `Some("2")` → disabled (returns None to skip the script)
+fn parse_find_regex_with_mode(find_regex: &str, substitute_mode: Option<&serde_json::Value>) -> Option<Regex> {
+    let mode = match substitute_mode {
+        Some(serde_json::Value::Number(n)) => n.as_i64().unwrap_or(0),
+        Some(serde_json::Value::String(s)) => s.parse::<i64>().unwrap_or(0),
+        _ => 0,
+    };
+
+    match mode {
+        // Normal regex mode
+        0 => parse_find_regex(find_regex),
+        // String literal mode: escape the entire pattern
+        1 => {
+            let escaped = regex::escape(find_regex);
+            Regex::new(&escaped).ok()
+        }
+        // Disabled
+        2 => None,
+        // Default to normal regex
+        _ => parse_find_regex(find_regex),
+    }
+}
+
+/// Apply trim_strings to the output: for each trim string, substitute macros
+/// then remove all occurrences from the output.
+fn apply_trim_strings(
+    output: &str,
+    trim_strings: Option<&[String]>,
+    user_name: &str,
+    char_name: &str,
+) -> String {
+    let strings = match trim_strings {
+        Some(s) if !s.is_empty() => s,
+        _ => return output.to_string(),
+    };
+
+    let mut result = output.to_string();
+    for trim_str in strings {
+        if trim_str.is_empty() {
+            continue;
+        }
+        let substituted = substitute_macros(trim_str, user_name, char_name);
+        result = result.replace(&substituted, "");
+    }
+    result
+}
 
 /// Strip markdown code fences from a string.
 /// Handles ```html ... ``` and plain ``` ... ```.

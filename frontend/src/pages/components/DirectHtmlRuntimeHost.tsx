@@ -42,6 +42,7 @@ export function DirectHtmlRuntimeHost({
 }: DirectHtmlRuntimeHostProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [mounted, setMounted] = useState(false);
+  const [isRendered, setIsRendered] = useState(false);
   const eventNamesRef = useRef({
     message: `xrp-direct-runtime-message-${Math.random().toString(36).slice(2)}`,
     update: `xrp-direct-runtime-update-${Math.random().toString(36).slice(2)}`,
@@ -57,6 +58,9 @@ export function DirectHtmlRuntimeHost({
         return;
       }
       if (detail?.type !== 'card-sandbox-action' || typeof detail.action !== 'string') return;
+      if (detail.action === 'rendered') {
+        setIsRendered(true);
+      }
       if (allowedActions && !allowedActions.has(detail.action)) return;
       if (detail.action === 'runtimeError') {
         console.error('[Direct Card Runtime Error]', detail.payload?.message, detail.payload);
@@ -93,6 +97,7 @@ export function DirectHtmlRuntimeHost({
     const host = hostRef.current;
     if (!host) return undefined;
     setMounted(false);
+    setIsRendered(false);
     host.innerHTML = '';
 
     const parser = new DOMParser();
@@ -161,5 +166,5 @@ export function DirectHtmlRuntimeHost({
     }));
   }, [mounted, runtime, variables]);
 
-  return <div ref={hostRef} className={className} />;
+  return <div ref={hostRef} className={`${className}${isRendered ? ' sandbox-rendered' : ''}`} />;
 }

@@ -114,7 +114,7 @@ fn classify_variable(var: &VariableDeclaration) -> StateFieldDeclaration {
 }
 
 fn classify_field_role(path: &str, lower: &str) -> (StateFieldRole, Option<String>, f64) {
-    if contains_any(
+    if segment_contains_any(
         lower,
         &["currenttime", "current_time", "time", "日期", "时间"],
     ) {
@@ -124,7 +124,7 @@ fn classify_field_role(path: &str, lower: &str) -> (StateFieldRole, Option<Strin
             0.78,
         );
     }
-    if contains_any(
+    if segment_contains_any(
         lower,
         &[
             "currentlocation",
@@ -140,51 +140,55 @@ fn classify_field_role(path: &str, lower: &str) -> (StateFieldRole, Option<Strin
             0.78,
         );
     }
-    if contains_any(lower, &["affinity", "好感", "好感度", "trust", "信任"]) {
+    if segment_contains_any(lower, &["affinity", "好感", "好感度", "trust", "信任"]) {
         return (
             StateFieldRole::RelationshipScore,
             Some(collection_platform_path(path, "relationships", "score")),
             0.7,
         );
     }
-    if contains_any(lower, &["stage", "阶段", "关系阶段"]) {
+    if segment_contains_any(lower, &["stage", "阶段", "关系阶段"]) {
         return (
             StateFieldRole::RelationshipStage,
             Some(collection_platform_path(path, "relationships", "stage")),
             0.64,
         );
     }
-    if contains_any(lower, &["inventory", "item", "bag", "背包", "物品"]) {
+    if segment_contains_any(lower, &["inventory", "item", "bag", "背包", "物品"]) {
         return (
             StateFieldRole::InventoryItem,
             Some(collection_platform_path(path, "inventory", "items")),
             0.64,
         );
     }
-    if contains_any(lower, &["summary", "summaries", "摘要", "总结"]) {
+    if segment_contains_any(lower, &["summary", "summaries", "摘要", "总结"]) {
         return (
             StateFieldRole::SummaryEntry,
             Some(collection_platform_path(path, "summaries", "entries")),
             0.66,
         );
     }
-    if contains_any(lower, &["memory", "memories", "记忆", "事件"]) {
+    if segment_contains_any(lower, &["memory", "memories", "记忆", "事件"]) {
         return (
             StateFieldRole::MemoryEntry,
             Some(collection_platform_path(path, "memories", "entries")),
             0.62,
         );
     }
-    if contains_any(lower, &["name", "姓名", "名字"]) {
+    if segment_contains_any(lower, &["name", "姓名", "名字"]) {
         return (
             StateFieldRole::CharacterName,
             Some(collection_platform_path(path, "characters", "name")),
             0.58,
         );
     }
-    if contains_any(
+    // UIFlag is a catch-all: checked last so more specific roles take precedence.
+    // Only "runtime", "panel", "tab", "focused", "draft" are matched as segment
+    // substrings; "ui" requires a standalone segment to avoid false positives.
+    if segment_contains_any_strict_ui(
         lower,
-        &["runtime", "ui", "panel", "tab", "focused", "draft"],
+        &["runtime", "panel", "tab", "focused", "draft"],
+        &["ui"],
     ) {
         return (StateFieldRole::UiFlag, None, 0.62);
     }
@@ -309,6 +313,39 @@ fn sanitize_segment(segment: &str) -> String {
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
+}
+
+/// Segment-aware keyword matching: splits the path into segments by `.` and `[]`
+/// delimiters, then checks if any keyword appears within an individual segment.
+/// This prevents false positives where a keyword spans segment boundaries
+/// (e.g., "time" matching inside "timeout" within a "ui.timeout" path).
+fn segment_contains_any(lower_path: &str, keywords: &[&str]) -> bool {
+    let segments: Vec<&str> = lower_path
+        .split(|c: char| c == '.' || c == '[' || c == ']')
+        .filter(|s| !s.is_empty())
+        .collect();
+    segments
+        .iter()
+        .any(|seg| keywords.iter().any(|kw| seg.contains(kw)))
+}
+
+/// Like segment_contains_any but with stricter matching for certain keywords.
+/// `substring_keywords` are matched as substrings within segments (normal behavior).
+/// `exact_keywords` require an exact segment match (e.g., "ui" must be the entire
+/// segment, not a substring of "build" or "quiet").
+fn segment_contains_any_strict_ui(
+    lower_path: &str,
+    substring_keywords: &[&str],
+    exact_keywords: &[&str],
+) -> bool {
+    let segments: Vec<&str> = lower_path
+        .split(|c: char| c == '.' || c == '[' || c == ']')
+        .filter(|s| !s.is_empty())
+        .collect();
+    segments.iter().any(|seg| {
+        substring_keywords.iter().any(|kw| seg.contains(kw))
+            || exact_keywords.iter().any(|kw| *seg == *kw)
+    })
 }
 
 #[cfg(test)]

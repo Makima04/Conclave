@@ -274,16 +274,18 @@ sessionState (React Hook)
 
 ### P2 — 中期增强（1-2 周，接近 ST 兼容度）
 
+> **状态**: ✅ 全部完成 (2026-06-10)
+
 | 序号 | 任务 | 说明 |
 |------|------|------|
-| **P2-1** | 实现 Chevrotain 宏解析器子集（`{{if}}` 条件、嵌套宏、`{{$var}}` 变量简写） | 参考 ST 新引擎 |
-| **P2-2** | Style 标签作用域隔离 | 参考 ST 的 `encodeStyleTags` + `.mes_text` 前缀方案 |
-| **P2-3** | 渲染后事件钩子 | 沙箱内 `MESSAGE_RENDERED` 等事件，供卡片脚本感知渲染完成 |
-| **P2-4** | `approve_proposal` 通过 state_adapter 重新归一化 | 修复提案审批后变量不一致 |
-| **P2-5** | `primary_value` / `restore_card_value` 单元素数组对称处理 | 修复读写不对称 |
-| **P2-6** | 后端 `RegexScript` 补齐 `placement`/`trimStrings`/`substituteRegex` 字段 | 前后端行为完全对齐 |
-| **P2-7** | `extensions` 类型从 `any` 改为具体接口 | 编译时类型安全 |
-| **P2-8** | `state_adapter` 关键词分类改用精确匹配 + 权重排序 | 减少变量误分类 |
+| **P2-1** | 实现 Chevrotain 宏解析器子集（`{{if}}` 条件、嵌套宏、`{{$var}}` 变量简写） | ⚠️ 部分完成 — lexer/parser 已创建，walker/集成进行中 |
+| **P2-2** | Style 标签作用域隔离 | ✅ 参考 ST 的 `encodeStyleTags` + `.mes_text` 前缀方案 |
+| **P2-3** | 渲染后事件钩子 | ✅ 沙箱内 `MESSAGE_RENDERED` 等事件，供卡片脚本感知渲染完成 |
+| **P2-4** | `approve_proposal` 通过 state_adapter 重新归一化 | ✅ 修复提案审批后变量不一致 |
+| **P2-5** | `primary_value` / `restore_card_value` 单元素数组对称处理 | ✅ 修复读写不对称 |
+| **P2-6** | 后端 `RegexScript` 补齐 `placement`/`trimStrings`/`substituteRegex` 字段 | ✅ 前后端行为完全对齐 |
+| **P2-7** | `extensions` 类型从 `any` 改为具体接口 | ✅ 编译时类型安全 |
+| **P2-8** | `state_adapter` 关键词分类改用精确匹配 + 权重排序 | ✅ 减少变量误分类 |
 
 **预期效果**：接近 SillyTavern 的卡片兼容度，支持高级宏语法，变量系统完全可靠。
 

@@ -162,17 +162,8 @@ ${SANDBOX_HOST_BRIDGE_SOURCE}
       body?.clientHeight,
       viewportHeight,
     ];
-    const sampledElements = body ? [
-      body.firstElementChild,
-      document.getElementById('app'),
-      document.querySelector('[data-xrp-root]'),
-      document.querySelector('.view-container'),
-      document.querySelector('.cx-launcher'),
-      document.querySelector('.phone-shell'),
-      document.querySelector('.memory-phone-scroll'),
-      document.querySelector('[data-action="open-phone"]'),
-    ].filter(Boolean) : [];
-    for (const element of sampledElements) {
+    const elements = body ? Array.from(body.querySelectorAll('*')) : [];
+    for (const element of elements) {
       const style = window.getComputedStyle(element);
       if (style.display === 'none' || style.visibility === 'hidden') continue;
       const rect = element.getBoundingClientRect();
@@ -201,36 +192,16 @@ ${SANDBOX_HOST_BRIDGE_SOURCE}
   const runtimeSessionId = initialRuntimeContext.sessionId ? String(initialRuntimeContext.sessionId) : '';
   let runtimeProjectionVariables = initialRuntimeVariables;
   let runtimeContext = initialRuntimeContext;
-  let runtimePlatformState = initialRuntimeContext.platformState && typeof initialRuntimeContext.platformState === 'object'
-    ? initialRuntimeContext.platformState
-    : {};
-  let runtimeWritableState = initialRuntimeContext.writableState && typeof initialRuntimeContext.writableState === 'object'
-    ? initialRuntimeContext.writableState
-    : {};
   let runtimeSubmission = runtimeContext.submission && typeof runtimeContext.submission === 'object'
     ? runtimeContext.submission
     : { status: 'idle' };
 ${SANDBOX_STORAGE_RUNTIME_SOURCE}
-  const isRuntimeObject = (value) => value && typeof value === 'object' && !Array.isArray(value);
-  const hasRuntimeObjectContent = (value) => isRuntimeObject(value) && Object.keys(value).length > 0;
-  const selectRuntimeVariables = (...values) => {
-    const nonEmpty = values.find(hasRuntimeObjectContent);
-    if (nonEmpty) return nonEmpty;
-    return values.find(isRuntimeObject) || {};
-  };
   const normalizeMessage = (message, index) => {
     const source = message && typeof message === 'object' ? message : {};
     const fallbackId = index + 1;
     const id = source.id ?? source.message_id ?? fallbackId;
     const text = source.message ?? source.content ?? '';
     const data = source.data && typeof source.data === 'object' ? source.data : {};
-    const messageVariables = selectRuntimeVariables(
-      source.variables,
-      data.variables,
-      data.stat_data,
-      data.display_data,
-      runtimeProjectionVariables,
-    );
     return {
       ...source,
       id,
@@ -243,14 +214,12 @@ ${SANDBOX_STORAGE_RUNTIME_SOURCE}
       is_user: Boolean(source.is_user ?? source.role === 'user'),
       is_system: Boolean(source.is_system ?? source.role === 'system'),
       data: {
+        stat_data: runtimeProjectionVariables,
+        display_data: runtimeProjectionVariables,
+        variables: runtimeProjectionVariables,
         ...data,
-        stat_data: selectRuntimeVariables(data.stat_data, messageVariables, runtimeProjectionVariables),
-        display_data: selectRuntimeVariables(data.display_data, data.stat_data, messageVariables, runtimeProjectionVariables),
-        variables: selectRuntimeVariables(data.variables, messageVariables, runtimeProjectionVariables),
-        platform_state: data.platform_state && typeof data.platform_state === 'object' ? data.platform_state : runtimePlatformState,
-        writable_state: data.writable_state && typeof data.writable_state === 'object' ? data.writable_state : runtimeWritableState,
       },
-      variables: messageVariables,
+      variables: source.variables && typeof source.variables === 'object' ? source.variables : runtimeProjectionVariables,
     };
   };
   let runtimeMessages = [];
@@ -272,12 +241,6 @@ ${SANDBOX_STORAGE_RUNTIME_SOURCE}
   const refreshRuntimeSnapshot = (nextContext, nextVariables) => {
     if (nextVariables && typeof nextVariables === 'object') runtimeProjectionVariables = nextVariables;
     if (nextContext && typeof nextContext === 'object') runtimeContext = nextContext;
-    runtimePlatformState = runtimeContext.platformState && typeof runtimeContext.platformState === 'object'
-      ? runtimeContext.platformState
-      : runtimePlatformState || {};
-    runtimeWritableState = runtimeContext.writableState && typeof runtimeContext.writableState === 'object'
-      ? runtimeContext.writableState
-      : runtimeWritableState || {};
     sharedSaves = Array.isArray(runtimeContext.sharedSaves) ? runtimeContext.sharedSaves : [];
     rebuildSharedSaveCaches();
     seedSharedSaveLocalStorage();
@@ -303,23 +266,12 @@ ${SANDBOX_STORAGE_RUNTIME_SOURCE}
     window.__XRPRuntime = {
       variables: runtimeProjectionVariables,
       projection: runtimeProjectionVariables,
-      platformState: runtimePlatformState,
-      writableState: runtimeWritableState,
       messages: runtimeMessages,
       currentMessage: runtimeMessage,
       submission: runtimeSubmission,
     };
     window.__XRPVariables = runtimeProjectionVariables;
   };
-  const currentMvuPayload = () => ({
-    stat_data: runtimeProjectionVariables,
-    display_data: runtimeProjectionVariables,
-    variables: runtimeProjectionVariables,
-    platform_state: runtimePlatformState,
-    writable_state: runtimeWritableState,
-    message_id: runtimeMessage?.message_id ?? runtimeMessage?.id ?? null,
-    swipe_id: runtimeMessage?.swipe_id ?? 0,
-  });
   refreshRuntimeSnapshot(runtimeContext, runtimeProjectionVariables);
   const cloneJsonString = (value) => {
     try { return JSON.parse(value); } catch { return null; }
@@ -470,7 +422,6 @@ ${SANDBOX_QUIET_RUNTIME_SOURCE}
   const applyRuntimeUpdate = (data = {}) => {
     if (data?.type !== 'xrp-runtime-update') return;
     refreshRuntimeSnapshot(data.runtime || {}, data.variables || {});
-    __emitEvent('VARIABLE_UPDATE_ENDED', currentMvuPayload(), currentMvuPayload());
     __emitMany(['CHAT_CHANGED', window.event_types.CHAT_CHANGED]);
     __emitMany(['MESSAGE_UPDATED', window.event_types.MESSAGE_UPDATED]);
     __emitMany([window.event_types.MESSAGE_RECEIVED, window.event_types.CHARACTER_MESSAGE_RENDERED], window.getLastMessageId(), 'normal');
@@ -504,9 +455,8 @@ ${SANDBOX_VARIABLE_RUNTIME_SOURCE}
     return cloneJsonString(runtimeMessagesByIdJson.get(String(id)) || runtimeMessageJson) || cloneJson(runtimeMessage);
   };
   exposeGlobal('getChatMessage', getChatMessage);
-  const getVariables = (option = { type: 'projection' }) => withVariableAliases(getVariableStore(option));
+  const getVariables = (option = { type: 'projection' }) => cloneJson(getVariableStore(option));
   exposeGlobal('getVariables', getVariables);
-  exposeGlobal('getvar', getvar);
   exposeGlobal('getProjectionVariables', () => cloneJson(getVariableStore({ type: 'projection' })));
   exposeGlobal('getLocalVariables', () => cloneJson(getVariableStore({ type: 'local' })));
   exposeGlobal('readVariables', readBridgeVariables);
@@ -515,7 +465,6 @@ ${SANDBOX_VARIABLE_RUNTIME_SOURCE}
   window.__XRPVariables = runtimeProjectionVariables;
   exposeGlobal('replaceVariables', replaceVariables);
   exposeGlobal('setVariables', replaceVariables);
-  exposeGlobal('setvar', setvar);
   exposeGlobal('setProjectionVariables', (variables) => setVariableStore(cloneJson(variables), { type: 'projection' }));
   exposeGlobal('setLocalVariables', (variables) => setVariableStore(cloneJson(variables), { type: 'local' }));
   exposeGlobal('updateVariablesWith', updateVariablesWith);
@@ -599,23 +548,10 @@ ${SANDBOX_VARIABLE_RUNTIME_SOURCE}
       type: 'message',
     });
     const data = message?.data && typeof message.data === 'object' ? message.data : {};
-    const nonEmptyObject = (value) => (
-      value
-      && typeof value === 'object'
-      && !Array.isArray(value)
-      && Object.keys(value).length > 0
-    ) ? value : null;
-    const statData = nonEmptyObject(data.stat_data) || nonEmptyObject(messageVariables) || runtimeProjectionVariables || {};
-    const displayData = nonEmptyObject(data.display_data) || statData;
-    const variables = nonEmptyObject(data.variables) || statData;
-    const platformState = nonEmptyObject(data.platform_state) || runtimePlatformState || {};
-    const writableState = nonEmptyObject(data.writable_state) || runtimeWritableState || {};
     return cloneJson({
-      stat_data: statData,
-      display_data: displayData,
-      variables,
-      platform_state: platformState,
-      writable_state: writableState,
+      stat_data: data.stat_data || messageVariables,
+      display_data: data.display_data || data.stat_data || messageVariables,
+      variables: data.variables || messageVariables,
       message_id: message?.message_id ?? message?.id,
       swipe_id: message?.swipe_id ?? 0,
     });
@@ -696,15 +632,10 @@ ${SANDBOX_INPUT_RUNTIME_SOURCE}
   requestAnimationFrame(() => {
     __emitMany(['APP_READY', window.event_types.APP_READY]);
     __emitEvent('GLOBAL_INITIALIZED');
-    __emitEvent('VARIABLE_UPDATE_ENDED', currentMvuPayload(), currentMvuPayload());
+    __emitEvent('VARIABLE_UPDATE_ENDED');
     __emitMany(['CHAT_CHANGED', window.event_types.CHAT_CHANGED]);
     __emitMany(['MESSAGE_SWIPED', window.event_types.MESSAGE_SWIPED]);
   });
-
-  // Notify the host that the sandbox content is rendered and visible
-  setTimeout(() => {
-    post({ type: 'card-sandbox-action', action: 'rendered', payload: { at: Date.now() } });
-  }, 100);
 })();
 </script>`;
 

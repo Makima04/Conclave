@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { SandboxCardAction } from '../card-schema-types';
 import type { SandboxRuntimeContext } from '../sandbox-runtime-types';
 import {
@@ -7,8 +7,7 @@ import {
 } from '../runtime-host-protocol';
 
 const MIN_IFRAME_HEIGHT = 360;
-const FALLBACK_MAX_IFRAME_HEIGHT = 860;
-const BOTTOM_GUTTER = 24;
+const MAX_MESSAGE_IFRAME_HEIGHT = 720;
 
 interface IframeHtmlRuntimeHostProps {
   documentHtml: string;
@@ -16,7 +15,6 @@ interface IframeHtmlRuntimeHostProps {
   runtime?: SandboxRuntimeContext;
   variables?: Record<string, unknown>;
   allowedActions?: Set<string>;
-  fillAvailableHeight?: boolean;
   onAction?: (action: SandboxCardAction) => void | Promise<unknown>;
 }
 
@@ -26,35 +24,13 @@ export function IframeHtmlRuntimeHost({
   runtime,
   variables,
   allowedActions,
-  fillAvailableHeight = false,
   onAction,
 }: IframeHtmlRuntimeHostProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(520);
-  const [viewportMaxHeight, setViewportMaxHeight] = useState(FALLBACK_MAX_IFRAME_HEIGHT);
+  const [viewportFitHeight, setViewportFitHeight] = useState(MIN_IFRAME_HEIGHT);
   const [loaded, setLoaded] = useState(false);
   const [isRendered, setIsRendered] = useState(false);
-  const calculateViewportMaxHeight = useCallback(() => {
-    const iframe = iframeRef.current;
-    const viewportHeight = window.visualViewport?.height || window.innerHeight || 0;
-    if (!iframe || !Number.isFinite(viewportHeight) || viewportHeight <= 0) {
-      return FALLBACK_MAX_IFRAME_HEIGHT;
-    }
-    const rect = iframe.getBoundingClientRect();
-    const available = viewportHeight - Math.max(0, rect.top) - BOTTOM_GUTTER;
-    return Math.max(MIN_IFRAME_HEIGHT, Math.floor(available));
-  }, []);
-  const publishViewportMaxHeight = useCallback((maxHeight: number) => {
-    const iframe = iframeRef.current;
-    if (!iframe || !Number.isFinite(maxHeight)) return;
-    const value = `${Math.max(MIN_IFRAME_HEIGHT, Math.floor(maxHeight))}px`;
-    iframe.parentElement?.style.setProperty('--xrp-frame-max-height', value);
-  }, []);
-  const clampFrameHeight = useCallback((next: number) => {
-    if (!Number.isFinite(next)) return MIN_IFRAME_HEIGHT;
-    const maxHeight = calculateViewportMaxHeight();
-    return Math.max(MIN_IFRAME_HEIGHT, Math.min(maxHeight, Math.ceil(next)));
-  }, [calculateViewportMaxHeight]);
 
   useEffect(() => {
     setLoaded(false);
@@ -67,10 +43,15 @@ export function IframeHtmlRuntimeHost({
       if (frame) cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         frame = 0;
-        const nextMax = calculateViewportMaxHeight();
-        publishViewportMaxHeight(nextMax);
-        setViewportMaxHeight(nextMax);
-        setHeight(current => clampFrameHeight(current));
+        const iframe = iframeRef.current;
+        if (!iframe) return;
+        const rect = iframe.getBoundingClientRect();
+        const viewportHeight = window.visualViewport?.height || window.innerHeight || 0;
+        const bottomGutter = 24;
+        const available = viewportHeight - Math.max(0, rect.top) - bottomGutter;
+        if (Number.isFinite(available)) {
+          setViewportFitHeight(Math.max(MIN_IFRAME_HEIGHT, Math.min(MAX_MESSAGE_IFRAME_HEIGHT, available)));
+        }
       });
     };
 
@@ -85,7 +66,7 @@ export function IframeHtmlRuntimeHost({
       window.visualViewport?.removeEventListener('resize', updateViewportFitHeight);
       observer.disconnect();
     };
-  }, [calculateViewportMaxHeight, clampFrameHeight, documentHtml, publishViewportMaxHeight]);
+  }, [documentHtml]);
 
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
@@ -94,10 +75,7 @@ export function IframeHtmlRuntimeHost({
       if (data?.type === 'sandbox-resize') {
         const next = Number(data.height);
         if (Number.isFinite(next)) {
-          const nextMax = calculateViewportMaxHeight();
-          publishViewportMaxHeight(nextMax);
-          setViewportMaxHeight(nextMax);
-          setHeight(clampFrameHeight(next));
+          setHeight(Math.max(MIN_IFRAME_HEIGHT, Math.min(MAX_MESSAGE_IFRAME_HEIGHT, next)));
           onAction?.({ action: 'sandboxResize', payload: { height: next } });
         }
         return;
@@ -138,7 +116,7 @@ export function IframeHtmlRuntimeHost({
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [allowedActions, calculateViewportMaxHeight, clampFrameHeight, onAction, publishViewportMaxHeight]);
+  }, [allowedActions, onAction]);
 
   useEffect(() => {
     if (!loaded || !iframeRef.current?.contentWindow) return;
@@ -151,17 +129,17 @@ export function IframeHtmlRuntimeHost({
       className={`${className}${isRendered ? ' sandbox-rendered' : ''}`}
       srcDoc={documentHtml}
       sandbox="allow-scripts allow-same-origin"
-      style={{
-        height: fillAvailableHeight ? viewportMaxHeight : clampFrameHeight(height),
-        maxHeight: viewportMaxHeight,
-        ['--xrp-frame-max-height' as any]: `${viewportMaxHeight}px`,
-      }}
+      style={{ height: Math.max(height, viewportFitHeight) }}
       onLoad={() => {
         setLoaded(true);
-        const nextMax = calculateViewportMaxHeight();
-        publishViewportMaxHeight(nextMax);
-        setViewportMaxHeight(nextMax);
-        setHeight(current => clampFrameHeight(current));
+        const iframe = iframeRef.current;
+        if (!iframe) return;
+        const rect = iframe.getBoundingClientRect();
+        const viewportHeight = window.visualViewport?.height || window.innerHeight || 0;
+        const available = viewportHeight - Math.max(0, rect.top) - 24;
+        if (Number.isFinite(available)) {
+          setViewportFitHeight(Math.max(MIN_IFRAME_HEIGHT, Math.min(MAX_MESSAGE_IFRAME_HEIGHT, available)));
+        }
       }}
       title="消息级角色卡界面"
     />

@@ -44,8 +44,10 @@ export interface SandboxRuntimeContext {
   sharedSaves?: SandboxSharedSave[];
   submission?: SandboxRuntimeSubmission | null;
   variableContract?: SandboxVariableContract | null;
-  platformState?: Record<string, unknown> | null;
-  writableState?: Record<string, unknown> | null;
   rendered?: boolean;
+  /** Platform state snapshot for sandbox card runtime. */
+  platformState?: Record<string, unknown> | null;
+  /** Writable platform state paths for sandbox card runtime. */
+  writableState?: Record<string, unknown> | null;
 }
 

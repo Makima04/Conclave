@@ -65,7 +65,6 @@ export function PersistentCardRuntimeHost({
         variables={variables || {}}
         runtime={runtime}
         allowedActions={ALLOWED_ACTIONS}
-        fillAvailableHeight
         onAction={onAction}
       />
     </section>

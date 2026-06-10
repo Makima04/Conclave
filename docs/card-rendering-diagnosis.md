@@ -278,7 +278,7 @@ sessionState (React Hook)
 
 | 序号 | 任务 | 说明 |
 |------|------|------|
-| **P2-1** | 实现 Chevrotain 宏解析器子集（`{{if}}` 条件、嵌套宏、`{{$var}}` 变量简写） | ⚠️ 部分完成 — lexer/parser 已创建，walker/集成进行中 |
+| **P2-1** | 实现 Chevrotain 宏解析器子集（`{{if}}` 条件、嵌套宏、`{{$var}}` 变量简写） | ✅ lexer + parser + walker + 集成，含 regex 回退 |
 | **P2-2** | Style 标签作用域隔离 | ✅ 参考 ST 的 `encodeStyleTags` + `.mes_text` 前缀方案 |
 | **P2-3** | 渲染后事件钩子 | ✅ 沙箱内 `MESSAGE_RENDERED` 等事件，供卡片脚本感知渲染完成 |
 | **P2-4** | `approve_proposal` 通过 state_adapter 重新归一化 | ✅ 修复提案审批后变量不一致 |

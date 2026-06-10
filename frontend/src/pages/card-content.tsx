@@ -19,7 +19,7 @@ import { encodeStyleTags } from './sandbox-style-isolation';
 // --- GROUP 6: Character card inspection functions ---
 
 export function getStatusReplaceString(card: CharacterCard | null): string {
-  const scripts = card?.extensions?.regex_scripts;
+  const scripts = (card?.extensions as Record<string, any> | undefined)?.regex_scripts;
   if (!Array.isArray(scripts)) return '';
   const script = scripts.find((item: any) =>
     !item?.disabled
@@ -44,8 +44,8 @@ export function stripCodeFence(source: string): string {
   return close >= 0 ? withoutOpen.slice(0, close) : withoutOpen;
 }
 
-export function getRegexScripts(card: CharacterCard | null): any[] {
-  const scripts = card?.extensions?.regex_scripts;
+export function getRegexScripts(card: CharacterCard | null): RegexScript[] {
+  const scripts = (card?.extensions as Record<string, any> | undefined)?.regex_scripts;
   return Array.isArray(scripts) ? scripts : [];
 }
 
@@ -108,7 +108,7 @@ export function sanitizeSandboxHtml(source: string, options: { allowScripts?: bo
   // decoded + scoped when building the sandbox iframe document.
   const encoded = encodeStyleTags(source);
   const base = encoded
-    .replace(/(href|src)\s*=\s*["']javascript:/gi, '$1="javascript:void(0);')
+    .replace(/javascript:/gi, '')
     .replace(/<link\b[^>]*href=["'][^"']*code\.jquery[^"']*["'][^>]*>/gi, '');
   const withoutDangerousAttrs = options.allowScripts
     ? base
@@ -145,7 +145,7 @@ type DisplayPart = {
 const DISPLAY_HTML_OPEN = '\uE000XRP_HTML_';
 const DISPLAY_HTML_CLOSE = '_XRP_HTML\uE001';
 
-function applyCardDisplayRegexScriptsToParts(card: CharacterCard | null, content: string, userName = '{{user}}', charName = '{{char}}'): DisplayPart[] {
+function applyCardDisplayRegexScriptsToParts(card: CharacterCard | null, content: string): DisplayPart[] {
   const htmlParts: string[] = [];
   let output = content;
 
@@ -157,7 +157,7 @@ function applyCardDisplayRegexScriptsToParts(card: CharacterCard | null, content
     if (script.findRegex.includes('UpdateVariable')) continue;
     if (!shouldRunStRegexScript(script, {
       placement: stRegexPlacement.AI_OUTPUT,
-      isMarkdown: false,
+      isMarkdown: true,
     })) continue;
 
     const replacementScript = { ...script, replaceString: sanitizeHtmlFragment(script.replaceString) };
@@ -168,9 +168,7 @@ function applyCardDisplayRegexScriptsToParts(card: CharacterCard | null, content
     output = output.replace(regex, (...args: unknown[]) => {
       const expanded = expandStRegexReplacement(replacementScript, args, {
         placement: stRegexPlacement.AI_OUTPUT,
-        isMarkdown: false,
-        userName,
-        charName,
+        isMarkdown: true,
       });
       const index = htmlParts.push(expanded) - 1;
       return `${DISPLAY_HTML_OPEN}${index}${DISPLAY_HTML_CLOSE}`;
@@ -196,7 +194,11 @@ function applyCardDisplayRegexScriptsToParts(card: CharacterCard | null, content
 
 // --- GROUP 25: Text cleaning & inline decorator utilities ---
 
-export function cleanCardDisplayText(content: string, userName = '你', charName = ''): string {
+export function cleanCardDisplayText(
+  content: string,
+  userName: string = '你',
+  charName: string = '{{char}}',
+): string {
   return content
     .replace(/<StatusPlaceHolderImpl\/>/g, '')
     .replace(/<UpdateVariable(?:variable)?\b[^>]*>[\s\S]*?<\/UpdateVariable(?:variable)?>/gi, '')
@@ -227,12 +229,15 @@ export function removeUiTriggers(card: CharacterCard | null, content: string): s
   return output;
 }
 
-export function renderInlineDecorators(content: string, userName = '你', charName = ''): React.ReactNode {
+export function renderInlineDecorators(
+  content: string,
+  userName: string = '你',
+  charName: string = '{{char}}',
+): React.ReactNode {
   const parts: React.ReactNode[] = [];
   let cursor = 0;
   const innerRegex = /<inner>([\s\S]*?)<\/inner>/gi;
   const source = content
-    .replace(/<StatusPlaceHolderImpl\/>/g, '')
     .replace(/<UpdateVariable(?:variable)?\b[^>]*>[\s\S]*?<\/UpdateVariable(?:variable)?>/gi, '')
     .replace(/<options\b[^>]*>[\s\S]*?<\/options>/gi, '')
     .replace(/<\/?正文>/g, '')
@@ -261,9 +266,13 @@ export function renderInlineDecorators(content: string, userName = '你', charNa
 
 // --- GROUP 9: Content rendering ---
 
-export function renderCardFormattedContent(card: CharacterCard | null, content: string, userName = '你', charName = ''): React.ReactNode {
+export function renderCardFormattedContent(
+  card: CharacterCard | null,
+  content: string,
+  userName: string = '你',
+  charName: string = '{{char}}',
+): React.ReactNode {
   const normalized = content
-    .replace(/<StatusPlaceHolderImpl\/>/g, '')
     .replace(/<\/?正文>/g, '')
     .replace(/<options\b[^>]*>[\s\S]*?<\/options>/gi, '')
     .replace(/{{user}}/g, userName)
@@ -278,7 +287,7 @@ export function renderCardFormattedContent(card: CharacterCard | null, content: 
   const cleaned = normalized
     .replace(/<UpdateVariable(?:variable)?\b[^>]*>[\s\S]*?<\/UpdateVariable(?:variable)?>/gi, '')
     .trim();
-  const parts = applyCardDisplayRegexScriptsToParts(card, cleaned, userName, charName);
+  const parts = applyCardDisplayRegexScriptsToParts(card, cleaned);
 
   return parts.map((part, index) => part.type === 'html' ? (
     <div
@@ -287,6 +296,6 @@ export function renderCardFormattedContent(card: CharacterCard | null, content: 
       dangerouslySetInnerHTML={{ __html: part.content }}
     />
   ) : (
-    <React.Fragment key={`text-${index}`}>{renderInlineDecorators(part.content, userName, charName)}</React.Fragment>
+    <React.Fragment key={`text-${index}`}>{renderInlineDecorators(part.content)}</React.Fragment>
   ));
 }

@@ -1,4 +1,5 @@
 pub mod action_extractor;
+pub mod analyzer;
 pub mod html_splitter;
 pub mod js_analyzer;
 pub mod json_parser;

@@ -33,6 +33,9 @@ const ALLOWED_ACTIONS = new Set([
   'sandboxResize',
   'loadSaveSession',
   'deleteSaveSession',
+  'generate',
+  'generateRaw',
+  'generateQuietPrompt',
 ]);
 
 function runtimeKey(runtime?: SandboxRuntimeContext): string {
@@ -52,7 +55,7 @@ export function MessageHtmlAppRenderer({
   const mountKey = `${card.id}:${runtimeKey(runtime)}`;
   const documentHtml = useMemo(
     () => buildSandboxDocument(html, variables || {}, runtime),
-    [html, mountKey, runtime?.sessionId],
+    [html, variables, mountKey, runtime?.sessionId],
   );
 
   if (!html) return null;

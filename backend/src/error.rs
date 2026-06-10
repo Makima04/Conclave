@@ -68,3 +68,91 @@ impl axum::response::IntoResponse for AppError {
         (status, axum::Json(body)).into_response()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::response::IntoResponse;
+
+    async fn assert_error_response(
+        error: AppError,
+        expected_status: axum::http::StatusCode,
+        expected_code: &str,
+        expected_message: &str,
+    ) {
+        let response = error.into_response();
+        assert_eq!(response.status(), expected_status);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: serde_json::Value =
+            serde_json::from_slice(&body).expect("valid JSON error body");
+
+        assert_eq!(payload["error"]["code"], expected_code);
+        assert_eq!(payload["error"]["message"], expected_message);
+    }
+
+    #[tokio::test]
+    async fn client_errors_map_to_expected_status_and_codes() {
+        assert_error_response(
+            AppError::NotFound("missing".into()),
+            axum::http::StatusCode::NOT_FOUND,
+            "not_found",
+            "missing",
+        )
+        .await;
+
+        assert_error_response(
+            AppError::BadRequest("bad input".into()),
+            axum::http::StatusCode::BAD_REQUEST,
+            "bad_request",
+            "bad input",
+        )
+        .await;
+
+        assert_error_response(
+            AppError::Conflict("duplicate".into()),
+            axum::http::StatusCode::CONFLICT,
+            "conflict",
+            "duplicate",
+        )
+        .await;
+
+        assert_error_response(
+            AppError::Unauthorized("denied".into()),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "denied",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn server_errors_map_to_expected_status_and_codes() {
+        assert_error_response(
+            AppError::Provider("upstream failed".into()),
+            axum::http::StatusCode::BAD_GATEWAY,
+            "provider_error",
+            "upstream failed",
+        )
+        .await;
+
+        assert_error_response(
+            AppError::Internal("panic avoided".into()),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "panic avoided",
+        )
+        .await;
+
+        assert_error_response(
+            AppError::Database(sqlx::Error::RowNotFound),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "database_error",
+            "no rows returned by a query that expected to return at least one row",
+        )
+        .await;
+    }
+}

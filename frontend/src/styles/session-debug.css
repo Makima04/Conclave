@@ -268,6 +268,17 @@
   background: linear-gradient(135deg, rgba(231, 195, 143, 0.13), rgba(165, 54, 82, 0.12));
 }
 
+.snapshot-hero-side {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+}
+
+.snapshot-hero-metric {
+  display: grid;
+  justify-items: end;
+}
+
 .snapshot-hero span,
 .snapshot-hero p {
   margin: 0;
@@ -283,6 +294,31 @@
   display: block;
   font-size: 28px;
   text-align: right;
+}
+
+.snapshot-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.snapshot-action-btn {
+  padding: 8px 12px;
+  border: 1px solid rgba(231, 195, 143, 0.22);
+  border-radius: 10px;
+  background: rgba(231, 195, 143, 0.08);
+  color: #f5e7cc;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+}
+
+.snapshot-action-btn:hover:not(:disabled) {
+  border-color: rgba(231, 195, 143, 0.48);
+  background: rgba(231, 195, 143, 0.14);
+  transform: translateY(-1px);
 }
 
 .snapshot-detail details {

@@ -1,5 +1,6 @@
 use crate::error::AppError;
 use crate::runtime::types::{ProposalResult, StateChangeCandidate, StateChangeProposal};
+use serde::Serialize;
 use sqlx::SqlitePool;
 
 pub async fn get_current_state(
@@ -520,11 +521,182 @@ pub async fn reject_proposal(
     Ok(())
 }
 
-use serde::Serialize;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::SqlitePool;
+
+    fn change(op: &str, target: &str, to: serde_json::Value) -> StateChangeCandidate {
+        StateChangeCandidate {
+            op: op.to_string(),
+            target: target.to_string(),
+            from: None,
+            to,
+            evidence_turns: vec![],
+        }
+    }
+
+    async fn setup_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite pool");
+
+        sqlx::query(
+            "CREATE TABLE state_snapshots (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                state_json TEXT NOT NULL,
+                risk_level TEXT NOT NULL,
+                committed_by TEXT NOT NULL,
+                proposal_id TEXT,
+                created_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create state_snapshots");
+
+        sqlx::query(
+            "CREATE TABLE pending_proposals (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                turn_number INTEGER NOT NULL,
+                proposed_by TEXT NOT NULL,
+                risk TEXT NOT NULL,
+                proposal_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                resolved_at TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create pending_proposals");
+
+        pool
+    }
+
+    #[tokio::test]
+    async fn current_state_defaults_to_empty_object_and_commit_increments_versions() {
+        let pool = setup_pool().await;
+
+        let initial = get_current_state(&pool, "session-1")
+            .await
+            .expect("load empty state");
+        assert_eq!(initial, serde_json::json!({}));
+
+        let v1 = commit_state(
+            &pool,
+            "session-1",
+            &serde_json::json!({"scene": {"location": "dock"}}),
+            "low",
+            "runtime",
+            None,
+        )
+        .await
+        .expect("commit first snapshot");
+        assert_eq!(v1, 1);
+
+        let v2 = commit_state(
+            &pool,
+            "session-1",
+            &serde_json::json!({"scene": {"location": "school"}}),
+            "low",
+            "runtime",
+            None,
+        )
+        .await
+        .expect("commit second snapshot");
+        assert_eq!(v2, 2);
+
+        let latest = get_current_state(&pool, "session-1")
+            .await
+            .expect("load latest state");
+        assert_eq!(latest["scene"]["location"], serde_json::json!("school"));
+    }
+
+    #[tokio::test]
+    async fn apply_proposal_auto_commits_low_risk_changes() {
+        let pool = setup_pool().await;
+        commit_state(
+            &pool,
+            "session-2",
+            &serde_json::json!({"variables": {"hp": 10}}),
+            "low",
+            "runtime",
+            None,
+        )
+        .await
+        .expect("seed state");
+
+        let proposal = StateChangeProposal {
+            proposed_by: "runtime".to_string(),
+            risk: "high".to_string(),
+            changes: vec![change("update", "variables.hp", serde_json::json!(20))],
+        };
+
+        let result = apply_proposal(&pool, "session-2", &proposal, 1)
+            .await
+            .expect("apply low-risk runtime proposal");
+
+        assert_eq!(result.status, "committed");
+        assert_eq!(result.version, 2);
+        assert!(result.rejected_changes.is_empty());
+
+        let latest = get_current_state(&pool, "session-2")
+            .await
+            .expect("load committed state");
+        assert_eq!(latest["variables"]["hp"], serde_json::json!(20));
+    }
+
+    #[tokio::test]
+    async fn apply_proposal_saves_medium_risk_changes_as_pending() {
+        let pool = setup_pool().await;
+
+        let proposal = StateChangeProposal {
+            proposed_by: "single_agent".to_string(),
+            risk: "low".to_string(),
+            changes: vec![change("remove", "variables.temp_flag", serde_json::Value::Null)],
+        };
+
+        let result = apply_proposal(&pool, "session-3", &proposal, 7)
+            .await
+            .expect("apply medium-risk proposal");
+
+        assert_eq!(result.status, "pending");
+        assert_eq!(result.version, 0);
+
+        let pending = get_pending_proposals(&pool, "session-3")
+            .await
+            .expect("load pending proposals");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].proposed_by, "single_agent");
+        assert_eq!(pending[0].status, "pending");
+    }
+
+    #[tokio::test]
+    async fn apply_proposal_rejects_disallowed_paths_for_non_privileged_proposers() {
+        let pool = setup_pool().await;
+
+        let proposal = StateChangeProposal {
+            proposed_by: "variable_parser".to_string(),
+            risk: "low".to_string(),
+            changes: vec![change(
+                "update",
+                "meta.secret_flag",
+                serde_json::json!(true),
+            )],
+        };
+
+        let result = apply_proposal(&pool, "session-4", &proposal, 3)
+            .await
+            .expect("apply restricted proposal");
+
+        assert_eq!(result.status, "rejected");
+        assert_eq!(result.version, 0);
+        assert_eq!(result.rejected_changes, vec![0]);
+    }
 
     #[test]
     fn gets_and_sets_paths_with_angle_bracket_keys_and_array_indices() {

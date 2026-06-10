@@ -1,4 +1,6 @@
 export const SANDBOX_HOST_BRIDGE_SOURCE = String.raw`
+  const ACTION_TIMEOUTS = { generateRaw: 120000, generateQuietPrompt: 120000 };
+  const DEFAULT_TIMEOUT = 30000;
   const pendingHostRequests = new Map();
   const makeHostRequestId = () => 'xrp-host-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
   const requestHost = (action, payload = {}) => {
@@ -10,10 +12,11 @@ export const SANDBOX_HOST_BRIDGE_SOURCE = String.raw`
       payload,
     });
     return new Promise((resolve, reject) => {
+      const timeout = ACTION_TIMEOUTS[action] ?? DEFAULT_TIMEOUT;
       const timeoutId = setTimeout(() => {
         pendingHostRequests.delete(requestId);
-        reject(new Error('Host bridge timeout'));
-      }, 20000);
+        reject(new Error('Host bridge timeout (' + action + ')'));
+      }, timeout);
       pendingHostRequests.set(requestId, { resolve, reject, timeoutId });
     });
   };

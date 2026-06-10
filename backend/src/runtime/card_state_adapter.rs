@@ -796,4 +796,53 @@ mod tests {
         );
         assert_eq!(state["variables"]["私有"]["flag"], serde_json::json!(true));
     }
+
+    #[test]
+    fn projection_change_set_updates_only_writable_paths() {
+        let current = serde_json::json!({
+            "世界": {
+                "当前地点": ["侦探坡", "说明"],
+                "天气": "晴"
+            }
+        });
+
+        let (next, rejected) = apply_projection_change_set(
+            &current,
+            &[
+                ("variables.世界.当前地点".to_string(), serde_json::json!("学校")),
+                ("variables.世界.天气".to_string(), serde_json::json!("雨")),
+            ],
+            &contract(),
+        );
+
+        assert_eq!(next["世界"]["当前地点"], serde_json::json!("学校"));
+        assert_eq!(next["世界"]["天气"], serde_json::json!("晴"));
+        assert_eq!(rejected, vec!["世界.天气".to_string()]);
+    }
+
+    #[test]
+    fn state_view_only_exposes_writable_platform_paths_from_contract() {
+        let state = serde_json::json!({
+            "platform_state": {
+                "world": {
+                    "current_location": "学校",
+                    "weather": "雨"
+                },
+                "gm": {
+                    "secret": true
+                }
+            }
+        });
+
+        let view = state_view(&state, Some(&contract()));
+
+        assert_eq!(
+            view.writable_platform_state,
+            serde_json::json!({
+                "world": {
+                    "current_location": "学校"
+                }
+            })
+        );
+    }
 }

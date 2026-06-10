@@ -64,7 +64,7 @@ pub struct RegexOptions {
     pub char_name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RegexExecutionResult {
     pub matched: bool,
     pub output: String,
@@ -72,7 +72,7 @@ pub struct RegexExecutionResult {
     pub diagnostics: Vec<RegexDiagnostic>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RegexDiagnostic {
     pub level: DiagnosticLevel,
     pub message: String,
@@ -81,9 +81,10 @@ pub struct RegexDiagnostic {
 
 // ─── Diagnostic level ───
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticLevel {
+    #[default]
     Info,
     Warn,
     Error,
@@ -91,7 +92,7 @@ pub enum DiagnosticLevel {
 
 // ─── HTML split ───
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HtmlAppSplit {
     pub html: String,
     pub css: Vec<String>,
@@ -103,21 +104,22 @@ pub struct HtmlAppSplit {
 
 // ─── Resource scan ───
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ResourceManifest {
     pub resources: Vec<ResourceEntry>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ResourceEntry {
     pub url: String,
     pub kind: ResourceKind,
     pub source_location: SourceLocation,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {
+    #[default]
     Image,
     Audio,
     Video,
@@ -126,7 +128,7 @@ pub enum ResourceKind {
     Font,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SourceLocation {
     pub file: String, // "inline_html", "script_0", "style_0", etc.
     pub offset: usize,
@@ -135,7 +137,7 @@ pub struct SourceLocation {
 
 // ─── JS analysis ───
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JsAnalysisReport {
     pub syntax_valid: bool,
     pub syntax_errors: Vec<SyntaxError>,
@@ -251,7 +253,7 @@ pub struct ExtractionLayers {
 
 // ─── State conversion layer ───
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CardStateSchema {
     pub roots: Vec<StateRootDeclaration>,
     pub fields: Vec<StateFieldDeclaration>,
@@ -307,7 +309,7 @@ pub enum StateFieldRole {
     Custom,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CardStateAdapter {
     pub adapter_version: String,
     pub source_format: String,
@@ -371,6 +373,44 @@ pub enum VariableType {
     Array,
 }
 
+// ─── Raw card source (faithful preservation, no semantic parsing) ───
+
+/// Raw card data preserved verbatim from the source card.
+/// InitVar / state interpretation is deferred to runtime — this struct is
+/// the ingestr's "ground truth" and must not lose information.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawCardSource {
+    /// character_book entries as-is (may contain InitVar, world info, etc.)
+    pub character_book: Option<serde_json::Value>,
+    /// Original first_mes text (may contain `<UpdateVariable><initvar>…`)
+    pub first_mes: String,
+    /// Original alternate_greetings texts
+    pub alternate_greetings: Vec<String>,
+    /// Full extensions object as-is (regex_scripts, tavern_helper, etc.)
+    pub extensions: serde_json::Value,
+}
+
+// ─── Analysis result (decoupled from import) ───
+
+/// All outputs from the analysis pass (regex, HTML split, JS analysis, etc.).
+/// Decoupled from the import pass so analysis can be re-run independently.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AnalysisResult {
+    pub regex_result: RegexExecutionResult,
+    pub html_split: HtmlAppSplit,
+    pub resources: ResourceManifest,
+    pub js_analysis: JsAnalysisReport,
+    pub actions: Vec<ActionDeclaration>,
+    pub variables: Vec<VariableDeclaration>,
+    pub state_schema: CardStateSchema,
+    pub state_adapter: CardStateAdapter,
+    pub extraction_layers: ExtractionLayers,
+    pub compatibility: CompatibilityReport,
+    pub stages: Vec<StageResult>,
+    pub diagnostics: Vec<ImportDiagnostic>,
+    pub rule_traces: Vec<RuleTrace>,
+}
+
 // ─── Output: ConclaveCardPackage ───
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -386,6 +426,10 @@ pub struct ConclaveCardPackage {
     pub state_adapter: CardStateAdapter,
     pub actions: Vec<ActionDeclaration>,
     pub compatibility: CompatibilityReport,
+    /// Faithfully preserved raw card source — no semantic interpretation.
+    /// Runtime reads InitVar / world book from this + DB, not from the importer.
+    #[serde(default)]
+    pub raw_source: RawCardSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -440,7 +484,7 @@ pub enum UiType {
     RawPreview,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CompatibilityReport {
     pub required_apis: Vec<String>,
     pub unsupported_apis: Vec<String>,

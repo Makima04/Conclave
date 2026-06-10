@@ -2,36 +2,29 @@ use crate::importer::types::*;
 
 const IMPORTER_VERSION: &str = "0.1.0";
 
-/// Assemble a ConclaveCardPackage from all pipeline outputs.
+/// Assemble a ConclaveCardPackage from the parsed card and its analysis result.
 pub fn build_package(
     card: &ExternalCard,
-    regex_result: &RegexExecutionResult,
-    html_split: &HtmlAppSplit,
-    resources: &ResourceManifest,
-    actions: &[ActionDeclaration],
-    extraction_layers: &ExtractionLayers,
-    variables: &[VariableDeclaration],
-    state_schema: &CardStateSchema,
-    state_adapter: &CardStateAdapter,
-    compatibility: &CompatibilityReport,
+    analysis: &AnalysisResult,
 ) -> ConclaveCardPackage {
-    let ui_type = determine_ui_type(html_split);
+    let ui_type = determine_ui_type(&analysis.html_split);
     let manifest = build_manifest(card);
     let greetings = build_greetings(card);
-    let ui = build_ui(ui_type, html_split, resources);
-    let runtime_hints = build_runtime_hints(card, regex_result, html_split);
+    let ui = build_ui(ui_type, &analysis.html_split, &analysis.resources);
+    let runtime_hints = build_runtime_hints(card, &analysis.regex_result, &analysis.html_split);
 
     ConclaveCardPackage {
         manifest,
         greetings,
         ui,
         runtime_hints,
-        extraction_layers: extraction_layers.clone(),
-        variables: variables.to_vec(),
-        state_schema: state_schema.clone(),
-        state_adapter: state_adapter.clone(),
-        actions: actions.to_vec(),
-        compatibility: compatibility.clone(),
+        extraction_layers: analysis.extraction_layers.clone(),
+        variables: analysis.variables.to_vec(),
+        state_schema: analysis.state_schema.clone(),
+        state_adapter: analysis.state_adapter.clone(),
+        actions: analysis.actions.to_vec(),
+        compatibility: analysis.compatibility.clone(),
+        raw_source: build_raw_source(card),
     }
 }
 
@@ -122,6 +115,23 @@ fn build_runtime_hints(
         canonical_state_root: "state".to_string(),
         projection_root: "variables".to_string(),
         runtime_local_root: "_runtime".to_string(),
+    }
+}
+
+/// Faithfully preserve raw card source data — no semantic parsing.
+/// Character book, extensions, and opening text are kept verbatim.
+fn build_raw_source(card: &ExternalCard) -> RawCardSource {
+    let character_book = card
+        .extensions
+        .get("__character_book")
+        .or_else(|| card.extensions.get("character_book"))
+        .cloned();
+
+    RawCardSource {
+        character_book,
+        first_mes: card.first_mes.clone(),
+        alternate_greetings: card.alternate_greetings.clone(),
+        extensions: card.extensions.clone(),
     }
 }
 
@@ -319,43 +329,22 @@ mod tests {
     #[test]
     fn test_build_package_assembly() {
         let card = make_card("AssemblyTest");
-        let regex = make_regex_result(false, "");
-        let split = HtmlAppSplit {
-            html: String::new(),
-            css: vec![],
-            js: vec![],
-            script_types: vec![],
-            entry_node: None,
-            is_full_document: false,
-        };
-        let resources = make_empty_resources();
-        let compatibility = make_empty_compatibility();
-
-        let state_schema = CardStateSchema {
-            roots: vec![],
-            fields: vec![],
-        };
-        let state_adapter = CardStateAdapter {
-            adapter_version: "test".to_string(),
-            source_format: "test".to_string(),
-            read_rules: vec![],
-            write_rules: vec![],
-            variable_rules: vec![],
-            warnings: vec![],
+        let analysis = AnalysisResult {
+            regex_result: make_regex_result(false, ""),
+            html_split: HtmlAppSplit {
+                html: String::new(),
+                css: vec![],
+                js: vec![],
+                script_types: vec![],
+                entry_node: None,
+                is_full_document: false,
+            },
+            resources: make_empty_resources(),
+            compatibility: make_empty_compatibility(),
+            ..Default::default()
         };
 
-        let pkg = build_package(
-            &card,
-            &regex,
-            &split,
-            &resources,
-            &[],
-            &ExtractionLayers::default(),
-            &[],
-            &state_schema,
-            &state_adapter,
-            &compatibility,
-        );
+        let pkg = build_package(&card, &analysis);
 
         assert_eq!(pkg.manifest.name, "AssemblyTest");
         assert_eq!(pkg.greetings.len(), 3);

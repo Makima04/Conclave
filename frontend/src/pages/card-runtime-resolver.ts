@@ -50,11 +50,13 @@ function hasPackageHtmlApp(card: CharacterCard | null): boolean {
 }
 
 function shouldBootHtmlApp(card: CharacterCard | null, content: string, runtime?: SandboxRuntimeContext): boolean {
+  const hints = card?.conclave_package?.runtime_hints;
   const triggerMatch = HTML_APP_TRIGGER_RE.test(content);
   if (!hasPackageHtmlApp(card)) return false;
   if (isOpeningPreviewRuntime(runtime)) return true;
   if (isHtmlAppInternalRuntime(runtime)) return true;
-  return false;
+  if (triggerMatch) return true;
+  return Boolean(hints?.regex_opening_full_document || hints?.raw_opening_full_document);
 }
 
 function stripHtmlAppTriggers(content: string): string {

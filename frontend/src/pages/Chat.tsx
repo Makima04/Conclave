@@ -361,7 +361,7 @@ export default function Chat() {
   }
 
   function cleanComparableMessageText(content: string): string {
-    return cleanCardDisplayText(content)
+    return cleanCardDisplayText(content, userPersona.name || '你', characterCard?.name || '')
       .replace(/\s+/g, '')
       .trim();
   }
@@ -500,7 +500,7 @@ export default function Chat() {
 
   function extractSavePreview(sessionMessages: Message[], fallback: string): string {
     const candidate = [...sessionMessages].reverse().find(message => message.role === 'assistant') || sessionMessages[0];
-    const text = cleanCardDisplayText(candidate?.content || fallback || '').replace(/\s+/g, ' ').trim();
+    const text = cleanCardDisplayText(candidate?.content || fallback || '', userPersona.name || '你', characterCard?.name || '').replace(/\s+/g, ' ').trim();
     return shortText(text, 180);
   }
 
@@ -509,7 +509,7 @@ export default function Chat() {
     const visibleMatch = source.match(/<content\b[^>]*>([\s\S]*?)<\/content>/i)
       || source.match(/<正文\b[^>]*>([\s\S]*?)<\/正文>/i);
     const visibleSource = visibleMatch?.[1] || source;
-    return cleanCardDisplayText(visibleSource)
+    return cleanCardDisplayText(visibleSource, userPersona.name || '你', characterCard?.name || '')
       .replace(/<context\b[^>]*>[\s\S]*?<\/context>/gi, '')
       .replace(/<options\b[^>]*>[\s\S]*?<\/options>/gi, '')
       .replace(/<tucao\b[^>]*>[\s\S]*?<\/tucao>/gi, '')
@@ -762,6 +762,7 @@ export default function Chat() {
                   runtime={openingPreviewRuntime}
                   onSandboxAction={(event) => handleCardSandboxAction(event, 'opening-preview')}
                   renderMode={renderMode}
+                  userName={userPersona.name || '你'}
                 />
               </div>
             </div>
@@ -804,10 +805,11 @@ export default function Chat() {
                           runtime={buildSandboxRuntime(msg)}
                           onSandboxAction={(event) => handleCardSandboxAction(event, msg.id)}
                           renderMode={renderMode}
+                          userName={userPersona.name || '你'}
                         />
                       )
                     ) : (
-                      cleanCardDisplayText(msg.content)
+                      cleanCardDisplayText(msg.content, userPersona.name || '你', characterCard?.name || '')
                     )}
                   </div>
                 )}
@@ -949,6 +951,7 @@ export default function Chat() {
                   runtime={buildStreamingSandboxRuntime(streamText)}
                   onSandboxAction={(event) => handleCardSandboxAction(event, 'streaming')}
                   renderMode="text"
+                  userName={userPersona.name || '你'}
                 />
               </div>
             </div>

@@ -26,16 +26,19 @@
 
 ## 架构决策
 
-**主路径：导入期标准化。**
+**主路径：导入期标准化，但忠实保存原始数据。**
+
+导入器遵循 SillyTavern 的哲学：先把卡完整、稳定地收进来，保留 `character_book` / `extensions` / opening 原文。语义解释（如 `InitVar` 解析、`<UpdateVariable>` 标签处理）留给运行时。
 
 ```text
 原始 PNG / JSON / ST 角色卡
   -> 解析 metadata
-  -> 执行确定性迁移规则
-  -> 拆分 UI / 资源 / 开场 / 变量 / 动作
+  -> 执行确定性迁移规则（regex、HTML 拆分、JS 分析）
+  -> 拆分 UI / 资源 / 动作
+  -> 忠实保存 character_book / extensions / opening 原文到 raw_source
   -> 可选 LLM 语义标注
   -> 生成 Conclave Card Package
-  -> 运行时渲染平台格式
+  -> 运行时渲染平台格式 + 解析 InitVar 等语义内容
 ```
 
 运行时只支持平台协议：
@@ -141,6 +144,12 @@ Conclave Card Package
     "unsupported_apis": [],
     "warnings": [],
     "api_mappings": []
+  },
+  "raw_source": {
+    "character_book": { "entries": [...] },
+    "first_mes": "<UpdateVariable><initvar>...</initvar></UpdateVariable>",
+    "alternate_greetings": [],
+    "extensions": { "regex_scripts": [...], "character_book": {...} }
   }
 }
 ```
@@ -160,6 +169,7 @@ Conclave Card Package
 | `state_adapter` | 状态读写映射规则，含 `source_format` 标识。 |
 | `actions` | 平台动作声明，含 `form_submit` 类型。 |
 | `compatibility` | 导入报告，含 API 兼容映射表。 |
+| `raw_source` | 忠实保存的原始卡数据：`character_book`、`first_mes`、`alternate_greetings`、`extensions` 原文。InitVar 等语义内容不在导入期解析，由运行时从 `raw_source` + 数据库读取后解析。 |
 
 ---
 
@@ -360,13 +370,15 @@ LLM 不得负责执行 JS 或决定安全权限。
 
 ### 7. 变量抽取
 
-导入器应识别：
+导入器从 **JS 静态分析** 识别变量声明：
 
 - `getVariables`
 - `setVariables`
 - `updateVariablesWith`
 - `Mvu` / `stat_data`
 - 明显的状态初始化对象
+
+**`InitVar` / `<UpdateVariable>` 不在导入期解析。** 对应的 character_book entries 和 opening text 保存到 `raw_source`，由运行时 `state_initializer` 在会话初始化时解析。这与 SillyTavern 的做法一致：导入器负责完整保真，语义解释留给运行时。
 
 输出平台变量 schema：
 
@@ -382,7 +394,7 @@ type CardVariable = {
 
 变量 schema 是平台运行时契约，不能直接依赖 ST 的内部全局对象。
 
-> 补充：导入器还会从 HTML 中抽取 `initvar` 类变量初始化（如 `data-initvar` 属性），作为变量来源之一。
+> `InitVar` 等变量初始化源保存在 `raw_source.character_book` 和 `raw_source.first_mes` 中，由运行时 `state_initializer::parse_init_variables()` 解析。参见 [导入器架构](importer-architecture.md)。
 
 ### 8. 状态转换层生成
 

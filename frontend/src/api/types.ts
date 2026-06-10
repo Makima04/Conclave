@@ -515,6 +515,13 @@ export interface ApiCompatibilityMapping {
   notes: string;
 }
 
+export interface RawCardSource {
+  character_book?: unknown;
+  first_mes: string;
+  alternate_greetings: string[];
+  extensions: unknown;
+}
+
 export interface ConclaveCardPackage {
   manifest: PackageManifest;
   greetings: Greeting[];
@@ -526,6 +533,7 @@ export interface ConclaveCardPackage {
   state_adapter: CardStateAdapter;
   actions: ActionDeclaration[];
   compatibility: CompatibilityReport;
+  raw_source: RawCardSource;
 }
 
 export interface ImportReport {

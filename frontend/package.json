@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test src/pages/st-regex-executor.test.ts src/pages/runtime-host-protocol.test.ts"
   },
   "dependencies": {
     "@types/react-syntax-highlighter": "^15.5.13",

@@ -28,6 +28,9 @@ const ALLOWED_ACTIONS = new Set([
   'sandboxResize',
   'loadSaveSession',
   'deleteSaveSession',
+  'generate',
+  'generateRaw',
+  'generateQuietPrompt',
 ]);
 
 export function SandboxHtmlRenderer({ html, variables, runtime, onAction }: { html: string; variables: any; runtime?: SandboxRuntimeContext; onAction?: (action: SandboxCardAction) => void }) {

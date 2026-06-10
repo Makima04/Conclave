@@ -35,6 +35,9 @@ const ALLOWED_ACTIONS = new Set([
   'sandboxResize',
   'loadSaveSession',
   'deleteSaveSession',
+  'generate',
+  'generateRaw',
+  'generateQuietPrompt',
 ]);
 
 export function PersistentCardRuntimeHost({
@@ -48,7 +51,7 @@ export function PersistentCardRuntimeHost({
   const mountKey = `${cardId}:${sessionId}:${manifest.scriptName}`;
   const documentHtml = useMemo(
     () => buildSandboxDocument(manifest.bootHtml, variables || {}, runtime),
-    [mountKey],
+    [manifest.bootHtml, variables, mountKey, runtime],
   );
 
   return (

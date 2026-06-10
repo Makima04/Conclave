@@ -56,3 +56,72 @@ impl LlmConcurrencyLimiter {
 pub fn normalize_limit(value: usize) -> usize {
     value.clamp(MIN_LLM_CONCURRENCY_LIMIT, MAX_LLM_CONCURRENCY_LIMIT)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{Duration, sleep, timeout};
+
+    #[test]
+    fn normalize_limit_clamps_bounds() {
+        assert_eq!(normalize_limit(0), MIN_LLM_CONCURRENCY_LIMIT);
+        assert_eq!(normalize_limit(DEFAULT_LLM_CONCURRENCY_LIMIT), DEFAULT_LLM_CONCURRENCY_LIMIT);
+        assert_eq!(normalize_limit(999), MAX_LLM_CONCURRENCY_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn set_limit_expands_available_permits() {
+        let limiter = LlmConcurrencyLimiter::new(1);
+        assert_eq!(limiter.current_limit(), 1);
+
+        let first = timeout(Duration::from_millis(50), limiter.acquire()).await;
+        assert!(first.is_ok(), "expected initial permit to be available");
+        let first = first.unwrap().expect("permit acquisition should succeed");
+
+        let second = timeout(Duration::from_millis(50), limiter.acquire()).await;
+        assert!(second.is_err(), "expected second permit to block at limit 1");
+
+        let applied = limiter.set_limit(2);
+        assert_eq!(applied, 2);
+        assert_eq!(limiter.current_limit(), 2);
+
+        let second = timeout(Duration::from_millis(50), limiter.acquire()).await;
+        assert!(
+            second.is_ok(),
+            "expected second permit to become available after expanding limit"
+        );
+
+        drop(first);
+    }
+
+    #[tokio::test]
+    async fn set_limit_shrinks_future_capacity_without_cancelling_in_flight_work() {
+        let limiter = LlmConcurrencyLimiter::new(3);
+        let permit_a = limiter.acquire().await.expect("first permit");
+        let permit_b = limiter.acquire().await.expect("second permit");
+
+        let applied = limiter.set_limit(1);
+        assert_eq!(applied, 1);
+        assert_eq!(limiter.current_limit(), 1);
+
+        drop(permit_a);
+        drop(permit_b);
+
+        sleep(Duration::from_millis(50)).await;
+
+        let first = timeout(Duration::from_millis(50), limiter.acquire()).await;
+        assert!(
+            first.is_ok(),
+            "expected exactly one permit to remain available after shrink"
+        );
+        let first = first.unwrap().expect("permit acquisition should succeed");
+
+        let second = timeout(Duration::from_millis(50), limiter.acquire()).await;
+        assert!(
+            second.is_err(),
+            "expected additional acquisitions to block after shrink drained extra permits"
+        );
+
+        drop(first);
+    }
+}

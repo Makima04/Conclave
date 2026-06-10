@@ -1,206 +1,150 @@
-// Self-contained tests for st-regex-executor
-// Run: npx tsx frontend/src/pages/st-regex-executor.test.ts
+import test from 'node:test';
+import assert from 'node:assert/strict';
 
-import { executeStRegexScripts, parseFindRegex, type RegexScript, type StRegexResult } from './st-regex-executor';
+import {
+  executeStRegexScripts,
+  parseFindRegex,
+  type RegexScript,
+} from './st-regex-executor.ts';
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, label: string) {
-  if (condition) {
-    console.log(`  PASS: ${label}`);
-    passed++;
-  } else {
-    console.error(`  FAIL: ${label}`);
-    failed++;
-  }
-}
-
-function assertEq(actual: unknown, expected: unknown, label: string) {
-  const ok = JSON.stringify(actual) === JSON.stringify(expected);
-  if (ok) {
-    console.log(`  PASS: ${label}`);
-    passed++;
-  } else {
-    console.error(`  FAIL: ${label} — expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
-    failed++;
-  }
-}
-
-// ──────────────────────────────────────────────
-console.log('\n--- Test 1: Plain string findRegex ---');
-{
-  const card = {
+function buildCard(regexScripts: RegexScript[]) {
+  return {
     extensions: {
-      regex_scripts: [
-        { findRegex: 'Hello', replaceString: 'World', disabled: false },
-      ] as RegexScript[],
+      regex_scripts: regexScripts,
     },
   };
-  const result = executeStRegexScripts(card, 'Hello there');
-  assertEq(result.matched, true, 'matched is true');
-  assert(result.html.includes('World'), 'output contains "World"');
-  assert(!result.html.includes('Hello'), 'output no longer contains "Hello"');
-  assertEq(result.diagnostics.length, 0, 'no diagnostics');
 }
 
-// ──────────────────────────────────────────────
-console.log('\n--- Test 2: /pattern/flags regex expands ST capture groups ---');
-{
-  const card = {
-    extensions: {
-      regex_scripts: [
-        { findRegex: '/(\\w+)@(\\w+)/g', replaceString: '$2@$1', disabled: false },
-      ] as RegexScript[],
-    },
-  };
-  const result = executeStRegexScripts(card, 'email: foo@bar');
-  assertEq(result.matched, true, 'matched is true');
-  assert(result.html.includes('bar@foo'), 'output contains expanded replacement text');
-  assertEq(result.diagnostics.length, 0, 'no diagnostics');
-}
+test('plain string findRegex replaces matching content', () => {
+  const result = executeStRegexScripts(
+    buildCard([{ findRegex: 'Hello', replaceString: 'World', disabled: false }]),
+    'Hello there',
+  );
 
-// ──────────────────────────────────────────────
-console.log('\n--- Test 3: Disabled scripts are skipped ---');
-{
-  const card = {
-    extensions: {
-      regex_scripts: [
-        { findRegex: 'Hello', replaceString: 'REPLACED', disabled: true },
-        { findRegex: 'Hello', replaceString: 'World', disabled: false },
-      ] as RegexScript[],
-    },
-  };
-  const result = executeStRegexScripts(card, 'Hello there');
-  assert(result.html.includes('World'), 'output contains "World" (second script)');
-  assert(!result.html.includes('REPLACED'), 'output does not contain "REPLACED" (first was disabled)');
-}
+  assert.equal(result.matched, true);
+  assert.match(result.html, /World/);
+  assert.doesNotMatch(result.html, /Hello/);
+  assert.equal(result.diagnostics.length, 0);
+});
 
-// ──────────────────────────────────────────────
-console.log('\n--- Test 4: Invalid regex pattern produces diagnostics ---');
-{
-  const card = {
-    extensions: {
-      regex_scripts: [
-        { findRegex: '/[invalid/g', replaceString: 'nope', disabled: false },
-        { findRegex: 'ok', replaceString: 'good', disabled: false },
-      ] as RegexScript[],
-    },
-  };
-  const result = executeStRegexScripts(card, 'ok fine');
-  assertEq(result.diagnostics.length, 1, 'one diagnostic');
-  assertEq(result.diagnostics[0].level, 'warn', 'diagnostic level is warn');
-  assert(result.html.includes('good'), 'valid script still ran');
-}
+test('regex replacements expand capture groups', () => {
+  const result = executeStRegexScripts(
+    buildCard([{ findRegex: '/(\\w+)@(\\w+)/g', replaceString: '$2@$1', disabled: false }]),
+    'email: foo@bar',
+  );
 
-// ──────────────────────────────────────────────
-console.log('\n--- Test 5: Code fence stripping ---');
-{
-  const card = {
-    extensions: {
-      regex_scripts: [
-        {
-          findRegex: 'greeting',
-          replaceString: '```html\n<div class="ui">Hello</div>\n```',
-          disabled: false,
-        },
-      ] as RegexScript[],
-    },
-  };
-  const result = executeStRegexScripts(card, 'greeting');
-  assertEq(result.matched, true, 'matched');
-  assert(result.html.includes('<div class="ui">Hello</div>'), 'code fences stripped');
-  assert(!result.html.includes('```'), 'no backticks in output');
-}
+  assert.equal(result.matched, true);
+  assert.match(result.html, /bar@foo/);
+  assert.equal(result.diagnostics.length, 0);
+});
 
-// ──────────────────────────────────────────────
-console.log('\n--- Test 6: Complex HTML does not inject when findRegex misses ---');
-{
-  const bigHtml = '<style>' + 'x'.repeat(3100) + '</style>';
-  const card = {
-    extensions: {
-      regex_scripts: [
-        { findRegex: 'NEVER_MATCH_SENTINEL_XYZ', replaceString: bigHtml, disabled: false },
-      ] as RegexScript[],
-    },
-  };
-  const result = executeStRegexScripts(card, 'some content without the sentinel');
-  assertEq(result.matched, false, 'matched is false when findRegex does not match');
-  assertEq(result.html, '', 'output is empty when no script matched');
-  assertEq(result.diagnostics[0]?.level, 'info', 'diagnostic explains skipped complex UI');
-}
+test('disabled scripts are skipped', () => {
+  const result = executeStRegexScripts(
+    buildCard([
+      { findRegex: 'Hello', replaceString: 'REPLACED', disabled: true },
+      { findRegex: 'Hello', replaceString: 'World', disabled: false },
+    ]),
+    'Hello there',
+  );
 
-// ──────────────────────────────────────────────
-console.log('\n--- Test 7: Macro substitution ---');
-{
-  const card = {
-    extensions: {
-      regex_scripts: [
-        { findRegex: 'greet', replaceString: 'Hello {{user}}, I am {{char}}!', disabled: false },
-      ] as RegexScript[],
-    },
-  };
-  const result = executeStRegexScripts(card, 'greet', { userName: 'Alice', charName: 'Bob' });
-  assert(result.html.includes('Alice'), '{{user}} replaced with Alice');
-  assert(result.html.includes('Bob'), '{{char}} replaced with Bob');
-  assert(!result.html.includes('{{user}}'), '{{user}} macro removed');
-}
+  assert.match(result.html, /World/);
+  assert.doesNotMatch(result.html, /REPLACED/);
+});
 
-// ──────────────────────────────────────────────
-console.log('\n--- Test 8: parseFindRegex helper ---');
-{
-  const re1 = parseFindRegex('/foo\\/bar/i');
-  assert(re1 !== null, '/foo\\/bar/i parses successfully');
-  assertEq(re1?.flags, 'i', 'flags are not forced global');
+test('invalid regex patterns produce diagnostics without blocking valid scripts', () => {
+  const result = executeStRegexScripts(
+    buildCard([
+      { findRegex: '/[invalid/g', replaceString: 'nope', disabled: false },
+      { findRegex: 'ok', replaceString: 'good', disabled: false },
+    ]),
+    'ok fine',
+  );
 
-  const re2 = parseFindRegex('literal [test]');
-  assert(re2 !== null, 'literal string parses');
-  assertEq(re2?.flags, '', 'raw regex source does not get forced global flag');
-  assert(!re2?.test('a literal [test] here'), 'raw regex semantics do not treat [test] as literal text');
+  assert.equal(result.diagnostics.length, 1);
+  assert.equal(result.diagnostics[0]?.level, 'warn');
+  assert.match(result.html, /good/);
+});
 
-  const re3 = parseFindRegex('/[bad/');
-  assertEq(re3, null, 'invalid regex returns null');
+test('replacement code fences are stripped', () => {
+  const result = executeStRegexScripts(
+    buildCard([
+      {
+        findRegex: 'greeting',
+        replaceString: '```html\n<div class="ui">Hello</div>\n```',
+        disabled: false,
+      },
+    ]),
+    'greeting',
+  );
 
-  const re4 = parseFindRegex('');
-  assertEq(re4, null, 'empty string returns null');
-}
+  assert.equal(result.matched, true);
+  assert.match(result.html, /<div class="ui">Hello<\/div>/);
+  assert.doesNotMatch(result.html, /```/);
+});
 
-// ──────────────────────────────────────────────
-console.log('\n--- Test 9: SillyTavern escaped regex source ---');
-{
-  const card = {
-    extensions: {
-      regex_scripts: [
-        { findRegex: '\\[开局\\]', replaceString: '<!doctype html><head></head><body><div id="app"></div></body>', disabled: false },
-      ] as RegexScript[],
-    },
-  };
-  const result = executeStRegexScripts(card, '[开局]');
-  assertEq(result.matched, true, 'escaped regex source matches bracketed text');
-  assert(!result.html.includes('[开局]'), 'trigger text is replaced');
-  assert(result.html.includes('<div id="app"></div>'), 'replacement HTML is present');
-}
+test('complex HTML replacements stay inactive when the trigger misses', () => {
+  const bigHtml = `<style>${'x'.repeat(3100)}</style>`;
+  const result = executeStRegexScripts(
+    buildCard([{ findRegex: 'NEVER_MATCH_SENTINEL_XYZ', replaceString: bigHtml, disabled: false }]),
+    'some content without the sentinel',
+  );
 
-// ──────────────────────────────────────────────
-console.log('\n--- Test 10: Replacement preserves JavaScript dollar-backtick sequences ---');
-{
+  assert.equal(result.matched, false);
+  assert.equal(result.html, '');
+  assert.equal(result.diagnostics[0]?.level, 'info');
+});
+
+test('SillyTavern macros are substituted in replacements', () => {
+  const result = executeStRegexScripts(
+    buildCard([{ findRegex: 'greet', replaceString: 'Hello {{user}}, I am {{char}}!', disabled: false }]),
+    'greet',
+    { userName: 'Alice', charName: 'Bob' },
+  );
+
+  assert.match(result.html, /Alice/);
+  assert.match(result.html, /Bob/);
+  assert.doesNotMatch(result.html, /\{\{user\}\}/);
+});
+
+test('parseFindRegex mirrors current string and regex semantics', () => {
+  const slashRegex = parseFindRegex('/foo\\/bar/i');
+  assert.ok(slashRegex);
+  assert.equal(slashRegex.flags, 'i');
+
+  const rawRegex = parseFindRegex('literal [test]');
+  assert.ok(rawRegex);
+  assert.equal(rawRegex.flags, '');
+  assert.equal(rawRegex.test('a literal [test] here'), false);
+
+  assert.equal(parseFindRegex('/[bad/'), null);
+  assert.equal(parseFindRegex(''), null);
+});
+
+test('escaped ST-style bracketed triggers match correctly', () => {
+  const result = executeStRegexScripts(
+    buildCard([
+      {
+        findRegex: '\\[开局\\]',
+        replaceString: '<!doctype html><head></head><body><div id="app"></div></body>',
+        disabled: false,
+      },
+    ]),
+    '[开局]',
+  );
+
+  assert.equal(result.matched, true);
+  assert.doesNotMatch(result.html, /\[开局\]/);
+  assert.match(result.html, /<div id="app"><\/div>/);
+});
+
+test('replacement text preserves dollar-backtick sequences used in embedded scripts', () => {
   const replacement = String.raw`<script>const re = new RegExp(\`<${'${tag}'}\\b[^>]*>([\\s\\S]*)$\`, 'i');</script>`;
-  const card = {
-    extensions: {
-      regex_scripts: [
-        { findRegex: '\\[开局\\]', replaceString: replacement, disabled: false },
-      ] as RegexScript[],
-    },
-  };
-  const result = executeStRegexScripts(card, '[开局]');
-  assertEq(result.matched, true, 'matched is true');
-  assert(result.html.includes('*)$`') || result.html.includes('*)$\\`'), 'dollar-backtick sequence is preserved');
-  assert(result.html.includes('new RegExp'), 'script replacement is present');
-}
+  const result = executeStRegexScripts(
+    buildCard([{ findRegex: '\\[开局\\]', replaceString: replacement, disabled: false }]),
+    '[开局]',
+  );
 
-// ──────────────────────────────────────────────
-console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
-if (failed > 0) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (globalThis as any).process?.exit?.(1);
-}
+  assert.equal(result.matched, true);
+  assert.match(result.html, /new RegExp/);
+  assert.ok(result.html.includes('*)$`') || result.html.includes('*)$\\`'));
+});

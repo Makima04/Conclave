@@ -28,6 +28,7 @@ export const MessageContent = React.memo(function MessageContent({
   runtime,
   onSandboxAction,
   renderMode = 'auto',
+  userName = '你',
 }: {
   content: string;
   card: CharacterCard | null;
@@ -35,9 +36,11 @@ export const MessageContent = React.memo(function MessageContent({
   runtime?: SandboxRuntimeContext;
   onSandboxAction?: (action: SandboxCardAction) => void;
   renderMode?: 'auto' | 'schema' | 'sandbox' | 'text';
+  userName?: string;
 }) {
   const marker = '<StatusPlaceHolderImpl/>';
   const contentHasStatusMarker = content.includes(marker);
+  const charName = card?.name || '{{char}}';
   const tavernHelperScripts = React.useMemo(() => getTavernHelperScripts(card), [card?.id, card?.extensions]);
   const renderPlan = React.useMemo(
     () => resolveCardRenderPlan({ card, content, runtime, renderMode }),
@@ -45,8 +48,8 @@ export const MessageContent = React.memo(function MessageContent({
   );
   const renderCleanText = (value: string) => {
     if (value.trim() === 'false') return null;
-    const cleaned = cleanCardDisplayText(value);
-    return cleaned ? renderCardFormattedContent(card, value) : null;
+    const cleaned = cleanCardDisplayText(value, userName, charName);
+    return cleaned ? renderCardFormattedContent(card, value, userName, charName) : null;
   };
   const renderTavernHelperStatusParts = () => {
     const parts = content.split(marker);
@@ -91,7 +94,7 @@ export const MessageContent = React.memo(function MessageContent({
         <>
           {parts.map((part, index) => (
             <React.Fragment key={index}>
-              {cleanCardDisplayText(part).trim() && renderCardFormattedContent(card, part)}
+              {cleanCardDisplayText(part, userName, charName).trim() && renderCardFormattedContent(card, part, userName, charName)}
               {index < parts.length - 1 && <CustomStatusRenderer schema={schema} variables={variables || {}} />}
             </React.Fragment>
           ))}
@@ -119,7 +122,7 @@ export const MessageContent = React.memo(function MessageContent({
     return (
       <>
         <SandboxHtmlRenderer html={renderPlan.runtimeHtml} variables={variables || {}} runtime={runtime} onAction={onSandboxAction} />
-        {shouldRenderCleanText(renderPlan.displayContent) && renderCardFormattedContent(card, renderPlan.displayContent)}
+        {shouldRenderCleanText(renderPlan.displayContent) && renderCardFormattedContent(card, renderPlan.displayContent, userName, charName)}
       </>
     );
   }

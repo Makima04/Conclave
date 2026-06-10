@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import * as api from '../api/client';
 import type {
@@ -33,6 +33,11 @@ function formatJson(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function buildTimestampedFilename(prefix: string): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `${prefix}-${stamp}.json`;
 }
 
 function turnMessages(messages: DebugMessage[], turn: number): DebugMessage[] {
@@ -606,6 +611,58 @@ function StateDiagnosticDetail({
   writableState: any;
 }) {
   const missingRows = stateDiagnostic.rows.filter((row) => !row.exists);
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
+  const exportPayload = useMemo(() => ({
+    summary: {
+      matchedChecks: stateDiagnostic.matchedChecks,
+      totalChecks: stateDiagnostic.totalChecks,
+      missingChecks: stateDiagnostic.missingChecks,
+    },
+    contractSummary,
+    contractQuality,
+    missingPaths: missingRows.map((row) => ({
+      ...row,
+      closest_paths: findClosestStatePaths(projectionVariables, row.path),
+    })),
+    explainability: explainabilityIssues,
+    adapterMeta,
+    projectionVariables,
+    platformState,
+    writableState,
+    allChecks: stateDiagnostic.rows,
+  }), [
+    adapterMeta,
+    contractQuality,
+    contractSummary,
+    explainabilityIssues,
+    missingRows,
+    platformState,
+    projectionVariables,
+    stateDiagnostic,
+    writableState,
+  ]);
+  const exportJson = useMemo(() => formatJson(exportPayload), [exportPayload]);
+  const handleCopyStateDiagnostic = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(exportJson);
+      setCopyState('copied');
+      window.setTimeout(() => setCopyState('idle'), 1800);
+    } catch {
+      setCopyState('error');
+      window.setTimeout(() => setCopyState('idle'), 2200);
+    }
+  }, [exportJson]);
+  const handleDownloadStateDiagnosticJson = useCallback(() => {
+    const blob = new Blob([exportJson], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = buildTimestampedFilename('state-diagnostic');
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  }, [exportJson]);
   return (
     <div className="snapshot-detail">
       <div className="snapshot-hero">
@@ -614,9 +671,19 @@ function StateDiagnosticDetail({
           <h2>状态依赖诊断</h2>
           <p>{stateDiagnostic.matchedChecks} 命中 / {stateDiagnostic.totalChecks} 检查</p>
         </div>
-        <div>
-          <strong>{stateDiagnostic.missingChecks}</strong>
-          <span>missing</span>
+        <div className="snapshot-hero-side">
+          <div className="snapshot-hero-metric">
+            <strong>{stateDiagnostic.missingChecks}</strong>
+            <span>missing</span>
+          </div>
+          <div className="snapshot-actions">
+            <button type="button" className="snapshot-action-btn" onClick={handleCopyStateDiagnostic}>
+              {copyState === 'copied' ? '已复制' : copyState === 'error' ? '复制失败' : '复制诊断'}
+            </button>
+            <button type="button" className="snapshot-action-btn" onClick={handleDownloadStateDiagnosticJson}>
+              导出 JSON
+            </button>
+          </div>
         </div>
       </div>
 
@@ -632,10 +699,7 @@ function StateDiagnosticDetail({
 
       <details open>
         <summary>Missing Paths ({missingRows.length})</summary>
-        <pre>{formatJson(missingRows.map((row) => ({
-          ...row,
-          closest_paths: findClosestStatePaths(projectionVariables, row.path),
-        })))}</pre>
+        <pre>{formatJson(exportPayload.missingPaths)}</pre>
       </details>
 
       <details open>
@@ -665,7 +729,7 @@ function StateDiagnosticDetail({
 
       <details>
         <summary>All Diagnostic Checks ({stateDiagnostic.rows.length})</summary>
-        <pre>{formatJson(stateDiagnostic.rows)}</pre>
+        <pre>{formatJson(exportPayload.allChecks)}</pre>
       </details>
     </div>
   );

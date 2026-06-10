@@ -20,3 +20,4 @@ frontend/dist/
 
 # CodeGraph index
 .codegraph/
+.claude/worktrees/

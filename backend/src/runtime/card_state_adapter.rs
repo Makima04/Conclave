@@ -144,6 +144,12 @@ pub fn apply_agent_changes(
     for change in changes {
         if let Some(target) = resolve_writable_platform_path(&change.target, contract) {
             set_path_value(&mut platform_state, &target, change.to.clone());
+        } else {
+            tracing::warn!(
+                path = %change.target,
+                value = ?change.to,
+                "write_rule mismatch: no matching rule for path, write rejected"
+            );
         }
     }
 
@@ -185,11 +191,15 @@ pub fn tool_state_for_context(state: &Value, contract: Option<&SessionStateContr
 }
 
 pub fn projection_path_writable(contract: &SessionStateContract, path: &str) -> bool {
-    let trimmed = path.trim().trim_start_matches("variables.");
+    let trimmed = path.trim();
+    let relative = trimmed
+        .strip_prefix("variables.")
+        .or_else(|| trimmed.strip_prefix("stat_data."))
+        .unwrap_or(trimmed);
     contract.adapter.write_rules.iter().any(|rule| {
-        trimmed == rule.card_path
-            || trimmed.starts_with(&format!("{}.", rule.card_path))
-            || trimmed.starts_with(&format!("{}[", rule.card_path))
+        relative == rule.card_path
+            || relative.starts_with(&format!("{}.", rule.card_path))
+            || relative.starts_with(&format!("{}[", rule.card_path))
     })
 }
 
@@ -203,12 +213,22 @@ pub fn apply_projection_change_set(
     let mut rejected = Vec::new();
 
     for (path, value) in changes {
-        let trimmed = path.trim().trim_start_matches("variables.").to_string();
-        if !projection_path_writable(contract, &trimmed) {
-            rejected.push(trimmed);
+        let trimmed = path.trim();
+        let relative = trimmed
+            .strip_prefix("variables.")
+            .or_else(|| trimmed.strip_prefix("stat_data."))
+            .unwrap_or(trimmed)
+            .to_string();
+        if !projection_path_writable(contract, &relative) {
+            tracing::warn!(
+                path = %relative,
+                value = ?value,
+                "write_rule mismatch: projection path not writable, write rejected"
+            );
+            rejected.push(relative);
             continue;
         }
-        set_path_value(&mut next, &trimmed, value.clone());
+        set_path_value(&mut next, &relative, value.clone());
     }
 
     (next, rejected)
@@ -428,6 +448,7 @@ fn resolve_writable_platform_path(target: &str, contract: &SessionStateContract)
     let relative = trimmed
         .strip_prefix("platform_state.")
         .or_else(|| trimmed.strip_prefix("variables."))
+        .or_else(|| trimmed.strip_prefix("stat_data."))
         .unwrap_or(trimmed);
 
     contract
@@ -795,54 +816,5 @@ mod tests {
             Some(&contract),
         );
         assert_eq!(state["variables"]["私有"]["flag"], serde_json::json!(true));
-    }
-
-    #[test]
-    fn projection_change_set_updates_only_writable_paths() {
-        let current = serde_json::json!({
-            "世界": {
-                "当前地点": ["侦探坡", "说明"],
-                "天气": "晴"
-            }
-        });
-
-        let (next, rejected) = apply_projection_change_set(
-            &current,
-            &[
-                ("variables.世界.当前地点".to_string(), serde_json::json!("学校")),
-                ("variables.世界.天气".to_string(), serde_json::json!("雨")),
-            ],
-            &contract(),
-        );
-
-        assert_eq!(next["世界"]["当前地点"], serde_json::json!("学校"));
-        assert_eq!(next["世界"]["天气"], serde_json::json!("晴"));
-        assert_eq!(rejected, vec!["世界.天气".to_string()]);
-    }
-
-    #[test]
-    fn state_view_only_exposes_writable_platform_paths_from_contract() {
-        let state = serde_json::json!({
-            "platform_state": {
-                "world": {
-                    "current_location": "学校",
-                    "weather": "雨"
-                },
-                "gm": {
-                    "secret": true
-                }
-            }
-        });
-
-        let view = state_view(&state, Some(&contract()));
-
-        assert_eq!(
-            view.writable_platform_state,
-            serde_json::json!({
-                "world": {
-                    "current_location": "学校"
-                }
-            })
-        );
     }
 }

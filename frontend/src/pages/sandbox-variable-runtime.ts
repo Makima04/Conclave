@@ -4,6 +4,12 @@ export const SANDBOX_VARIABLE_RUNTIME_SOURCE = String.raw`
     if (value === 'chat') return 'projection';
     return value;
   };
+  const normalizePath = (path) => {
+    const trimmed = String(path || '').trim();
+    if (trimmed.startsWith('stat_data.')) return trimmed.slice('stat_data.'.length);
+    if (trimmed.startsWith('variables.')) return trimmed.slice('variables.'.length);
+    return trimmed;
+  };
   const parseVariablePathPart = (part) => {
     const source = String(part || '');
     const open = source.lastIndexOf('[');
@@ -15,14 +21,10 @@ export const SANDBOX_VARIABLE_RUNTIME_SOURCE = String.raw`
     }
     return { key: source, index: null };
   };
-  const normalizeVariablePath = (path) => String(path || '')
-    .trim()
-    .replace(/^(?:stat_data|display_data|variables|chat_variables|projection|chat)\./, '');
   const getValueAtPath = (root, path) => {
-    const normalizedPath = normalizeVariablePath(path);
-    if (!normalizedPath) return root;
+    if (!path) return root;
     let current = root;
-    for (const part of normalizedPath.split('.').filter(Boolean)) {
+    for (const part of String(path).split('.').filter(Boolean)) {
       if (!current || typeof current !== 'object') return undefined;
       const { key, index } = parseVariablePathPart(part);
       current = current?.[key];
@@ -37,7 +39,7 @@ export const SANDBOX_VARIABLE_RUNTIME_SOURCE = String.raw`
   const ensureBridgeArray = (value) => Array.isArray(value) ? value : [];
   const setValueAtPath = (root, path, value) => {
     const base = ensureBridgeObject(cloneJson(root ?? {}));
-    const parts = normalizeVariablePath(path).split('.').filter(Boolean);
+    const parts = String(path || '').split('.').filter(Boolean);
     if (parts.length === 0) return base;
     let current = base;
     for (let i = 0; i < parts.length; i += 1) {
@@ -100,50 +102,23 @@ export const SANDBOX_VARIABLE_RUNTIME_SOURCE = String.raw`
     const rejected = [];
     for (const change of leafChanges) {
       if (!change.path) continue;
-      if (normalizedScope === 'projection' && !isProjectionPathAllowed(change.path, contract)) {
-        rejected.push(change.path);
+      const normalizedPath = normalizePath(change.path);
+      if (!normalizedPath) continue;
+      if (normalizedScope === 'projection' && !isProjectionPathAllowed(normalizedPath, contract)) {
+        console.warn('[sandbox-variable-runtime] write_rule mismatch: projection path not writable, write rejected:', normalizedPath);
+        rejected.push(normalizedPath);
         continue;
       }
-      next = setValueAtPath(next, change.path, cloneJson(change.value));
-      applied.push(change.path);
+      next = setValueAtPath(next, normalizedPath, cloneJson(change.value));
+      applied.push(normalizedPath);
     }
     return { next, applied, rejected };
   };
   const messageVariablesOf = (message) => {
-    if (!message || typeof message !== 'object') return runtimeProjectionVariables || {};
+    if (!message || typeof message !== 'object') return {};
+    if (message.variables && typeof message.variables === 'object') return message.variables;
     const data = message.data && typeof message.data === 'object' ? message.data : {};
-    const candidates = [
-      message.variables,
-      data.variables,
-      data.stat_data,
-      data.display_data,
-      runtimeProjectionVariables,
-    ];
-    const nonEmpty = candidates.find(value =>
-      value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0
-    );
-    if (nonEmpty) return nonEmpty;
-    return candidates.find(value => value && typeof value === 'object' && !Array.isArray(value)) || {};
-  };
-  const platformStateOf = (message) => {
-    if (message && message.data && typeof message.data === 'object') {
-      const value = message.data.platform_state;
-      if (value && typeof value === 'object' && !Array.isArray(value)) return value;
-    }
-    if (runtimeContext?.platformState && typeof runtimeContext.platformState === 'object') {
-      return runtimeContext.platformState;
-    }
-    return {};
-  };
-  const writableStateOf = (message) => {
-    if (message && message.data && typeof message.data === 'object') {
-      const value = message.data.writable_state;
-      if (value && typeof value === 'object' && !Array.isArray(value)) return value;
-    }
-    if (runtimeContext?.writableState && typeof runtimeContext.writableState === 'object') {
-      return runtimeContext.writableState;
-    }
-    return {};
+    return data.variables && typeof data.variables === 'object' ? data.variables : {};
   };
   const runtimeScopedStores = {
     global: {},
@@ -164,15 +139,6 @@ export const SANDBOX_VARIABLE_RUNTIME_SOURCE = String.raw`
     switch (scope) {
       case 'message':
         return messageVariablesOf(resolveRuntimeMessage(normalized));
-      case 'canonical':
-      case 'platform':
-      case 'platform_state':
-        return platformStateOf(resolveRuntimeMessage(normalized));
-      case 'writable':
-      case 'agent':
-      case 'state_agent':
-      case '_state_agent_writable':
-        return writableStateOf(resolveRuntimeMessage(normalized));
       case 'projection':
         return runtimeProjectionVariables || {};
       case 'global':
@@ -187,35 +153,10 @@ export const SANDBOX_VARIABLE_RUNTIME_SOURCE = String.raw`
         return runtimeProjectionVariables || {};
     }
   };
-  const unwrapVariablePayload = (value) => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-    const preferred = value.stat_data || value.display_data || value.variables || value.chat_variables;
-    if (
-      preferred
-      && typeof preferred === 'object'
-      && !Array.isArray(preferred)
-      && Object.keys(preferred).length > 0
-    ) {
-      const wrapperKeys = new Set(['stat_data', 'display_data', 'variables', 'chat_variables']);
-      const ownKeys = Object.keys(value).filter(key => !wrapperKeys.has(key));
-      if (ownKeys.length === 0) return preferred;
-    }
-    return value;
-  };
-  const withVariableAliases = (variables) => {
-    const store = cloneJson(variables && typeof variables === 'object' ? variables : {}) || {};
-    return {
-      ...store,
-      stat_data: cloneJson(store),
-      display_data: cloneJson(store),
-      variables: cloneJson(store),
-      chat_variables: cloneJson(store),
-    };
-  };
   const setVariableStore = (variables, option = { type: 'projection' }) => {
     const normalized = normalizeVariableOption(option);
     const scope = normalized.type === 'chat' ? 'projection' : normalized.type;
-    const next = unwrapVariablePayload(variables);
+    const next = variables && typeof variables === 'object' ? variables : {};
     if (scope === 'message') {
       const message = resolveRuntimeMessage(normalized);
       if (message) {
@@ -254,7 +195,7 @@ export const SANDBOX_VARIABLE_RUNTIME_SOURCE = String.raw`
       && (scope === 'canonical' || scope === 'platform' || scope === 'platform_state')
     ) {
       const requestPaths = Array.isArray(paths)
-        ? paths.map((path) => String(path || '').trim()).filter(Boolean).slice(0, 100)
+        ? paths.map((path) => normalizePath(path)).filter(Boolean).slice(0, 100)
         : [];
       const values = await requestHost('readVariables', {
         paths: requestPaths,
@@ -274,45 +215,17 @@ export const SANDBOX_VARIABLE_RUNTIME_SOURCE = String.raw`
       });
       return cloneJson(values && typeof values === 'object' ? values : {});
     }
-    if (scope === 'writable' || scope === 'agent' || scope === 'state_agent' || scope === '_state_agent_writable') {
-      const store = writableStateOf(resolveRuntimeMessage(normalized));
-      if (!Array.isArray(paths) || paths.length === 0) return cloneJson(store);
-      const out = {};
-      for (const rawPath of paths.slice(0, 50)) {
-        const path = String(rawPath || '').trim();
-        if (!path) continue;
-        const value = getValueAtPath(store, path);
-        if (value !== undefined) out[path] = cloneJson(value);
-      }
-      return out;
-    }
     const store = getVariableStore(option);
     if (!Array.isArray(paths) || paths.length === 0) return cloneJson(store);
     const out = {};
     for (const rawPath of paths.slice(0, 50)) {
-      const path = String(rawPath || '').trim();
+      const path = normalizePath(rawPath);
       if (!path) continue;
       const value = getValueAtPath(store, path);
       if (value !== undefined) out[path] = cloneJson(value);
     }
     return out;
   }
-  const getvar = (path, options = {}) => {
-    const store = getVariableStore(options);
-    const value = getValueAtPath(store, path);
-    if (value !== undefined) return cloneJson(value);
-    if (options && typeof options === 'object' && 'defaults' in options) return cloneJson(options.defaults);
-    if (options && typeof options === 'object' && 'default' in options) return cloneJson(options.default);
-    return undefined;
-  };
-  const setvar = (path, value, options = {}) => {
-    const normalized = normalizeVariableOption(options);
-    const scope = normalizeVariableScope(normalized.type);
-    const store = getVariableStore({ ...normalized, type: scope });
-    const next = setValueAtPath(store, path, cloneJson(value));
-    setVariableStore(next, { ...normalized, type: scope });
-    return cloneJson(value);
-  };
   async function writeBridgeVariables(changes = {}, option = { type: 'projection' }) {
     const normalized = normalizeVariableOption(option);
     const scope = normalizeVariableScope(normalized.type);
@@ -351,11 +264,6 @@ export const SANDBOX_VARIABLE_RUNTIME_SOURCE = String.raw`
       projection: cloneJson(runtimeProjectionVariables),
       chat: cloneJson(runtimeProjectionVariables),
       message: cloneJson(messageVariablesOf(runtimeMessage)),
-      canonical: cloneJson(platformStateOf(runtimeMessage)),
-      platform: cloneJson(platformStateOf(runtimeMessage)),
-      platform_state: cloneJson(platformStateOf(runtimeMessage)),
-      writable: cloneJson(writableStateOf(runtimeMessage)),
-      _state_agent_writable: cloneJson(writableStateOf(runtimeMessage)),
       variables: cloneJson(runtimeProjectionVariables),
     };
   };

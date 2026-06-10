@@ -24,7 +24,7 @@ function parsePathPart(part: string): { key: string; index: number | null } {
 export function getValueAtPath(root: any, path: string): any {
   if (!path) return root;
   let current = root;
-  for (const part of String(path).split('.')) {
+  for (const part of String(path).split('.').filter(Boolean)) {
     if (!current || typeof current !== 'object') return undefined;
     const { key, index } = parsePathPart(part);
     current = current?.[key];
@@ -75,6 +75,13 @@ export function setValueAtPath(root: any, path: string, value: any): any {
   return base;
 }
 
+function normalizePath(path: string): string {
+  const trimmed = path.trim();
+  if (trimmed.startsWith('stat_data.')) return trimmed.slice('stat_data.'.length);
+  if (trimmed.startsWith('variables.')) return trimmed.slice('variables.'.length);
+  return trimmed;
+}
+
 function collectLeafChanges(value: any, prefix = ''): Array<{ path: string; value: any }> {
   if (Array.isArray(value) || value == null || typeof value !== 'object') {
     return prefix ? [{ path: prefix, value }] : [];
@@ -118,12 +125,14 @@ export function applyBridgeChanges(
 
   for (const change of leafChanges) {
     if (!change.path) continue;
-    if (normalizedScope === 'projection' && !isProjectionPathAllowed(change.path, contract)) {
-      rejected.push(change.path);
+    const normalizedPath = normalizePath(change.path);
+    if (!normalizedPath) continue;
+    if (normalizedScope === 'projection' && !isProjectionPathAllowed(normalizedPath, contract)) {
+      rejected.push(normalizedPath);
       continue;
     }
-    next = setValueAtPath(next, change.path, structuredClone(change.value));
-    applied.push(change.path);
+    next = setValueAtPath(next, normalizedPath, structuredClone(change.value));
+    applied.push(normalizedPath);
   }
 
   return { next, applied, rejected };

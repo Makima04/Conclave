@@ -1,5 +1,9 @@
 // SillyTavern-compatible regex_scripts executor.
 
+import { processMacros, type MacroContext } from './st-macros.ts';
+
+export { type MacroContext } from './st-macros.ts';
+
 export interface RegexScript {
   findRegex: string;
   replaceString: string;
@@ -42,6 +46,8 @@ export interface StRegexExecutionOptions {
   isPrompt?: boolean;
   isEdit?: boolean;
   depth?: number;
+  /** When provided, macros in findRegex patterns are expanded before compiling. */
+  macroContext?: MacroContext;
 }
 
 type FindMatcher = {
@@ -49,30 +55,105 @@ type FindMatcher = {
   mode: 'regex' | 'literal';
 };
 
+// ── Regex LRU cache (P1-5) ──
+
+const REGEX_CACHE_MAX = 1000;
+const regexCache = new Map<string, RegExp>();
+
 /**
- * Parse a findRegex string into a RegExp using SillyTavern's regexFromString
- * behavior. ST does not force a global flag; cards opt into /g themselves.
+ * Get a compiled RegExp from the cache, or compile and cache it.
+ * Uses an LRU-like eviction: when the cache is full, the oldest entry is removed.
  */
-export function parseFindRegex(findRegex: string): RegExp | null {
-  return parseFindMatcher(findRegex)?.regex ?? null;
-}
-
-function parseFindMatcher(findRegex: string): FindMatcher | null {
-  if (typeof findRegex !== 'string' || !findRegex) return null;
-
+export function getCachedRegex(pattern: string, flags: string): RegExp | null {
+  const key = `${flags}/${pattern}`;
+  const cached = regexCache.get(key);
+  if (cached) {
+    // Move to end (most recently used) by re-inserting
+    regexCache.delete(key);
+    regexCache.set(key, cached);
+    return cached;
+  }
   try {
-    const match = findRegex.match(/(\/?)(.+)\1([a-z]*)/i);
-    if (!match) return { regex: new RegExp(findRegex), mode: 'regex' };
-
-    const flags = match[3] || '';
-    if (flags && !/^(?!.*?(.).*?\1)[gmixXsuUAJ]+$/.test(flags)) {
-      return { regex: new RegExp(findRegex), mode: 'regex' };
+    const regex = new RegExp(pattern, flags);
+    if (regexCache.size >= REGEX_CACHE_MAX) {
+      const firstKey = regexCache.keys().next().value;
+      if (firstKey !== undefined) regexCache.delete(firstKey);
     }
-
-    return { regex: new RegExp(match[2], flags), mode: 'regex' };
+    regexCache.set(key, regex);
+    return regex;
   } catch {
     return null;
   }
+}
+
+/**
+ * Clear the regex cache. Useful for testing or when patterns change globally.
+ */
+export function clearRegexCache(): void {
+  regexCache.clear();
+}
+
+/**
+ * Parse a findRegex string into a RegExp using SillyTavern's regexFromString
+ * behavior. ST does not force a global flag; cards opt into /g themselves.
+ *
+ * When macroContext is provided, {{macro}} patterns in the findRegex string
+ * are expanded before compiling (P1-2). If compilation fails, a literal-string
+ * fallback is attempted (P1-3). Compiled RegExp objects are LRU-cached (P1-5).
+ */
+export function parseFindRegex(findRegex: string, macroContext?: MacroContext): RegExp | null {
+  return parseFindMatcher(findRegex, macroContext)?.regex ?? null;
+}
+
+function parseFindMatcher(findRegex: string, macroContext?: MacroContext): FindMatcher | null {
+  if (typeof findRegex !== 'string' || !findRegex) return null;
+
+  // P1-2: Expand macros in the findRegex pattern before compiling
+  let expanded = findRegex;
+  if (macroContext) {
+    try {
+      expanded = processMacros(findRegex, macroContext);
+    } catch {
+      // macro expansion failed; fall through with original string
+    }
+  }
+
+  try {
+    const match = expanded.match(/(\/?)(.+)\1([a-z]*)/i);
+    if (!match) {
+      // P1-5: Use cache; P1-3: fallback to literal on failure
+      const cached = getCachedRegex(expanded, '');
+      if (cached) return { regex: cached, mode: 'regex' };
+      return tryLiteralFallback(expanded, '');
+    }
+
+    const flags = match[3] || '';
+    if (flags && !/^(?!.*?(.).*?\1)[gmixXsuUAJ]+$/.test(flags)) {
+      const cached = getCachedRegex(expanded, '');
+      if (cached) return { regex: cached, mode: 'regex' };
+      return tryLiteralFallback(expanded, '');
+    }
+
+    // P1-5: Use cache for the parsed pattern
+    const cached = getCachedRegex(match[2], flags);
+    if (cached) return { regex: cached, mode: 'regex' };
+
+    // P1-3: Regex compilation failed — try literal-string fallback
+    return tryLiteralFallback(match[2], flags);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * P1-3: Escape the pattern as a literal string and retry compilation.
+ * Mirrors the Rust backend's regex::escape() fallback behavior.
+ */
+function tryLiteralFallback(pattern: string, flags: string): FindMatcher | null {
+  const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const cached = getCachedRegex(escaped, flags);
+  if (cached) return { regex: cached, mode: 'literal' };
+  return null;
 }
 
 /**
@@ -188,7 +269,7 @@ export function runStRegexScript(
     return { output: rawString, matched: false };
   }
 
-  const matcher = parseFindMatcher(script.findRegex);
+  const matcher = parseFindMatcher(script.findRegex, options.macroContext);
   if (!matcher) {
     return {
       output: rawString,

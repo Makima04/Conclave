@@ -79,6 +79,117 @@ export const SANDBOX_DOM_SHIM_SOURCE = String.raw`
     slideDown(duration, callback) { this.items.forEach(el => { if (el?.style) el.style.display = ''; if (typeof duration === 'function') duration.call(el); else if (typeof callback === 'function') setTimeout(() => callback.call(el), Number(duration) || 0); }); return this; }
     slideUp(duration, callback) { this.items.forEach(el => { const done = () => { if (el?.style) el.style.display = 'none'; if (typeof callback === 'function') callback.call(el); }; if (typeof duration === 'function') { done(); duration.call(el); } else setTimeout(done, Number(duration) || 0); }); return this; }
     remove() { this.items.forEach(el => el?.remove && el.remove()); return this; }
+    width(value) {
+      if (value === undefined) {
+        const el = this.items[0];
+        if (!el) return undefined;
+        if (el === window) return window.innerWidth;
+        if (el === document) return document.documentElement.scrollWidth;
+        return el.getBoundingClientRect().width;
+      }
+      this.items.forEach(el => { if (el?.style) el.style.width = typeof value === 'number' ? value + 'px' : String(value); });
+      return this;
+    }
+    height(value) {
+      if (value === undefined) {
+        const el = this.items[0];
+        if (!el) return undefined;
+        if (el === window) return window.innerHeight;
+        if (el === document) return document.documentElement.scrollHeight;
+        return el.getBoundingClientRect().height;
+      }
+      this.items.forEach(el => { if (el?.style) el.style.height = typeof value === 'number' ? value + 'px' : String(value); });
+      return this;
+    }
+    outerHeight(includeMargin) {
+      const el = this.items[0];
+      if (!el) return undefined;
+      const rect = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
+      let h = rect.height;
+      if (includeMargin) {
+        h += parseFloat(style.marginTop) || 0;
+        h += parseFloat(style.marginBottom) || 0;
+      }
+      return h;
+    }
+    outerWidth(includeMargin) {
+      const el = this.items[0];
+      if (!el) return undefined;
+      const rect = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
+      let w = rect.width;
+      if (includeMargin) {
+        w += parseFloat(style.marginLeft) || 0;
+        w += parseFloat(style.marginRight) || 0;
+      }
+      return w;
+    }
+    scrollTop(value) {
+      const el = this.items[0];
+      if (!el) return undefined;
+      if (value === undefined) {
+        if (el === window || el === document) return window.pageYOffset || document.documentElement.scrollTop || 0;
+        return el.scrollTop || 0;
+      }
+      this.items.forEach(e => {
+        if (e === window || e === document) window.scrollTo(window.pageXOffset, Number(value));
+        else e.scrollTop = Number(value);
+      });
+      return this;
+    }
+    scrollLeft(value) {
+      const el = this.items[0];
+      if (!el) return undefined;
+      if (value === undefined) {
+        if (el === window || el === document) return window.pageXOffset || document.documentElement.scrollLeft || 0;
+        return el.scrollLeft || 0;
+      }
+      this.items.forEach(e => {
+        if (e === window || e === document) window.scrollTo(Number(value), window.pageYOffset);
+        else e.scrollLeft = Number(value);
+      });
+      return this;
+    }
+    offset() {
+      const el = this.items[0];
+      if (!el) return undefined;
+      const rect = el.getBoundingClientRect();
+      return { top: rect.top + window.pageYOffset, left: rect.left + window.pageXOffset };
+    }
+    position() {
+      const el = this.items[0];
+      if (!el) return undefined;
+      const rect = el.getBoundingClientRect();
+      const parent = el.offsetParent;
+      if (!parent || parent === document.documentElement) return { top: rect.top + window.pageYOffset, left: rect.left + window.pageXOffset };
+      const parentRect = parent.getBoundingClientRect();
+      return { top: rect.top - parentRect.top - (parseFloat(getComputedStyle(parent).borderTopWidth) || 0), left: rect.left - parentRect.left - (parseFloat(getComputedStyle(parent).borderLeftWidth) || 0) };
+    }
+    animate(properties, durationOrOptions, callback) {
+      const opts = (typeof durationOrOptions === 'object' && durationOrOptions !== null) ? durationOrOptions : {};
+      const duration = typeof durationOrOptions === 'number' ? durationOrOptions : (opts.duration ?? 0);
+      const completeCb = typeof callback === 'function' ? callback : (typeof opts.complete === 'function' ? opts.complete : null);
+      const progressCb = typeof opts.progress === 'function' ? opts.progress : null;
+      const fire = () => {
+        this.items.forEach(el => {
+          if (!el?.style) return;
+          for (const [prop, val] of Object.entries(properties)) {
+            if (prop === 'scrollTop') { el.scrollTop = parseInt(String(val), 10) || 0; continue; }
+            if (prop === 'scrollLeft') { el.scrollLeft = parseInt(String(val), 10) || 0; continue; }
+            el.style[prop] = String(val);
+          }
+        });
+        if (progressCb) this.items.forEach(el => progressCb.call(el, null, 1, 0));
+        if (completeCb) this.items.forEach(el => completeCb.call(el));
+      };
+      if (duration > 0) setTimeout(fire, duration); else queueMicrotask(fire);
+      const animObj = {
+        promise: () => new Promise(resolve => { if (duration > 0) setTimeout(resolve, duration); else queueMicrotask(resolve); }),
+        animate: (p, d, c) => { queueMicrotask(() => new MiniQuery(this.items).animate(p, d, c)); return animObj; },
+      };
+      return animObj;
+    }
     [Symbol.iterator]() { return this.items[Symbol.iterator](); }
   }
   window.$ = window.jQuery = (value) => {
@@ -92,6 +203,30 @@ export const SANDBOX_DOM_SHIM_SOURCE = String.raw`
       return new MiniQuery(document);
     }
     return new MiniQuery(value);
+  };
+  window.$.ajax = function(options) {
+    if (!options || typeof options !== 'object') return;
+    const url = options.url || '';
+    console.warn('[sandbox-jquery] $.ajax is not supported in the sandbox environment. Request to ' + url + ' was blocked.');
+    if (typeof options.error === 'function') {
+      options.error(null, 'error', 'AJAX requests are not supported in the sandbox environment');
+    }
+    if (typeof options.complete === 'function') {
+      options.complete(null, 'error');
+    }
+  };
+  window.$.extend = function(target, ...sources) {
+    if (target === true) {
+      const actualTarget = sources.shift() || {};
+      for (const source of sources) {
+        if (source && typeof source === 'object') Object.assign(actualTarget, source);
+      }
+      return actualTarget;
+    }
+    for (const source of sources) {
+      if (source && typeof source === 'object') Object.assign(target, source);
+    }
+    return target;
   };
 })();
 `;

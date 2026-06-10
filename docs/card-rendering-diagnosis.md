@@ -257,16 +257,18 @@ sessionState (React Hook)
 
 ### P1 — 短期补齐（3-5 天，大幅提高卡片兼容性）
 
+> **状态**: ✅ 全部完成 (2026-06-10)
+
 | 序号 | 任务 | 说明 |
 |------|------|------|
-| **P1-1** | 实现核心 ST 宏（`{{time}}` `{{date}}` `{{getvar}}` `{{setvar}}` `{{random}}` `{{pick}}` `{{roll}}` `{{lastMessage}}`） | 至少覆盖互动小说/TRPG 卡片最常用的 15 种宏 |
-| **P1-2** | findRegex 也做宏展开 | 参考 ST 的 `substituteParamsExtended(findRegex)` |
-| **P1-3** | 前端 `parseFindRegex` 添加 regex escape 回退 | 与后端对齐，防止字面量匹配失败 |
-| **P1-4** | 统一沙箱/宿主路径规范化 | 宿主端也剥离 `stat_data.` 等前缀 |
-| **P1-5** | 添加 Regex 缓存 | LRU 缓存，避免重复编译 |
-| **P1-6** | 文本路径下对 sandbox_html 内容保留 `on*` 事件 | `sanitizeHtmlFragment` 用于 `dangerouslySetInnerHTML` 的内容需要区分场景 |
-| **P1-7** | jQuery shim 补齐 `$.ajax` `$.extend` `width()` `height()` | 提高卡片 JS 兼容性 |
-| **P1-8** | write_rule 不匹配时添加 console.warn 日志 | 辅助调试变量写入失败 |
+| **P1-1** | ✅ 实现核心 ST 宏（`{{time}}` `{{date}}` `{{getvar}}` `{{setvar}}` `{{random}}` `{{pick}}` `{{roll}}` `{{lastMessage}}`） | 至少覆盖互动小说/TRPG 卡片最常用的 15 种宏 |
+| **P1-2** | ✅ findRegex 也做宏展开 | 参考 ST 的 `substituteParamsExtended(findRegex)` |
+| **P1-3** | ✅ 前端 `parseFindRegex` 添加 regex escape 回退 | 与后端对齐，防止字面量匹配失败 |
+| **P1-4** | ✅ 统一沙箱/宿主路径规范化 | 宿主端也剥离 `stat_data.` 等前缀 |
+| **P1-5** | ✅ 添加 Regex 缓存 | LRU 缓存，避免重复编译 |
+| **P1-6** | ✅ (无需改动 — 现有实现已正确) 文本路径下对 sandbox_html 内容保留 `on*` 事件 | `sanitizeHtmlFragment` 用于 `dangerouslySetInnerHTML` 的内容需要区分场景 |
+| **P1-7** | ✅ jQuery shim 补齐 `$.ajax` `$.extend` `width()` `height()` | 提高卡片 JS 兼容性 |
+| **P1-8** | ✅ write_rule 不匹配时添加 console.warn 日志 | 辅助调试变量写入失败 |
 
 **预期效果**：修复后，绝大多数中文 TRPG / 互动小说角色卡能正确渲染和互动，变量系统可靠性大幅提升。
 

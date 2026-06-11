@@ -104,13 +104,6 @@ pub struct ApplyOpeningMessage {
 }
 
 #[derive(Deserialize)]
-pub struct UpdateSessionVariablesBody {
-    pub variables: serde_json::Value,
-    #[serde(default)]
-    pub merge: bool,
-}
-
-#[derive(Deserialize)]
 pub struct ProjectionChange {
     pub path: String,
     pub value: serde_json::Value,
@@ -1112,103 +1105,6 @@ pub async fn get_state(
     Ok(Json(value))
 }
 
-pub async fn update_variables(
-    State(state): State<Arc<AppState>>,
-    Path(session_id): Path<String>,
-    Json(body): Json<UpdateSessionVariablesBody>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let session_exists: Option<String> =
-        sqlx::query_scalar("SELECT id FROM sessions WHERE id = ? AND deleted_at IS NULL")
-            .bind(&session_id)
-            .fetch_optional(&state.pool)
-            .await?;
-    if session_exists.is_none() {
-        return Err(AppError::NotFound("Session not found".to_string()));
-    }
-
-    let mut tx = state.pool.begin().await?;
-    let current_state: Option<String> = sqlx::query_scalar(
-        "SELECT state_json FROM state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 1",
-    )
-    .bind(&session_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-
-    let mut state_value: serde_json::Value = current_state
-        .and_then(|value| serde_json::from_str(&value).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    if !state_value.is_object() {
-        state_value = serde_json::json!({});
-    }
-
-    let mut next_projection = if body.merge {
-        let mut merged = state_value
-            .get("variables")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({}));
-        merge_json_objects(&mut merged, &body.variables);
-        merged
-    } else {
-        body.variables
-    };
-    if !next_projection.is_object() {
-        next_projection = serde_json::json!({});
-    }
-
-    let fallback_variables = state_value.get("variables").cloned();
-    let contract = card_state_adapter::load_session_contract_tx_for_routes(
-        &mut tx,
-        &session_id,
-        fallback_variables.as_ref(),
-    )
-    .await?;
-
-    let next_state = if let Some(contract) = contract.as_ref() {
-        card_state_adapter::build_normalized_state(
-            &state_value,
-            contract,
-            Some(next_projection.clone()),
-        )
-    } else {
-        let mut raw = state_value.clone();
-        if let Some(obj) = raw.as_object_mut() {
-            obj.insert("variables".to_string(), next_projection.clone());
-        }
-        raw
-    };
-
-    let max_version: Option<i32> =
-        sqlx::query_scalar("SELECT MAX(version) FROM state_snapshots WHERE session_id = ?")
-            .bind(&session_id)
-            .fetch_one(&mut *tx)
-            .await?;
-    let now = chrono::Utc::now().to_rfc3339();
-    sqlx::query(
-        "INSERT INTO state_snapshots (id, session_id, version, state_json, risk_level, committed_by, created_at) VALUES (?, ?, ?, ?, 'low', 'card_runtime', ?)"
-    )
-    .bind(uuid::Uuid::new_v4().to_string())
-    .bind(&session_id)
-    .bind(max_version.unwrap_or(0) + 1)
-    .bind(next_state.to_string())
-    .bind(now.clone())
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
-        .bind(now)
-        .bind(&session_id)
-        .execute(&mut *tx)
-        .await?;
-
-    tx.commit().await?;
-
-    let response_variables = next_state
-        .get("variables")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
-    Ok(Json(serde_json::json!({ "variables": response_variables })))
-}
-
 pub async fn update_projection_changes(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
@@ -1403,23 +1299,6 @@ pub async fn read_variables(
     })))
 }
 
-fn merge_json_objects(target: &mut serde_json::Value, source: &serde_json::Value) {
-    match (target, source) {
-        (serde_json::Value::Object(target_obj), serde_json::Value::Object(source_obj)) => {
-            for (key, value) in source_obj {
-                match target_obj.get_mut(key) {
-                    Some(existing) => merge_json_objects(existing, value),
-                    None => {
-                        target_obj.insert(key.clone(), value.clone());
-                    }
-                }
-            }
-        }
-        (target_value, source_value) => {
-            *target_value = source_value.clone();
-        }
-    }
-}
 
 pub async fn get_memory_events(
     State(state): State<Arc<AppState>>,

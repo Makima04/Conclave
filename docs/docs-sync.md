@@ -32,12 +32,12 @@
 | 变更内容 | 必须更新 |
 |---|---|
 | Runtime 行为变更 | `agent-runtime.md`，必要时 `dynamic-master-architecture.md` |
-| Agent 权限或上下文可见性变更 | `agent-boundaries.md` |
+| Agent 权限或上下文可见性变更 | `agent-runtime.md`、`dynamic-master-architecture.md` |
 | 长期记忆、状态、事件、伏笔、角色成长变更 | `long-context-memory.md` |
 | 技术栈、依赖、数据库、前端框架变更 | `tech-selection.md` |
 | API 端点或数据模型变更 | `database-api.md` |
-| 内容包格式、导入导出、迁移逻辑变更 | `content-packages.md`、`card-import-normalization.md` |
-| 角色卡渲染、sandbox、共享存档、开场白、iframe 性能变更 | `card-rendering-runtime.md` |
+| 内容包格式、导入导出、迁移逻辑变更 | [卡牌渲染流水线](card-rendering-pipeline.md) |
+| 角色卡渲染、sandbox、共享存档、开场白、iframe 性能变更 | [卡牌渲染流水线](card-rendering-pipeline.md) |
 | Artifact 渲染、安全预算、沙箱策略变更 | `artifact-renderer.md` |
 | 测试覆盖或性能基准变更 | `testing.md` |
 | 实现顺序、阶段目标、MVP 范围变更 | `implementation-priority.md` |

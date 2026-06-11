@@ -34,10 +34,6 @@
 
 定义互动角色统一建模为 Actor Agent 的设计，避免 NPC/配角/临时角色在运行时形成多套不一致抽象。
 
-### 核心 — [Agent 边界与权限](agent-boundaries.md)
-
-定义 parser、master、npc、writer、state 等 Agent 的信息边界、行为边界、写入边界和 visibility 隔离。
-
 ### 工程 — [技术选型](tech-selection.md)
 
 整理 Rust 后端、React 前端、数据库、检索、Artifact Renderer 和跨平台部署的推荐方案。
@@ -46,48 +42,13 @@
 
 定义 P0-P4 的实现顺序、MVP 边界、暂不优先事项，以及项目进度和文档维护要求。
 
----
-
-## 建议阅读顺序
-
-| 顺序 | 文档 | 为什么先读 |
-|---|---|---|
-| 1 | [项目总架构](index.md) | 先明确项目不是普通聊天应用，而是长篇叙事和多 Agent 编排平台。 |
-| 2 | [长期记忆与叙事一致性](long-context-memory.md) | 这是平台最核心的问题域，决定后端、Agent、数据库和测试方式。 |
-| 3 | [Agent Runtime 规范](agent-runtime.md) | 先明确多 Agent 每轮如何执行、Agent 类型、状态如何提交。 |
-| 3.5 | [动态总控架构](dynamic-master-architecture.md) | 深入理解 multi_agent 模式的 4 层流水线和 Agent 生命周期。 |
-| 4 | [Actor Agent 架构](actor-agent-architecture.md) | 明确互动角色如何统一建模。 |
-| 5 | [Agent 边界与权限](agent-boundaries.md) | 多 Agent 是否有效，取决于上下文隔离、权限和写入控制。 |
-| 6 | [技术选型](tech-selection.md) | 最后再看技术栈，确保技术选择服务架构目标。 |
-| 7 | [数据库与 API 规范](database-api.md) | 进入实现前先明确数据模型和 API 契约。 |
-| 8 | [内容包规范](content-packages.md) | 创作者入口依赖内容包，SillyTavern 迁移也依赖它。 |
-| 9 | [卡片导入标准化规范](card-import-normalization.md) | 理解外部卡如何进入平台卡包。 |
-| 10 | [角色卡渲染运行时](card-rendering-runtime.md) | 理解当前复杂 HTML 卡、sandbox、共享存档和性能边界。 |
-| 11 | [角色卡兼容运行时重构架构](card-runtime-refactor-architecture.md) | 理解角色卡兼容从导入到动态变量回流的目标收敛方案。 |
-| 12 | [Artifact Renderer 规范](artifact-renderer.md) | 防止 LLM 生成代码污染 DOM 或拖垮长会话性能。 |
-| 13 | [测试与评测规范](testing.md) | 平台核心风险必须能回归验证。 |
-| 14 | [项目实现优先级](implementation-priority.md) | 进入实现前确认先做哪些契约、MVP 和核心 Runtime 能力。 |
-| 15 | [文档维护规则](docs-sync.md) | 理解文档维护规则，防止实现与文档长期漂移。 |
-
 ### 工程 — [数据库与 API 规范](database-api.md)
 
 定义 SQLite schema、Rust API、SSE 流式输出、会话、消息、状态、记忆、trace 和 artifact 接口。
 
-### 工程 — [内容包规范](content-packages.md)
+### 工程 — [卡牌渲染流水线](card-rendering-pipeline.md)
 
-定义 Character Pack、World Pack、Agent Graph Pack、Plugin Pack、manifest schema、资源约定、版本规则、导入导出和 SillyTavern 迁移。
-
-### 工程 — [卡片导入标准化规范](card-import-normalization.md)
-
-定义 SillyTavern 等外部角色卡如何在导入期转换为平台原生卡包；运行时 sandbox 兼容是受控兼容层，不是无限补丁入口。
-
-### 工程 — [角色卡渲染运行时](card-rendering-runtime.md)
-
-定义当前复杂角色卡 HTML app 如何在 iframe 中渲染、如何桥接 TavernHelper/MVU、如何提供共享存档、如何处理开场白和性能优化。
-
-### 工程 — [角色卡兼容运行时重构架构](card-runtime-refactor-architecture.md)
-
-定义角色卡从导入、前端 regex 显示语义执行，到 canonical state / card projection / 动态变量回流渲染的目标重构架构。
+定义卡牌渲染流水线：ST + JS-Slash-Runner 兼容路径、iframe 注入资源、tavern_helper 脚本执行、postMessage 通信协议。
 
 ### 工程 — [Artifact Renderer 规范](artifact-renderer.md)
 
@@ -100,6 +61,37 @@
 ### 工程 — [文档维护规则](docs-sync.md)
 
 定义 Markdown 单一来源、更新触发条件、索引维护和自动化检查建议。
+
+---
+
+## 建议阅读顺序
+
+| 顺序 | 文档 | 为什么先读 |
+|---|---|---|
+| 1 | [项目总架构](index.md) | 先明确项目不是普通聊天应用，而是长篇叙事和多 Agent 编排平台。 |
+| 2 | [长期记忆与叙事一致性](long-context-memory.md) | 这是平台最核心的问题域，决定后端、Agent、数据库和测试方式。 |
+| 3 | [Agent Runtime 规范](agent-runtime.md) | 先明确多 Agent 每轮如何执行、Agent 类型、状态如何提交。 |
+| 4 | [动态总控架构](dynamic-master-architecture.md) | 深入理解 multi_agent 模式的 4 层流水线和 Agent 生命周期。 |
+| 5 | [Actor Agent 架构](actor-agent-architecture.md) | 明确互动角色如何统一建模。 |
+| 6 | [技术选型](tech-selection.md) | 最后再看技术栈，确保技术选择服务架构目标。 |
+| 7 | [数据库与 API 规范](database-api.md) | 进入实现前先明确数据模型和 API 契约。 |
+| 8 | [卡牌渲染流水线](card-rendering-pipeline.md) | 理解 ST 兼容方案：regex macros → iframe 注入 → tavern_helper 脚本 → postMessage 通信。 |
+| 9 | [Artifact Renderer 规范](artifact-renderer.md) | 防止 LLM 生成代码污染 DOM 或拖垮长会话性能。 |
+| 10 | [测试与评测规范](testing.md) | 平台核心风险必须能回归验证。 |
+| 11 | [项目实现优先级](implementation-priority.md) | 进入实现前确认先做哪些契约、MVP 和核心 Runtime 能力。 |
+| 12 | [文档维护规则](docs-sync.md) | 理解文档维护规则，防止实现与文档长期漂移。 |
+
+---
+
+## 已删除文档（架构重构 2026-06-11）
+
+以下文档描述的是已废弃的导入分析流水线、ST 兼容运行时和状态适配器层，已被 [卡牌渲染流水线](card-rendering-pipeline.md) 替代：
+
+- ~~Agent 边界与权限~~ — 双层状态网关已废弃
+- ~~内容包规范~~ — ConclaveCardPackage 概念已废弃
+- ~~卡片导入标准化规范~~ — 导入时分析流水线已废弃
+- ~~角色卡渲染运行时~~ — 多宿主渲染已废弃
+- ~~角色卡兼容运行时重构架构~~ — 状态适配器方案已废弃
 
 ---
 

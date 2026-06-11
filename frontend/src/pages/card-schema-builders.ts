@@ -4,7 +4,11 @@ import type { CharacterCard } from '../api/types';
 import type { UiSchema, UiTheme } from './card-schema-types';
 import { DEFAULT_STATUS_THEME } from './card-schema-types';
 import { extractCssVar, extractFirst } from './card-utils';
-import { getStatusReplaceString } from './card-content';
+
+function getStatusReplaceString(card: CharacterCard | null): string | null {
+  const source = (card?.extensions as Record<string, any> | undefined)?.status_replace_string;
+  return typeof source === 'string' && source.trim() ? source.trim() : null;
+}
 
 export function buildStatusSchema(card: CharacterCard | null): UiSchema | null {
   const source = getStatusReplaceString(card);

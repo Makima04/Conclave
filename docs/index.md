@@ -21,13 +21,9 @@
 - [Agent Runtime](agent-runtime.md)
 - [Actor Agent 架构](actor-agent-architecture.md)
 - [动态总控架构](dynamic-master-architecture.md)
-- [Agent 边界](agent-boundaries.md)
 - [实现优先级](implementation-priority.md)
 - [数据库与 API](database-api.md)
-- [内容包规范](content-packages.md)
-- [卡片导入标准化](card-import-normalization.md)
-- [角色卡渲染运行时](card-rendering-runtime.md)
-- [角色卡兼容运行时重构架构](card-runtime-refactor-architecture.md)
+- [卡牌渲染流水线](card-rendering-pipeline.md)
 - [Artifact Renderer](artifact-renderer.md)
 - [测试与评测](testing.md)
 - [文档维护规则](docs-sync.md)
@@ -49,8 +45,8 @@
 ## 总体架构
 
 - **Web Client** — 聊天界面、会话管理、Agent 管理面板、Provider 设置。
-- **Backend API** — 会话、消息、Agent 管理、Provider、提案、记忆、trace、SSE 流式输出、世界书(worldbooks)、角色卡(charactercards)、预设(presets)、卡片导入(card_import)、设置(settings)。
-- **RP Runtime Core** — 动态总控 4 层流水线（Parser → Master → Sub-agents → Writer → Compression）、上下文装配、状态变更、trace 记录。子系统包括：turn_service（回合服务编排）、background_jobs（后台任务）、knowledge（知识检索）、llm_limiter（LLM 调用限流）、variable_tool_agent（变量工具 Agent）、worldbook_parser（世界书解析）、preset_parser（预设解析）、card_state_adapter（卡片状态适配）。
+- **Backend API** — 会话、消息、Agent 管理、Provider、提案、记忆、trace、SSE 流式输出、世界书(worldbooks)、角色卡(charactercards)、预设(presets)、卡片导入(card_import)、变量(variables)、设置(settings)。
+- **RP Runtime Core** — 动态总控 4 层流水线（Parser → Master → Sub-agents → Writer → Compression）、上下文装配、状态变更、trace 记录。子系统包括：turn_service（回合服务编排）、background_jobs（后台任务）、knowledge（知识检索）、llm_limiter（LLM 调用限流）、variable_tool_agent（变量工具 Agent）、worldbook_parser（世界书解析）、preset_parser（预设解析）。
 - **Memory Layer** — 结构化状态、事件账本、伏笔、场景摘要、结构化事件召回。
 - **Provider Adapter** — LLM 模型路由，支持会话级独立模型配置。
 
@@ -69,30 +65,17 @@
 
 ---
 
-## 创作者复用方式（P3 预留）
+## 角色卡运行时（v3 极简架构）
 
-| 包类型 | 用途 | 面向用户 |
-|---|---|---|
-| `Character Pack` | 角色卡内容包 | 普通创作者 |
-| `World Pack` | 世界书内容包 | 普通创作者 |
-| `Agent Graph Pack` | 行为包 | 高级创作者 |
-| `Plugin Pack` | 能力包 | 插件开发者 |
+采用与 SillyTavern 一致的极简方案：
 
----
+- **导入**：PNG/JSON 解析 → 存储原始字段，不做导入时分析
+- **宏引擎**：纯正则 `String.replace()` 方案，不认识的 `{{macro}}` 原样保留
+- **渲染**：始终 `<iframe srcdoc="...">`，通过 `postMessage` 通信
+- **变量**：简单嵌套 JSON 存储 + 路径读写，LLM 通过 `read_variable` / `write_variable` 工具调用
+- **安全**：LLM 写入路径白名单 + session 隔离
 
-## 角色卡渲染运行时（当前实现）
-
-复杂角色卡当前以 `ConclaveCardPackage` + iframe sandbox 渲染。运行时提供受控的 TavernHelper/MVU 兼容、宿主消息上下文、共享存档桥接和右侧开场白选择。
-
-详见 [角色卡渲染运行时](card-rendering-runtime.md)。
-
----
-
-## 角色卡兼容重构（目标架构）
-
-角色卡兼容将从“导入器 + 多处 regex 重放 + 多个宿主补丁”收敛为统一运行时模型：导入器只做原始数据提取和兼容分析，前端成为唯一显示语义执行入口，动态变量采用 canonical state + card projection + runtime-local state 三层模型。
-
-详见 [角色卡兼容运行时重构架构](card-runtime-refactor-architecture.md)。
+详见 [卡牌渲染流水线](card-rendering-pipeline.md)。
 
 ---
 

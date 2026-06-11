@@ -6,9 +6,25 @@ import * as api from '../../api/client';
 import type { CharacterCard, Message, SessionConfig } from '../../api/types';
 import type { SandboxCardAction } from '../card-schema-types';
 import type { RenderMode } from '../../api/types';
-import { hasStatusRenderer } from '../card-content';
-import { getParsedGreetings } from '../st-html-app-runtime';
 import type { useStreamRecovery } from './useStreamRecovery';
+
+import { cleanCardDisplayText } from '../card-content';
+
+function hasStatusRenderer(card: CharacterCard | null): boolean {
+  const extensions = card?.extensions as Record<string, any> | undefined;
+  return typeof extensions?.status_replace_string === 'string' && Boolean(extensions.status_replace_string.trim());
+}
+
+function cleanComparableMessageText(content: string): string {
+  return cleanCardDisplayText(content)
+    .replace(/\s+/g, '')
+    .trim();
+}
+
+function getParsedGreetings(card: CharacterCard | null): string[] {
+  if (!card) return [];
+  return [card.first_mes, ...(card.alternate_greetings ?? [])];
+}
 
 type RecoveryApi = ReturnType<typeof useStreamRecovery>;
 
@@ -663,15 +679,15 @@ export function useMessageStream({
       }
       if (canApplyOpening && message) {
         const greetings = getParsedGreetings(characterCard);
-        const normalizedMessage = message.replace(/\s+/g, '').trim();
-        const matchedGreetingIndex = greetings.findIndex(greeting =>
-          greeting.replace(/\s+/g, '').trim() === normalizedMessage
+        const normalizedMessage = cleanComparableMessageText(message);
+        const matchedGreetingIndex = greetings.findIndex((greeting: string) =>
+          cleanComparableMessageText(greeting) === normalizedMessage
         );
         if (matchedGreetingIndex >= 0) {
           setSelectedGreetingIndex(matchedGreetingIndex - 1);
-          await applyOpeningContent(greetings[matchedGreetingIndex], '应用开场白失败', canApplyOpening);
-          return;
         }
+        await applyOpeningContent(message, '应用开场白失败', canApplyOpening);
+        return;
       }
       if (message) {
         sandboxDraftRef.current = message;

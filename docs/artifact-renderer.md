@@ -1,6 +1,6 @@
 # Artifact Renderer 规范
 
-> 定义 LLM 生成的 UI 内容如何安全、高效地渲染：三层渲染模型、Artifact 生命周期、UI Schema、iframe 沙箱、资源预算和快照策略。角色卡 HTML app 的当前运行时细节见 [角色卡渲染运行时](card-rendering-runtime.md)。
+> 定义 LLM 生成的 UI 内容如何安全、高效地渲染：三层渲染模型、Artifact 生命周期、UI Schema、iframe 沙箱、资源预算和快照策略。角色卡 HTML app 的当前运行时细节见 [卡牌渲染流水线](card-rendering-pipeline.md)。
 
 `Artifact` · `iframe Sandbox` · `State Diff` · `Resource Budget` · `Snapshot` · `UI Schema`
 
@@ -11,7 +11,7 @@
 - [数据库与 API](database-api.md)
 - [长期记忆](long-context-memory.md)
 - [Agent Runtime](agent-runtime.md)
-- [Agent 边界](agent-boundaries.md)
+- Agent 边界
 
 ---
 
@@ -306,7 +306,7 @@ iframe 内 JS 可用的 Web API：
 | `setTimeout` / `setInterval` | 是 | 受平台托管，超时自动清理。 |
 | `fetch` | 否 | `connect-src 'none'` 阻止。 |
 | `XMLHttpRequest` | 否 | 同上。 |
-| `localStorage` / `sessionStorage` | LLM artifact 默认否；角色卡 sandbox 可 shim | LLM 输出不应持久化存储。ST 风格角色卡见 `card-rendering-runtime.md`。 |
+| `localStorage` / `sessionStorage` | LLM artifact 默认否；角色卡 sandbox 可 shim | LLM 输出不应持久化存储。ST 风格角色卡见 [卡牌渲染流水线](card-rendering-pipeline.md)。 |
 | `IndexedDB` | LLM artifact 默认否；角色卡 sandbox 可 shim | 仅用于受控兼容，不作为通用 artifact 能力。 |
 | `navigator.geolocation` | 否 | 无权限。 |
 | `getUserMedia` | 否 | 无权限。 |

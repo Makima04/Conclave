@@ -10,7 +10,7 @@
 - [架构首页](index.md)
 - [技术选型](tech-selection.md)
 - [Agent Runtime](agent-runtime.md)
-- [Agent 边界](agent-boundaries.md)
+- Agent 边界
 
 ---
 

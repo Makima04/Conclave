@@ -7,8 +7,20 @@ import type {
   RuntimeSettings,
   DebugMessage, DebugTurnSummary, AgentDebugSnapshot,
 } from './types';
-import type { SandboxSharedSave } from '../pages/sandbox-runtime-types';
 import { consumeSseResponse, type ChatSseHandler } from './sse';
+
+// Local type: originally from sandbox-runtime-types (deleted in v3)
+interface SandboxSharedSave {
+  id: string;
+  session_id: string;
+  world_pack_id: string;
+  group_id: string;
+  label: string;
+  state: Record<string, unknown>;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
 
 const BASE_URL = '/api';
 

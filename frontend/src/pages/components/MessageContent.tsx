@@ -1,135 +1,105 @@
 // MessageContent — core routing component for card content rendering
-// Extracted from Chat.tsx GROUP 24
+// v4: Uses unified ST + JS-Slash-Runner rendering pipeline (renderMessageHtml)
+//     – Full HTML docs / <script> → iframe (JS-Slash-Runner path)
+//     – Everything else → DOMPurify + style scoping + inline DOM (ST path)
 
 import React from 'react';
 import type { CharacterCard } from '../../api/types';
 import type { SandboxCardAction } from '../card-schema-types';
-import type { SandboxRuntimeContext } from '../sandbox-runtime-types';
 import { CustomStatusRenderer } from './CustomStatusRenderer';
-import { SandboxHtmlRenderer } from './SandboxHtmlRenderer';
-import { TavernHelperRuntimeHost } from './TavernHelperRuntimeHost';
-import { MessageHtmlAppRenderer } from './MessageHtmlAppRenderer';
-import {
-  cleanCardDisplayText,
-  getTavernHelperScripts,
-  renderCardFormattedContent,
-} from '../card-content';
+import { IframeHtmlRuntimeHost } from './IframeHtmlRuntimeHost';
+import { renderCardIframeHtml } from '../card-content';
 import { buildStatusSchema } from '../card-schema-builders';
-import {
-  resolveCardRenderPlan,
-  resolveTavernHelperStatusMode,
-  shouldRenderCleanText,
-} from '../card-runtime-resolver';
+import { renderMessageHtml } from '../message-html';
+
+type SandboxRuntimeContext = Record<string, any>;
 
 export const MessageContent = React.memo(function MessageContent({
   content,
   card,
   variables,
-  runtime,
   onSandboxAction,
   renderMode = 'auto',
   userName = '你',
+  sessionId,
+  worldBookId,
+  onMessagesChanged,
 }: {
   content: string;
   card: CharacterCard | null;
-  variables: any;
+  variables: unknown;
   runtime?: SandboxRuntimeContext;
   onSandboxAction?: (action: SandboxCardAction) => void;
   renderMode?: 'auto' | 'schema' | 'sandbox' | 'text';
   userName?: string;
+  sessionId?: string;
+  worldBookId?: string;
+  onMessagesChanged?: () => void;
 }) {
-  const marker = '<StatusPlaceHolderImpl/>';
-  const contentHasStatusMarker = content.includes(marker);
   const charName = card?.name || '{{char}}';
-  const tavernHelperScripts = React.useMemo(() => getTavernHelperScripts(card), [card?.id, card?.extensions]);
-  const renderPlan = React.useMemo(
-    () => resolveCardRenderPlan({ card, content, runtime, renderMode }),
-    [card, content, runtime, renderMode],
-  );
-  const renderCleanText = (value: string) => {
-    if (value.trim() === 'false') return null;
-    const cleaned = cleanCardDisplayText(value, userName, charName);
-    return cleaned ? renderCardFormattedContent(card, value, userName, charName) : null;
-  };
-  const renderTavernHelperStatusParts = () => {
-    const parts = content.split(marker);
+
+  // Text mode: skip all HTML processing — clean plain text only
+  if (renderMode === 'text') {
+    const cleaned = content
+      .replace(/{{user}}/g, userName)
+      .replace(/{{char}}/g, charName);
+    return <>{cleaned.trim() === 'false' ? null : cleaned}</>;
+  }
+
+  // Unified ST + JS-Slash-Runner rendering
+  const output = renderMessageHtml(content, { card, userName, charName });
+
+  // JS-Slash-Runner path: full HTML doc → iframe
+  if (output.type === 'iframe') {
+    const iframeHtml = renderCardIframeHtml(
+      output.html,
+      (variables as Record<string, unknown>) || {},
+      userName,
+      charName,
+      sessionId,
+      worldBookId,
+      card,
+    );
+    return (
+      <IframeHtmlRuntimeHost
+        documentHtml={iframeHtml}
+        variables={(variables as Record<string, unknown>) || {}}
+        sessionId={sessionId}
+        worldBookId={worldBookId}
+        onAction={onSandboxAction}
+        onMessagesChanged={onMessagesChanged}
+      />
+    );
+  }
+
+  // ST path: inline HTML with DOMPurify + style scoping
+  const schema = buildStatusSchema(card);
+  const segments = output.segments;
+
+  if (segments && segments.length > 1) {
+    // Has <StatusPlaceHolderImpl/> marker → split around it
     return (
       <>
-        {parts.map((part, index) => (
+        {segments.map((segment, index) => (
           <React.Fragment key={index}>
-            {renderCleanText(part)}
-            {index < parts.length - 1 && tavernHelperScripts.length > 0 && (
-              <TavernHelperRuntimeHost
-                scripts={tavernHelperScripts}
-                variables={variables || {}}
-                runtime={runtime}
-                onAction={onSandboxAction}
-              />
+            <div
+              className="mes-text"
+              dangerouslySetInnerHTML={{ __html: segment }}
+            />
+            {index < segments.length - 1 && schema && (
+              <CustomStatusRenderer schema={schema} variables={(variables as Record<string, unknown>) || {}} />
             )}
           </React.Fragment>
         ))}
       </>
     );
-  };
-
-  // Text mode: always plain formatted content
-  if (renderMode === 'text') {
-    return <>{renderCleanText(renderPlan.displayContent)}</>;
   }
 
-  const schema = buildStatusSchema(card);
-  const statusContent = contentHasStatusMarker
-    ? renderPlan.displayContent
-    : `${renderPlan.displayContent.trim()}\n\n${marker}`;
-
-  if (resolveTavernHelperStatusMode(card, content, renderMode)) {
-    return renderTavernHelperStatusParts();
-  }
-
-  // Schema mode is explicit only. Auto/Sandbox no longer downgrade to platform renderers.
-  if (renderMode === 'schema') {
-    if (schema) {
-      const parts = statusContent.split(marker);
-      return (
-        <>
-          {parts.map((part, index) => (
-            <React.Fragment key={index}>
-              {cleanCardDisplayText(part, userName, charName).trim() && renderCardFormattedContent(card, part, userName, charName)}
-              {index < parts.length - 1 && <CustomStatusRenderer schema={schema} variables={variables || {}} />}
-            </React.Fragment>
-          ))}
-        </>
-      );
-    }
-    return <>{renderCleanText(renderPlan.displayContent)}</>;
-  }
-
-  if (renderPlan.kind === 'html_app' && card) {
-    return (
-      <>
-        <MessageHtmlAppRenderer
-          card={card}
-          variables={variables || {}}
-          runtime={runtime}
-          onAction={onSandboxAction}
-        />
-        {renderCleanText(renderPlan.displayContent)}
-      </>
-    );
-  }
-
-  if (renderPlan.kind === 'sandbox_html') {
-    return (
-      <>
-        <SandboxHtmlRenderer html={renderPlan.runtimeHtml} variables={variables || {}} runtime={runtime} onAction={onSandboxAction} />
-        {shouldRenderCleanText(renderPlan.displayContent) && renderCardFormattedContent(card, renderPlan.displayContent, userName, charName)}
-      </>
-    );
-  }
-
+  // No marker: render entire content as one block
   return (
-    <>
-      {renderCleanText(renderPlan.displayContent)}
-    </>
+    <div
+      className="mes-text"
+      dangerouslySetInnerHTML={{ __html: output.html }}
+    />
   );
 });

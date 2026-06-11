@@ -1,10 +1,11 @@
 // SillyTavern-compatible regex_scripts executor.
 
-import { processMacros, type MacroContext } from './st-macros.ts';
+import { processMacros, type MacroContext } from './macro-engine';
 
-export { type MacroContext } from './st-macros.ts';
+export type { MacroContext } from './macro-engine';
 
 export interface RegexScript {
+  scriptName?: string;
   findRegex: string;
   replaceString: string;
   disabled?: boolean;

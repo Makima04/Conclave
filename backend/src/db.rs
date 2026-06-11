@@ -189,6 +189,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .await?;
     tracing::debug!("Migration 015_agent_debug_snapshots.sql applied");
 
+    sqlx::raw_sql(include_str!("../migrations/016_session_variables.sql"))
+        .execute(pool)
+        .await?;
+    tracing::debug!("Migration 016_session_variables.sql applied");
+
     // Add world_books parse columns if missing
     let has_parse_status: bool = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM pragma_table_info('world_books') WHERE name = 'parse_status'",

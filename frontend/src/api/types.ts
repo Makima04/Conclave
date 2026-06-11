@@ -489,16 +489,51 @@ export interface ApiCompatibilityMapping {
   notes: string;
 }
 
+export type ExtractedSignalKind =
+  | 'variable_path'
+  | 'state_schema_path'
+  | 'runtime_root'
+  | 'action_hint'
+  | 'ui_dependency'
+  | 'unresolved';
+
+export interface ExtractedSignal {
+  id: string;
+  kind: ExtractedSignalKind;
+  path?: string | null;
+  label?: string | null;
+  source: string;
+  confidence: number;
+  excerpt?: string | null;
+  details?: unknown;
+}
+
+export interface ExtractionLayers {
+  state_signals: ExtractedSignal[];
+  ui_signals: ExtractedSignal[];
+  action_signals: ExtractedSignal[];
+  unresolved_signals: ExtractedSignal[];
+}
+
+export interface RawCardSource {
+  character_book?: unknown;
+  first_mes: string;
+  alternate_greetings: string[];
+  extensions: unknown;
+}
+
 export interface ConclaveCardPackage {
   manifest: PackageManifest;
   greetings: Greeting[];
   ui: PackageUi;
   runtime_hints: PackageRuntimeHints;
+  extraction_layers: ExtractionLayers;
   variables: VariableDeclaration[];
   state_schema: CardStateSchema;
   state_adapter: CardStateAdapter;
   actions: ActionDeclaration[];
   compatibility: CompatibilityReport;
+  raw_source: RawCardSource;
 }
 
 export interface ImportReport {

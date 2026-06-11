@@ -8,8 +8,12 @@ import type { CharacterCard, Message, Preset, RenderMode, SessionConfig, UserPer
 import { DEFAULT_SESSION_CONFIG } from '../../api/types';
 import { loadGlobalSessionDefaults, loadUserPersonaPresets, normalizeRenderMode, normalizeSessionConfig, saveGlobalSessionDefaults, type UserPersonaPreset } from '../../settings/sessionDefaults';
 import { useProviders } from '../../contexts/AppContext';
-import { getParsedGreetings } from '../st-html-app-runtime';
 import { cleanCardDisplayText } from '../card-content';
+
+function getParsedGreetings(card: CharacterCard | null): string[] {
+  if (!card) return [];
+  return [card.first_mes, ...(card.alternate_greetings ?? [])];
+}
 
 const HTML_APP_TRIGGER_RE = /(?:^|\n)\s*(?:\[attachment\]|\[开局\]|【GameStart】|【游戏开始】)\s*(?:\n|$)/gi;
 
@@ -93,7 +97,7 @@ export function useChatSession() {
     } catch (err) {
       setCharacterCard(null);
       setSelectedGreetingIndex(-1);
-      console.error('Failed to load character card:', err);
+      console.warn('No character card for this world book, using world book directly');
     }
   }
 
@@ -289,7 +293,7 @@ export function useChatSession() {
 
     const comparableOpening = cleanComparableMessageText(openingMessage.content);
     const greetings = getParsedGreetings(characterCard);
-    const matchedGreetingIndex = greetings.findIndex(greeting =>
+    const matchedGreetingIndex = greetings.findIndex((greeting: string) =>
       cleanComparableMessageText(greeting) === comparableOpening
     );
     const nextIndex = matchedGreetingIndex >= 0 ? matchedGreetingIndex - 1 : -1;

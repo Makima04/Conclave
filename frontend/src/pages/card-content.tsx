@@ -1,38 +1,237 @@
 // Card content processing pipeline
-// Extracted from Chat.tsx GROUP 6 + GROUP 7 + GROUP 8 + GROUP 9 + GROUP 25
+// Extracted from Chat.tsx GROUP 6 + GROUP 8 + GROUP 9 + GROUP 25
+// v3 ST-engine: uses st-rendering-engine.ts for regex script execution
 
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { CharacterCard } from '../api/types';
 import { CodeBlock } from './components/CodeBlock';
-import {
-  executeStRegexScripts,
-  expandStRegexReplacement,
-  parseFindRegex,
-  shouldRunStRegexScript,
-  stRegexPlacement,
-  type RegexScript,
-} from './st-regex-executor';
-import { encodeStyleTags } from './sandbox-style-isolation';
+import { IframeHtmlRuntimeHost } from './components/IframeHtmlRuntimeHost';
+import type { RegexScript } from './st-regex-executor';
+import { getRegexedString, regex_placement } from './st-rendering-engine';
+import { processMacros, createMacroContext } from './macro-engine';
+import { buildIframeBridgeScript } from './iframe-bridge';
 
-// --- GROUP 6: Character card inspection functions ---
+// ── ST-standard library versions (mirrors JS-Slash-Runner injection) ──
 
-export function getStatusReplaceString(card: CharacterCard | null): string {
-  const scripts = (card?.extensions as Record<string, any> | undefined)?.regex_scripts;
-  if (!Array.isArray(scripts)) return '';
-  const script = scripts.find((item: any) =>
-    !item?.disabled
-      && item?.findRegex === '<StatusPlaceHolderImpl/>'
-      && typeof item?.replaceString === 'string'
-      && item.replaceString.includes('status-card')
-  );
-  return script?.replaceString || '';
+const ST_CDN_LIBS = {
+  // JS-Slash-Runner also uses Font Awesome 6 + Tailwind + jQuery + Vue + Zod in its iframe
+  fontAwesomeCss: 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css',
+  tailwindCss: 'https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css',
+  jquery: 'https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js',
+  zod: 'https://cdnjs.cloudflare.com/ajax/libs/zod/3.23.8/zod.min.js',
+  vue: 'https://cdnjs.cloudflare.com/ajax/libs/vue/2.7.14/vue.min.js',
+};
+
+// ── TavernHelper script helpers ──
+
+interface TavernHelperScript {
+  type?: string;
+  enabled?: boolean;
+  name?: string;
+  id?: string;
+  content?: string;
 }
 
-export function hasStatusRenderer(card: CharacterCard | null): boolean {
-  return Boolean(getStatusReplaceString(card));
+/**
+ * Extract tavern_helper.scripts from a CharacterCard's extensions.
+ * These are ES module imports or inline scripts that create UI elements
+ * like floating buttons, status bars, CG galleries, etc.
+ */
+export function getTavernHelperScripts(card: CharacterCard | null): TavernHelperScript[] {
+  const ext = card?.extensions as Record<string, unknown> | undefined;
+  const th = ext?.tavern_helper as Record<string, unknown> | undefined;
+  const scripts = th?.scripts;
+  if (!Array.isArray(scripts)) return [];
+  return scripts.filter((s: TavernHelperScript) => s.enabled !== false);
 }
+
+/**
+ * Build `<script>` tags for tavern_helper scripts to inject into the iframe <head>.
+ * - Scripts whose content is an `import '...'` statement → `<script type="module">`
+ * - Scripts whose content is inline JS → `<script defer>`
+ * - If content is empty/absent, skip (external scripts loaded via src are not supported)
+ */
+export function buildTavernHelperScriptTags(card: CharacterCard | null): string {
+  const scripts = getTavernHelperScripts(card);
+  if (scripts.length === 0) return '';
+
+  return scripts
+    .map((s, i) => {
+      const content = (s.content || '').trim();
+      if (!content) return '';
+
+      // ES module import statement → type="module"
+      if (/^import\s/.test(content) || /^export\s/.test(content)) {
+        return `<script type="module" id="th-script-${i}">${content}</script>`;
+      }
+
+      // Regular inline script
+      return `<script defer id="th-script-${i}">${content}</script>`;
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+// ── CDN URL rewriting — some CDNs (bootcdn.net) are commonly blocked by
+// browser ad-blockers. Rewrite to alternative CDNs that are less likely
+// to be blocked.
+
+function rewriteCdnUrls(html: string): string {
+  return html
+    // Font Awesome: bootcdn.net → cdnjs.cloudflare.com
+    .replace(
+      /https?:\/\/cdn\.bootcdn\.net\/ajax\/libs\/font-awesome\//g,
+      'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/',
+    )
+    // Generic bootcdn → cdnjs mapping for common libs
+    .replace(
+      /https?:\/\/cdn\.bootcdn\.net\/ajax\/libs\//g,
+      'https://cdnjs.cloudflare.com/ajax/libs/',
+    );
+}
+
+// ── vh→CSS-variable replacement ──
+// JS-Slash-Runner replaces `vh` with `--TH-viewport-height` so cards
+// using `100vh` don't overflow the iframe viewport.
+
+/**
+ * Replace vh units in CSS with calc() expressions using --TH-viewport-height.
+ * Covers: style attributes, <style> blocks, and inline style properties.
+ * e.g. `height: 100vh` → `height: calc(100 * var(--TH-viewport-height) / 100)`
+ */
+export function replaceViewportUnits(html: string): string {
+  return html.replace(/(\d+(?:\.\d+)?)vh/g, 'calc($1 * var(--TH-viewport-height) / 100)');
+}
+
+const VH_REPLACEMENT_SCRIPT = `
+(function() {
+  'use strict';
+  var style = document.createElement('style');
+  style.id = 'xrp-vh-fix';
+  style.textContent = ':root { --TH-viewport-height: ' + window.innerHeight + 'px; }';
+  document.head.appendChild(style);
+  window.addEventListener('resize', function() {
+    var s = document.getElementById('xrp-vh-fix');
+    if (s) s.textContent = ':root { --TH-viewport-height: ' + window.innerHeight + 'px; }';
+  });
+})();
+`.trim();
+
+/**
+ * Build the head bridge script for iframe compatibility.
+ * This runs BEFORE the card body HTML (including its inline <script> tags),
+ * ensuring global APIs like waitGlobalInitialized, z (Zod), and
+ * updateTavernRegexesWith are available when card scripts execute.
+ *
+ * Mirrors the predefine.js + function/global.ts pattern from JS-Slash-Runner.
+ */
+function buildHeadBridgeScript(): string {
+  return `
+(function() {
+  'use strict';
+
+  // ── Zod shim — card scripts (MVU etc.) depend on global z ──
+  window.z = window.Zod || window.z || (window.parent && window.parent.Zod) || (window.parent && window.parent.z);
+
+  // ── Minimal event system for global initialization signaling ──
+  var _headEvents = {};
+  function headEmit(name) {
+    var list = _headEvents[name];
+    if (list) { for (var i = 0; i < list.length; i++) { try { list[i](); } catch(e) {} } }
+  }
+  function headOn(name, fn) {
+    if (!_headEvents[name]) _headEvents[name] = [];
+    _headEvents[name].push(fn);
+  }
+  function headOnce(name, fn) {
+    var wrapper = function() { headOff(name, wrapper); fn.apply(null, arguments); };
+    headOn(name, wrapper);
+  }
+  function headOff(name, fn) {
+    var list = _headEvents[name];
+    if (list) { var i = list.indexOf(fn); if (i >= 0) list.splice(i, 1); }
+  }
+
+  // ── initializeGlobal / waitGlobalInitialized (synchronous stubs) ──
+  window.initializeGlobal = function(name) {
+    if (!window[name]) { window[name] = {}; }
+    headEmit('global_' + name + '_initialized');
+  };
+  window.waitGlobalInitialized = function(name) {
+    if (window[name] && Object.keys(window[name]).length > 0) {
+      return Promise.resolve();
+    }
+    return new Promise(function(resolve) {
+      headOnce('global_' + name + '_initialized', resolve);
+    });
+  };
+
+  // ── updateTavernRegexesWith — no-op shim ──
+  window.updateTavernRegexesWith = function(updater, option) {
+    if (typeof updater !== 'function') return Promise.resolve([]);
+    try {
+      var result = updater([]);
+      return Promise.resolve(result || []);
+    } catch(e) {
+      console.warn('[bridge] updateTavernRegexesWith updater error:', e);
+      return Promise.resolve([]);
+    }
+  };
+  window._updateTavernRegexesWith = window.updateTavernRegexesWith;
+
+  // ── underscore-prefixed variants (JS-Slash-Runner internal use) ──
+  window._waitGlobalInitialized = window.waitGlobalInitialized;
+  window._initializeGlobal = window.initializeGlobal;
+})();
+`.trim();
+}
+
+/**
+ * Build the standard ST/JS-Slash-Runner iframe document shell.
+ * Injects jQuery, Vue 2, Tailwind CSS, Font Awesome, and viewport-height
+ * CSS variable — matching what JS-Slash-Runner provides.
+ *
+ * Also injects any tavern_helper scripts from the card's extensions.
+ */
+export function buildIframeDocument(
+  bodyHtml: string,
+  bridgeScript: string,
+  options?: {
+    /** Additional <link> or <script> tags to inject into <head>. */
+    headExtras?: string;
+    /** Character card to extract tavern_helper scripts from. */
+    card?: CharacterCard | null;
+  },
+): string {
+  const { headExtras = '', card = null } = options || {};
+  const thScriptTags = buildTavernHelperScriptTags(card);
+  const headBridge = buildHeadBridgeScript();
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="${ST_CDN_LIBS.fontAwesomeCss}">
+<link rel="stylesheet" href="${ST_CDN_LIBS.tailwindCss}">
+<script src="${ST_CDN_LIBS.jquery}"></script>
+<script src="${ST_CDN_LIBS.zod}"></script>
+<script src="${ST_CDN_LIBS.vue}"></script>
+${thScriptTags}
+${headExtras}
+<style>html,body{margin:0;padding:0;overflow:hidden}</style>
+<script>${headBridge}</script>
+</head>
+<body>${replaceViewportUnits(bodyHtml)}
+<script>${VH_REPLACEMENT_SCRIPT}</script>
+<script>${bridgeScript}</script>
+</body>
+</html>`;
+}
+
+// --- GROUP 6: Character card inspection utilities ---
 
 export function stripCodeFence(source: string): string {
   const trimmed = source.trim();
@@ -49,141 +248,78 @@ export function getRegexScripts(card: CharacterCard | null): RegexScript[] {
   return Array.isArray(scripts) ? scripts : [];
 }
 
-export function getTavernHelperScripts(card: CharacterCard | null): Array<{ name: string; content: string }> {
-  const scripts = (card?.extensions as Record<string, any> | undefined)?.tavern_helper?.scripts;
-  if (!Array.isArray(scripts)) return [];
-  return scripts.flatMap((script: any) => {
-    const disabled = script?.disabled === true || script?.enabled === false;
-    const content = typeof script?.content === 'string'
-      ? script.content
-      : typeof script?.script === 'string'
-        ? script.script
-        : '';
-    if (disabled || !content.trim()) return [];
-    return [{
-      name: String(script?.name || script?.script_name || script?.scriptName || 'TavernHelper Script'),
-      content,
-    }];
-  });
-}
-
-export function hasTavernHelperScripts(card: CharacterCard | null): boolean {
-  return getTavernHelperScripts(card).length > 0;
-}
-
-export function isComplexCardUiSource(source: string): boolean {
-  return source.length > 3000
-    || /<html\b|<head\b|<body\b|<style\b/i.test(source)
-    || /<script\b/i.test(source)
-    || /\b(?:cx-launcher|view-container|TavernHelper|jquery|audio|music)\b/i.test(source);
-}
-
-function isSandboxUiSource(source: string): boolean {
-  return /<!doctype\b|<html\b|<head\b|<body\b|<script\b/i.test(source)
-    || /\b(?:cx-launcher|view-container|TavernHelper|jquery|audio|music)\b/i.test(source);
-}
-
-function getSandboxRegexScripts(card: CharacterCard | null): any[] {
-  return getRegexScripts(card).filter((item: any) => {
-    if (item?.disabled || typeof item?.replaceString !== 'string') return false;
-    return isSandboxUiSource(stripCodeFence(item.replaceString));
-  });
-}
-
-// --- GROUP 7: HTML sanitization & serialization ---
-
-export function getSandboxHtmlForContent(card: CharacterCard | null, content: string): string {
-  const sandboxScripts = getSandboxRegexScripts(card);
-  if (sandboxScripts.length === 0) return '';
-  const result = executeStRegexScripts(
-    { extensions: { regex_scripts: sandboxScripts } },
-    content,
-  );
-  if (!result.matched || !result.html) return '';
-  return sanitizeSandboxHtml(result.html, { allowScripts: true });
-}
-
-export function sanitizeSandboxHtml(source: string, options: { allowScripts?: boolean } = {}): string {
-  // Encode style tags early so they survive further sanitization and can be
-  // decoded + scoped when building the sandbox iframe document.
-  const encoded = encodeStyleTags(source);
-  const base = encoded
-    .replace(/javascript:/gi, '')
-    .replace(/<link\b[^>]*href=["'][^"']*code\.jquery[^"']*["'][^>]*>/gi, '');
-  const withoutDangerousAttrs = options.allowScripts
-    ? base
-    : base.replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
-  if (options.allowScripts) {
-    return withoutDangerousAttrs;
-  }
-  return withoutDangerousAttrs.replace(/<script\b[\s\S]*?<\/script>/gi, '');
-}
-
-export function sanitizeHtmlFragment(source: string): string {
-  return sanitizeSandboxHtml(source)
-    .replace(/<style\b[\s\S]*?<\/style>/gi, '')
-    .replace(/<custom-style\b[\s\S]*?<\/custom-style>/gi, '')
-    .replace(/<iframe\b[\s\S]*?<\/iframe>/gi, '')
-    .replace(/<object\b[\s\S]*?<\/object>/gi, '')
-    .replace(/<embed\b[\s\S]*?>/gi, '');
-}
-
-export function serializeSandboxData(value: any): string {
-  return JSON.stringify(value ?? {})
-    .replace(/</g, '\\u003C')
-    .replace(new RegExp(' ', 'g'), '\\u2028')
-    .replace(new RegExp(' ', 'g'), '\\u2029');
-}
-
-// --- GROUP 8: Regex script application ---
+// --- GROUP 8: Regex script application (v3 ST engine) ---
 
 type DisplayPart = {
   type: 'text' | 'html';
   content: string;
 };
 
-const DISPLAY_HTML_OPEN = '\uE000XRP_HTML_';
-const DISPLAY_HTML_CLOSE = '_XRP_HTML\uE001';
+const HTML_BLOCK_OPEN = '\x00XRP_BLK_';
+const HTML_BLOCK_CLOSE = '_XRP_BLK\x00';
 
-function applyCardDisplayRegexScriptsToParts(card: CharacterCard | null, content: string): DisplayPart[] {
-  const htmlParts: string[] = [];
-  let output = content;
-
-  for (const script of getRegexScripts(card) as RegexScript[]) {
-    if (typeof script.findRegex !== 'string' || typeof script.replaceString !== 'string') continue;
-    if (!script.replaceString || /<script\b/i.test(script.replaceString)) continue;
-    if (script.findRegex === '<StatusPlaceHolderImpl/>' || script.findRegex.includes('GameStart')) continue;
-    if (isSandboxUiSource(stripCodeFence(script.replaceString))) continue;
-    if (script.findRegex.includes('UpdateVariable')) continue;
-    if (!shouldRunStRegexScript(script, {
-      placement: stRegexPlacement.AI_OUTPUT,
-      isMarkdown: true,
-    })) continue;
-
-    const replacementScript = { ...script, replaceString: sanitizeHtmlFragment(script.replaceString) };
-    const regex = parseFindRegex(script.findRegex);
-    if (!regex) continue;
-
-    regex.lastIndex = 0;
-    output = output.replace(regex, (...args: unknown[]) => {
-      const expanded = expandStRegexReplacement(replacementScript, args, {
-        placement: stRegexPlacement.AI_OUTPUT,
-        isMarkdown: true,
-      });
-      const index = htmlParts.push(expanded) - 1;
-      return `${DISPLAY_HTML_OPEN}${index}${DISPLAY_HTML_CLOSE}`;
-    });
-    regex.lastIndex = 0;
+function applyCardDisplayRegexScriptsToParts(
+  card: CharacterCard | null,
+  content: string,
+  userName: string = '{{user}}',
+  charName: string = '{{char}}',
+): DisplayPart[] {
+  const scripts = getRegexScripts(card);
+  if (scripts.length === 0) {
+    return [{ type: 'text', content }];
   }
 
-  const parts: DisplayPart[] = [];
-  const markerRegex = new RegExp(`${DISPLAY_HTML_OPEN}(\\d+)${DISPLAY_HTML_CLOSE}`, 'g');
-  let cursor = 0;
+  // Pre-process: strip code fences from replacement strings.
+  // Many ST cards (e.g. 苍玄界) wrap HTML replacements in ```html...```
+  // which would render as code blocks instead of HTML.
+  const preparedScripts: RegexScript[] = scripts.map(s => {
+    if (typeof s.replaceString === 'string' && s.replaceString.trim().startsWith('```')) {
+      return { ...s, replaceString: stripCodeFence(s.replaceString) };
+    }
+    return s;
+  });
+
+  // Phase 1: non-markdown scripts on raw content
+  let output = getRegexedString(
+    preparedScripts, content, regex_placement.AI_OUTPUT,
+    { userName, charName, isMarkdown: false },
+  );
+
+  // Phase 2: markdown-only scripts (matching ST's messageFormatting)
+  output = getRegexedString(
+    preparedScripts, output, regex_placement.AI_OUTPUT,
+    { userName, charName, isMarkdown: true },
+  );
+
+  // Extract HTML blocks from the result.
+  // After regex processing, HTML documents may be embedded inline.
+  // We detect and extract them using markers so they can be rendered
+  // in iframes rather than being parsed as markdown.
+  const htmlBlocks: string[] = [];
+
+  const extractRegex = /<!DOCTYPE\s+html[\s\S]*?<\/html>|<html[\s\S]*?<\/html>/i;
   let match: RegExpExecArray | null;
+  while ((match = extractRegex.exec(output)) !== null) {
+    const index = htmlBlocks.push(match[0]) - 1;
+    output = output.slice(0, match.index) +
+      `${HTML_BLOCK_OPEN}${index}${HTML_BLOCK_CLOSE}` +
+      output.slice(match.index + match[0].length);
+    // Reset regex to search from after the replacement
+    const newCursor = match.index + HTML_BLOCK_OPEN.length + String(index).length + HTML_BLOCK_CLOSE.length;
+    extractRegex.lastIndex = newCursor;
+  }
+
+  // Split on markers
+  const markerRegex = new RegExp(
+    `${HTML_BLOCK_OPEN.replace(/\x00/g, '\\x00')}(\\d+)${HTML_BLOCK_CLOSE.replace(/\x00/g, '\\x00')}`,
+    'g',
+  );
+  const parts: DisplayPart[] = [];
+  let cursor = 0;
   while ((match = markerRegex.exec(output)) !== null) {
     const before = output.slice(cursor, match.index);
     if (before.trim()) parts.push({ type: 'text', content: before });
-    const html = htmlParts[Number(match[1])];
+    const html = htmlBlocks[Number(match[1])];
     if (html?.trim()) parts.push({ type: 'html', content: html });
     cursor = match.index + match[0].length;
   }
@@ -214,19 +350,6 @@ export function cleanCardDisplayText(
     .replace(/<inner>([\s\S]*?)<\/inner>/gi, '$1')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-}
-
-export function removeUiTriggers(card: CharacterCard | null, content: string): string {
-  let output = content;
-  for (const script of getRegexScripts(card)) {
-    if (script?.disabled || typeof script.findRegex !== 'string') continue;
-    const regex = parseFindRegex(script.findRegex);
-    if (regex) {
-      regex.lastIndex = 0;
-      output = output.replace(regex, '');
-    }
-  }
-  return output;
 }
 
 export function renderInlineDecorators(
@@ -271,6 +394,9 @@ export function renderCardFormattedContent(
   content: string,
   userName: string = '你',
   charName: string = '{{char}}',
+  sessionId?: string,
+  worldBookId?: string,
+  onMessagesChanged?: () => void,
 ): React.ReactNode {
   const normalized = content
     .replace(/<\/?正文>/g, '')
@@ -287,15 +413,95 @@ export function renderCardFormattedContent(
   const cleaned = normalized
     .replace(/<UpdateVariable(?:variable)?\b[^>]*>[\s\S]*?<\/UpdateVariable(?:variable)?>/gi, '')
     .trim();
-  const parts = applyCardDisplayRegexScriptsToParts(card, cleaned);
+  const parts = applyCardDisplayRegexScriptsToParts(card, cleaned, userName, charName);
 
-  return parts.map((part, index) => part.type === 'html' ? (
-    <div
-      key={`html-${index}`}
-      className="card-regex-html"
-      dangerouslySetInnerHTML={{ __html: part.content }}
-    />
-  ) : (
-    <React.Fragment key={`text-${index}`}>{renderInlineDecorators(part.content)}</React.Fragment>
-  ));
+  return parts.map((part, index) => {
+    if (part.type === 'html') {
+      const trimmedContent = part.content.trim();
+      const isFullHtmlDoc = /^<!DOCTYPE\s+html|<html\b/i.test(trimmedContent);
+      const hasScript = /<script\b/i.test(trimmedContent);
+
+      if (isFullHtmlDoc || hasScript) {
+        // Full HTML documents and fragments with scripts need iframe
+        // for script execution and style/css isolation
+        const macroCtx = createMacroContext({
+          variables: {} as Record<string, unknown>,
+          userName,
+          charName,
+        });
+        const processed = processMacros(trimmedContent, macroCtx);
+        const bridgeScript = buildIframeBridgeScript(sessionId, worldBookId);
+
+        const iframeSrcDoc = (() => {
+          const rewritten = rewriteCdnUrls(processed);
+          if (isFullHtmlDoc) {
+            // Already a complete document — inject ST libs + bridge into existing DOM.
+            // CSS into <head>, JS before </body> (or at document end if no </body>).
+            const libCss = `<link rel="stylesheet" href="${ST_CDN_LIBS.fontAwesomeCss}">
+<link rel="stylesheet" href="${ST_CDN_LIBS.tailwindCss}">`;
+            const libJs = `<script src="${ST_CDN_LIBS.jquery}"></script>
+<script src="${ST_CDN_LIBS.vue}"></script>
+<script>${VH_REPLACEMENT_SCRIPT}</script>
+<script>${bridgeScript}</script>`;
+
+            let injected = replaceViewportUnits(rewritten);
+            // Inject CSS before </head>
+            if (/<\/head>/i.test(injected)) {
+              injected = injected.replace(/<\/head>/i, `${libCss}</head>`);
+            }
+            // Inject JS before </body> or append at end
+            if (/<\/body>/i.test(injected)) {
+              injected = injected.replace(/<\/body>/i, `${libJs}</body>`);
+            } else {
+              injected += libJs;
+            }
+            return injected;
+          }
+          // Fragment with scripts — wrap in a standard document with ST libs
+          return buildIframeDocument(rewritten, bridgeScript, { card });
+        })();
+
+        return (
+          <IframeHtmlRuntimeHost
+            key={`html-iframe-${index}`}
+            documentHtml={iframeSrcDoc}
+            className="card-regex-html"
+            sessionId={sessionId}
+            worldBookId={worldBookId}
+            onMessagesChanged={onMessagesChanged}
+          />
+        );
+      }
+      // HTML fragments without scripts: render inline
+      return (
+        <div
+          key={`html-${index}`}
+          className="card-regex-html"
+          dangerouslySetInnerHTML={{ __html: trimmedContent }}
+        />
+      );
+    }
+    return (
+      <React.Fragment key={`text-${index}`}>{renderInlineDecorators(part.content)}</React.Fragment>
+    );
+  });
+}
+
+// --- v3: Iframe HTML rendering ---
+
+export function renderCardIframeHtml(
+  html: string,
+  variables: Record<string, unknown>,
+  userName: string,
+  charName: string,
+  sessionId?: string,
+  worldBookId?: string,
+  card?: CharacterCard | null,
+): string {
+  const macroContext = createMacroContext({ variables, userName, charName });
+  const processed = processMacros(html, macroContext);
+  const rewritten = rewriteCdnUrls(processed);
+  const bridgeScript = buildIframeBridgeScript(sessionId, worldBookId);
+
+  return buildIframeDocument(rewritten, bridgeScript, { card });
 }

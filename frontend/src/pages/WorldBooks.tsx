@@ -372,11 +372,6 @@ export default function WorldBooks() {
           {detail.description && <p className="wb-detail-desc">{detail.description}</p>}
 
           <div className="wb-detail-toolbar">
-            {detail.has_character_card && detail.character_card_id && (
-              <button className="wb-primary-btn" onClick={() => navigate(`/charactercards/import/${detail.character_card_id}?wb=${detail.id}`)}>
-                🎭 角色卡工作台
-              </button>
-            )}
             <button className="wb-action-btn" onClick={handleParseSingleAgent} disabled={detail.single_agent_parse_status === 'parsing'}>
               {detail.single_agent_parse_status === 'parsing' ? '⏳ 单Agent解析中...' : detail.single_agent_parse_status === 'done' ? '🔄 重新解析单Agent' : '解析为单Agent'}
             </button>

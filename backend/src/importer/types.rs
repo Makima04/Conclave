@@ -44,49 +44,6 @@ pub struct ExternalCard {
     pub source_hash: String,
 }
 
-// ─── Regex execution ───
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegexScript {
-    pub script_name: String,
-    pub find_regex: String,
-    pub replace_string: String,
-    pub disabled: bool,
-    pub prompt_only: bool,
-    pub markdown_only: bool,
-    pub min_depth: Option<i32>,
-    pub max_depth: Option<i32>,
-    #[serde(default)]
-    pub placement: Option<Vec<i32>>,
-    #[serde(default)]
-    pub trim_strings: Option<Vec<String>>,
-    #[serde(default)]
-    pub substitute_regex: Option<serde_json::Value>,
-    #[serde(default)]
-    pub run_on_edit: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegexOptions {
-    pub user_name: String,
-    pub char_name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RegexExecutionResult {
-    pub matched: bool,
-    pub output: String,
-    pub scripts_used: Vec<String>,
-    pub diagnostics: Vec<RegexDiagnostic>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RegexDiagnostic {
-    pub level: DiagnosticLevel,
-    pub message: String,
-    pub script_index: Option<usize>,
-}
-
 // ─── Diagnostic level ───
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -96,93 +53,6 @@ pub enum DiagnosticLevel {
     Info,
     Warn,
     Error,
-}
-
-// ─── HTML split ───
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct HtmlAppSplit {
-    pub html: String,
-    pub css: Vec<String>,
-    pub js: Vec<String>,
-    pub script_types: Vec<String>, // "module", "classic", or ""
-    pub entry_node: Option<String>,
-    pub is_full_document: bool,
-}
-
-// ─── Resource scan ───
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ResourceManifest {
-    pub resources: Vec<ResourceEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ResourceEntry {
-    pub url: String,
-    pub kind: ResourceKind,
-    pub source_location: SourceLocation,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ResourceKind {
-    #[default]
-    Image,
-    Audio,
-    Video,
-    CssUrl,
-    JsStatic,
-    Font,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SourceLocation {
-    pub file: String, // "inline_html", "script_0", "style_0", etc.
-    pub offset: usize,
-    pub excerpt: String, // surrounding context (~100 chars)
-}
-
-// ─── JS analysis ───
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct JsAnalysisReport {
-    pub syntax_valid: bool,
-    pub syntax_errors: Vec<SyntaxError>,
-    pub detected_apis: Vec<DetectedApi>,
-    pub dynamic_imports: Vec<DynamicImport>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyntaxError {
-    pub file: String,
-    pub message: String,
-    pub line: usize,
-    pub column: usize,
-    pub offset: usize,
-    pub excerpt: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DetectedApi {
-    pub name: String,
-    pub occurrences: Vec<SourceLocation>,
-    pub classification: ApiClassification,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApiClassification {
-    PlatformNative, // getVariables, setVariables, etc. -> will be bridged
-    BrowserShim,    // localStorage, indexedDB -> already shimmed
-    Unsupported,    // unknown APIs
-    Dangerous,      // eval, document.write
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DynamicImport {
-    pub source: String, // the import target
-    pub location: SourceLocation,
 }
 
 // ─── Actions ───
@@ -396,27 +266,6 @@ pub struct RawCardSource {
     pub alternate_greetings: Vec<String>,
     /// Full extensions object as-is (regex_scripts, tavern_helper, etc.)
     pub extensions: serde_json::Value,
-}
-
-// ─── Analysis result (decoupled from import) ───
-
-/// All outputs from the analysis pass (regex, HTML split, JS analysis, etc.).
-/// Decoupled from the import pass so analysis can be re-run independently.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AnalysisResult {
-    pub regex_result: RegexExecutionResult,
-    pub html_split: HtmlAppSplit,
-    pub resources: ResourceManifest,
-    pub js_analysis: JsAnalysisReport,
-    pub actions: Vec<ActionDeclaration>,
-    pub variables: Vec<VariableDeclaration>,
-    pub state_schema: CardStateSchema,
-    pub state_adapter: CardStateAdapter,
-    pub extraction_layers: ExtractionLayers,
-    pub compatibility: CompatibilityReport,
-    pub stages: Vec<StageResult>,
-    pub diagnostics: Vec<ImportDiagnostic>,
-    pub rule_traces: Vec<RuleTrace>,
 }
 
 // ─── Output: ConclaveCardPackage ───

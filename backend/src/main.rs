@@ -25,7 +25,7 @@ use crate::config::AppConfig;
 use crate::error::AppError;
 use crate::routes::{
     agents, card_import, charactercards, health, messages, presets, proposals, providers, sessions,
-    settings, worldbooks,
+    settings, variables, worldbooks,
 };
 
 #[tokio::main]
@@ -104,7 +104,11 @@ async fn create_app(config: AppConfig) -> Router {
         .route("/api/sessions/{id}/state", get(messages::get_state))
         .route(
             "/api/sessions/{id}/variables",
-            put(messages::update_variables),
+            get(variables::get_variables),
+        )
+        .route(
+            "/api/sessions/{id}/variables",
+            put(variables::put_variables),
         )
         .route(
             "/api/sessions/{id}/variable-changes",

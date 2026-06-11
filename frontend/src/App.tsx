@@ -16,7 +16,6 @@ const SessionDebug = React.lazy(() => import('./pages/SessionDebug'));
 const WorldBooks = React.lazy(() => import('./pages/WorldBooks'));
 const Presets = React.lazy(() => import('./pages/Presets'));
 const CharacterCard = React.lazy(() => import('./pages/CharacterCard'));
-const ImportWorkbench = React.lazy(() => import('./pages/ImportWorkbench'));
 
 export default function App() {
   return (
@@ -38,8 +37,6 @@ export default function App() {
                 <Route path="/chat/:sessionId/agents" element={<AgentManager />} />
                 <Route path="/chat/:sessionId/debug" element={<SessionDebug />} />
                 <Route path="/charactercards/:id" element={<CharacterCard />} />
-                <Route path="/charactercards/import" element={<ImportWorkbench />} />
-                <Route path="/charactercards/import/:cardId" element={<ImportWorkbench />} />
               </Routes>
             </Suspense>
           </ErrorBoundary>

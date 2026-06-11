@@ -1,16 +1,7 @@
-pub mod action_extractor;
-pub mod analyzer;
-pub mod html_splitter;
-pub mod js_analyzer;
 pub mod json_parser;
 pub mod llm_assist;
 pub mod orchestrator;
-pub mod package_builder;
 pub mod png_parser;
-pub mod regex_executor;
 pub mod report;
-pub mod resource_scanner;
-pub mod state_adapter;
 pub mod storage;
 pub mod types;
-pub mod variable_extractor;

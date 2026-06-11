@@ -5,7 +5,7 @@
 - [文档中心](docs.md)
 - [架构首页](index.md)
 - [Agent Runtime](agent-runtime.md)
-- [Agent 边界](agent-boundaries.md)
+- Agent 边界
 
 ---
 

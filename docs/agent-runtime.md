@@ -9,7 +9,7 @@
 - [文档中心](docs.md)
 - [架构首页](index.md)
 - [Actor Agent 架构](actor-agent-architecture.md)
-- [Agent 边界](agent-boundaries.md)
+- Agent 边界
 
 ---
 
@@ -161,7 +161,7 @@ State Agent 通过 `update_variables` tool call 直接持久化变量变更到 `
 
 ### Knowledge Extraction
 
-每轮 post-commit 阶段，从用户输入 + 最终叙事中抽取"谁知道什么"事件，写入 `agent_knowledge_events` 表。详见 [Agent 边界与权限](agent-boundaries.md) 中的知识边界系统。
+每轮 post-commit 阶段，从用户输入 + 最终叙事中抽取"谁知道什么"事件，写入 `agent_knowledge_events` 表。详见 Agent 边界与权限中的知识边界系统。
 
 ---
 

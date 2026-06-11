@@ -8,4 +8,5 @@ pub mod proposals;
 pub mod providers;
 pub mod sessions;
 pub mod settings;
+pub mod variables;
 pub mod worldbooks;

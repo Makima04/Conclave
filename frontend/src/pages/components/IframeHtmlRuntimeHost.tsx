@@ -4,10 +4,18 @@ import * as api from '../../api/client';
 const MIN_IFRAME_HEIGHT = 360;
 const MAX_MESSAGE_IFRAME_HEIGHT = 720;
 
+function safeJsonForInlineScript(value: unknown): string {
+  return JSON.stringify(value ?? null)
+    .replace(/</g, '\\u003c')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
 interface IframeHtmlRuntimeHostProps {
   documentHtml: string;
   className?: string;
   variables?: Record<string, unknown>;
+  runtime?: Record<string, any>;
   sessionId?: string;
   worldBookId?: string;
   onAction?: (action: { action: string; payload: any }) => void | Promise<unknown>;
@@ -19,13 +27,15 @@ export function IframeHtmlRuntimeHost({
   documentHtml,
   className,
   variables,
+  runtime,
   sessionId,
   worldBookId,
   onAction,
   onMessagesChanged,
 }: IframeHtmlRuntimeHostProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const blobUrlRef = useRef<string | null>(null);
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const blobUrlRef = useRef<string | null>(null);  // for cleanup only (no stale closure)
   const [height, setHeight] = useState(520);
   const [viewportFitHeight, setViewportFitHeight] = useState(MIN_IFRAME_HEIGHT);
   const [loaded, setLoaded] = useState(false);
@@ -33,13 +43,33 @@ export function IframeHtmlRuntimeHost({
 
   // Blob URL for iframe src — avoids `about:srcdoc` null-origin issues.
   // JS-Slash-Runner uses the same pattern (Blob URL or srcdoc).
+  // IMPORTANT: blobUrl is state (not just a ref) so EVERY documentHtml change
+  // triggers a React re-render — even when loaded is already false. Without this,
+  // React skips the re-render and the iframe src stays at the old Blob URL.
   useEffect(() => {
+    // ── CRITICAL: Cleanup BEFORE new iframe renders ──
+    // Card scripts (thScriptTags in <head>) run before bridge (in <body>),
+    // so bridge's cleanup-floating-ui postMessage is too late — the card JS
+    // already saw stale parent DOM and skipped creating fresh widgets.
+    // Clean up HERE, in React-land, before the new blob URL is set.
+    for (const id of ['cx-floating-status-root', 'cx-floating-status-style']) {
+      const el = document.getElementById(id);
+      if (el) el.remove();
+    }
+
+    const runtimeDocumentHtml = documentHtml.replace(
+      'window.__XRP_INITIAL_RUNTIME=null;',
+      `window.__XRP_INITIAL_RUNTIME=${safeJsonForInlineScript(runtime)};`,
+    );
+
     // Revoke previous blob
     if (blobUrlRef.current) {
       URL.revokeObjectURL(blobUrlRef.current);
     }
-    const blob = new Blob([documentHtml], { type: 'text/html' });
-    blobUrlRef.current = URL.createObjectURL(blob);
+    const blob = new Blob([runtimeDocumentHtml], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    blobUrlRef.current = url;
+    setBlobUrl(url);  // STATE update → always triggers re-render
     setLoaded(false);
     setIsRendered(false);
     return () => {
@@ -103,6 +133,17 @@ export function IframeHtmlRuntimeHost({
         return;
       }
 
+      // cleanup-floating-ui: when iframe is rebuilt (greeting switch),
+      // remove stale floating UI DOM injected into parent by old iframe's JS
+      if (data?.type === 'cleanup-floating-ui') {
+        const ids = ['cx-floating-status-root'];
+        for (const id of ids) {
+          const el = document.getElementById(id);
+          if (el) el.remove();
+        }
+        return;
+      }
+
       // setVariables / card-sandbox-action (existing bridge)
       if (data?.type === 'setVariables' && data.changes) {
         onAction?.({ action: 'setVariables', payload: data.changes });
@@ -150,11 +191,19 @@ export function IframeHtmlRuntimeHost({
     );
   }, [loaded, variables]);
 
+  useEffect(() => {
+    if (!loaded || !iframeRef.current?.contentWindow) return;
+    iframeRef.current.contentWindow.postMessage(
+      { type: 'runtimeUpdated', runtime, reason: 'host-runtime-change' },
+      '*',
+    );
+  }, [loaded, runtime]);
+
   return (
     <iframe
       ref={iframeRef}
       className={`${className ?? ''}${isRendered ? ' sandbox-rendered' : ''}`}
-      src={blobUrlRef.current || undefined}
+      src={blobUrl || undefined}
       style={{ height: Math.max(height, viewportFitHeight) }}
       onLoad={() => {
         setLoaded(true);
@@ -272,17 +321,27 @@ async function handleThApi(
         if (!sessionId) return { error: 'getChatMessages: sessionId not available' };
         const data = await api.listMessages(sessionId);
         const messageId = params.messageId;
-        if (messageId !== undefined && messageId !== 'latest') {
-          const msg = data.items.find((m: any) => m.id === String(messageId) || m.turn_number === Number(messageId));
-          return { result: msg ? [msg] : [] };
+        // ST convention: -1 means "all messages" (same as undefined/latest)
+        if (messageId === -1 || messageId === '-1' || messageId === undefined || messageId === 'latest') {
+          return { result: data.items };
         }
+        const msg = data.items.find((m: any) => m.id === String(messageId) || m.turn_number === Number(messageId));
         return { result: data.items };
       }
 
       case 'setChatMessage': {
+        // Card JS follows ST convention: may pass message, swipe_id, message_id
+        const payload: Record<string, any> = {};
         const message = String(params.message || '').trim();
-        if (message) {
-          onAction?.({ action: 'setChatMessage', payload: { message } });
+        if (message) payload.message = message;
+        if (params.swipe_id !== undefined || params.swipeId !== undefined) {
+          payload.swipeId = Number(params.swipe_id ?? params.swipeId);
+        }
+        if (params.message_id !== undefined || params.messageId !== undefined) {
+          payload.messageId = String(params.message_id ?? params.messageId);
+        }
+        if (Object.keys(payload).length > 0) {
+          onAction?.({ action: 'setChatMessage', payload });
         }
         return { result: true };
       }
@@ -290,8 +349,20 @@ async function handleThApi(
       case 'setChatMessages': {
         const messages = params.messages || [];
         for (const msg of messages) {
+          // Card JS follows ST convention: {message_id, swipe_id}
+          // Normalize to camelCase for downstream handlers.
+          const payload: Record<string, any> = {};
           if (msg.message !== undefined) {
-            onAction?.({ action: 'setChatMessage', payload: { message: String(msg.message).trim() } });
+            payload.message = String(msg.message).trim();
+          }
+          if (msg.swipe_id !== undefined || msg.swipeId !== undefined) {
+            payload.swipeId = Number(msg.swipe_id ?? msg.swipeId);
+          }
+          if (msg.message_id !== undefined || msg.messageId !== undefined) {
+            payload.messageId = String(msg.message_id ?? msg.messageId);
+          }
+          if (Object.keys(payload).length > 0) {
+            onAction?.({ action: 'setChatMessage', payload });
           }
         }
         return { result: true };

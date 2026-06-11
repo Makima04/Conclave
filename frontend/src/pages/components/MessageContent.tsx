@@ -14,10 +14,20 @@ import { renderMessageHtml } from '../message-html';
 
 type SandboxRuntimeContext = Record<string, any>;
 
+/** Fast string hash (djb2) for keying iframes — avoids re-render when content is identical. */
+function simpleHash(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(36);
+}
+
 export const MessageContent = React.memo(function MessageContent({
   content,
   card,
   variables,
+  runtime,
   onSandboxAction,
   renderMode = 'auto',
   userName = '你',
@@ -59,11 +69,14 @@ export const MessageContent = React.memo(function MessageContent({
       sessionId,
       worldBookId,
       card,
+      runtime,
     );
     return (
       <IframeHtmlRuntimeHost
+        key={simpleHash(iframeHtml)}
         documentHtml={iframeHtml}
         variables={(variables as Record<string, unknown>) || {}}
+        runtime={runtime}
         sessionId={sessionId}
         worldBookId={worldBookId}
         onAction={onSandboxAction}

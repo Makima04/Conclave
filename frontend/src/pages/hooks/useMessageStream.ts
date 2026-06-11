@@ -21,10 +21,10 @@ function cleanComparableMessageText(content: string): string {
     .trim();
 }
 
-function getParsedGreetings(card: CharacterCard | null): string[] {
-  if (!card) return [];
-  return [card.first_mes, ...(card.alternate_greetings ?? [])];
-}
+  function getParsedGreetings(card: CharacterCard | null): string[] {
+    if (!card) return [];
+    return [card.first_mes, ...(card.alternate_greetings ?? [])];
+  }
 
 type RecoveryApi = ReturnType<typeof useStreamRecovery>;
 
@@ -499,6 +499,21 @@ export function useMessageStream({
     await applyOpeningContent(greeting, '切换开场白失败', canApplyOpening);
   }
 
+  function resolveMessageReference(messageRef: unknown): Message | null {
+    if (messages.length === 0) return null;
+    if (messageRef == null || messageRef === 'latest') return messages[messages.length - 1] || null;
+    const text = String(messageRef).trim();
+    const byId = messages.find(msg => msg.id === text);
+    if (byId) return byId;
+    const numeric = Number(text);
+    if (!Number.isFinite(numeric)) return null;
+    if (numeric < 0) {
+      const index = messages.length + numeric;
+      return messages[index] || null;
+    }
+    return messages[numeric] || messages.find(msg => msg.turn_number === numeric) || null;
+  }
+
   // --- sandbox action routing ---
 
   function sendFromSandbox(content: string, sourceMessageId?: string | number | null, generationId?: string | number | null) {
@@ -671,10 +686,26 @@ export function useMessageStream({
       return;
     }
     if (event.action === 'setChatMessage') {
+      // Card JS follows ST convention: may send swipe_id + message_id without a message body.
+      // e.g. {message_id: 0, swipe_id: 1} = switch opening message to alternate greeting 0
       const message = String(event.payload?.message || '').trim();
-      const swipeId = Number(event.payload?.swipeId);
-      if (Number.isInteger(swipeId)) {
+      const swipeId = Number(event.payload?.swipeId ?? event.payload?.swipe_id ?? event.payload?.options?.swipe_id);
+      const messageRef = event.payload?.messageId ?? event.payload?.message_id;
+      const targetMessage = resolveMessageReference(messageRef ?? (canApplyOpening ? 0 : 'latest'));
+      if (Number.isInteger(swipeId) && targetMessage?.turn_number === 0) {
         applyOpeningSwipe(swipeId, canApplyOpening);
+        return;
+      }
+      if (Number.isInteger(swipeId) && targetMessage?.role === 'assistant' && sessionId) {
+        const variantIndex = swipeId <= 0 ? -1 : swipeId - 1;
+        try {
+          const result = await api.switchVariant(sessionId, targetMessage.id, variantIndex);
+          setMessages(prev => prev.map(m =>
+            m.id === targetMessage.id ? { ...m, content: result.content, variants: result.variants, variant_index: result.variant_index } : m
+          ));
+        } catch (err) {
+          console.error('Sandbox switch variant failed:', err);
+        }
         return;
       }
       if (canApplyOpening && message) {
@@ -687,6 +718,17 @@ export function useMessageStream({
           setSelectedGreetingIndex(matchedGreetingIndex - 1);
         }
         await applyOpeningContent(message, '应用开场白失败', canApplyOpening);
+        return;
+      }
+      if (message && targetMessage && sessionId) {
+        try {
+          const result = await api.editMessage(sessionId, targetMessage.id, message);
+          setMessages(prev => prev.map(m =>
+            m.id === targetMessage.id ? { ...m, content: result.content, variants: result.variants, variant_index: result.variant_index } : m
+          ));
+        } catch (err) {
+          console.error('Sandbox edit message failed:', err);
+        }
         return;
       }
       if (message) {

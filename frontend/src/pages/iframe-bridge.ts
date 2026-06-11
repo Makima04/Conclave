@@ -16,6 +16,9 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
   'use strict';
   var _sessionId = ${JSON.stringify(sessionId || '')};
   var _worldBookId = ${JSON.stringify(worldBookId || '')};
+  var _runtime = window.__XRP_INITIAL_RUNTIME || null;
+  var _chatMessages = [];
+  var _runtimeInitialized = false;
 
   // ── Async request/response infrastructure ──
   var _pendingRequests = {};
@@ -56,6 +59,7 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
   function eventOn(eventType, callback) {
     if (!_eventListeners[eventType]) _eventListeners[eventType] = [];
     _eventListeners[eventType].push(callback);
+    return { stop: function() { eventRemoveListener(eventType, callback); } };
   }
 
   function eventOnce(eventType, callback) {
@@ -65,6 +69,7 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
     };
     _eventListeners[eventType] = _eventListeners[eventType] || [];
     _eventListeners[eventType].push(wrapper);
+    return { stop: function() { eventRemoveListener(eventType, wrapper); } };
   }
 
   function eventRemoveListener(eventType, callback) {
@@ -77,6 +82,24 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
 
   function eventClearAll() {
     _eventListeners = {};
+  }
+
+  function eventClearEvent(eventType) {
+    if (eventType) delete _eventListeners[eventType];
+  }
+
+  function eventClearListener(callback) {
+    for (var eventType in _eventListeners) {
+      var list = _eventListeners[eventType] || [];
+      for (var i = list.length - 1; i >= 0; i--) {
+        if (list[i] === callback) list.splice(i, 1);
+      }
+    }
+  }
+
+  function eventEmitAndWait(eventType) {
+    eventEmit.apply(null, arguments);
+    return Promise.resolve();
   }
 
   // ── Minimal lodash-like _ for deep object access ──
@@ -141,11 +164,206 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
       return result;
     }
 
+    function range(start, end) {
+      if (end === undefined) { end = start; start = 0; }
+      var result = [];
+      for (var i = start; i < end; i++) result.push(i);
+      return result;
+    }
+
+    function cloneDeep(value) {
+      if (value == null) return value;
+      try { return JSON.parse(JSON.stringify(value)); } catch(e) { return value; }
+    }
+
     return {
       get: get, set: set, has: has, clamp: clamp,
-      omit: omit, pick: pick
+      omit: omit, pick: pick, range: range, cloneDeep: cloneDeep
     };
   })();
+
+  function _clone(value) {
+    if (value == null) return value;
+    try { return JSON.parse(JSON.stringify(value)); } catch(e) { return value; }
+  }
+
+  function _asArray(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
+  function _activeText(message) {
+    return String(message && (message.message != null ? message.message : message.content != null ? message.content : '') || '');
+  }
+
+  function _normalizeRuntimeMessage(message, index) {
+    message = message || {};
+    var role = String(message.role || (message.is_user ? 'user' : 'assistant'));
+    var text = _activeText(message);
+    var swipes = _asArray(message.swipes).map(function(item) { return String(item == null ? '' : item); });
+    var rawSwipeId = Number(message.swipe_id != null ? message.swipe_id : message.swipeId != null ? message.swipeId : 0);
+    var swipeId = Number.isFinite(rawSwipeId) ? Math.max(0, Math.floor(rawSwipeId)) : 0;
+    if (swipes.length === 0) {
+      swipes = [text];
+      swipeId = 0;
+    } else if (swipeId >= swipes.length) {
+      swipes = swipes.concat([text]);
+      swipeId = swipes.length - 1;
+    }
+    if (!swipes[swipeId] && text) swipes[swipeId] = text;
+
+    var baseData = message.variables
+      || (message.data && (message.data.variables || message.data.stat_data || message.data.display_data))
+      || {};
+    var swipesData = _asArray(message.swipes_data || message.swipesData).map(function(item) { return item || {}; });
+    var swipesInfo = _asArray(message.swipes_info || message.swipesInfo).map(function(item) { return item || {}; });
+    while (swipesData.length < swipes.length) swipesData.push(swipeId === swipesData.length ? baseData : {});
+    while (swipesInfo.length < swipes.length) swipesInfo.push({});
+
+    return {
+      id: message.id,
+      message_id: index,
+      name: String(message.name || (role === 'user' ? '{{user}}' : '{{char}}')),
+      role: role,
+      is_hidden: Boolean(message.is_system || message.is_hidden),
+      message: swipes[swipeId] || text,
+      content: swipes[swipeId] || text,
+      data: swipesData[swipeId] || baseData || {},
+      extra: swipesInfo[swipeId] || {},
+      swipe_id: swipeId,
+      swipes: swipes,
+      swipes_data: swipesData,
+      swipes_info: swipesInfo,
+      created_at: message.created_at,
+      send_date: message.send_date || message.created_at
+    };
+  }
+
+  function _normalizeRuntime(runtime) {
+    var source = runtime && Array.isArray(runtime.messages) ? runtime.messages : [];
+    _chatMessages = source.map(function(message, index) { return _normalizeRuntimeMessage(message, index); });
+    window.chat = _chatMessages;
+    window.__xpRuntime = runtime || null;
+    window.__xpChatMessages = _chatMessages;
+  }
+
+  function _lastMessageId() {
+    return _chatMessages.length > 0 ? _chatMessages[_chatMessages.length - 1].message_id : -1;
+  }
+
+  function _demacroText(text) {
+    return String(text == null ? '' : text)
+      .replace(/\\{\\{lastMessageId\\}\\}/gi, String(_lastMessageId()))
+      .replace(/\\{\\{user\\}\\}/gi, '你')
+      .replace(/\\{\\{char\\}\\}/gi, '');
+  }
+
+  function _clampIndex(value, min, max) {
+    var n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    if (n < 0) n = max + n + 1;
+    n = Math.max(min, Math.min(max, n));
+    return n;
+  }
+
+  function _parseMessageRange(input) {
+    var max = _chatMessages.length - 1;
+    if (max < 0) return null;
+    if (input === undefined || input === null || input === 'all') return { start: 0, end: max };
+    if (input === 'latest') return { start: max, end: max };
+    var text = _demacroText(input);
+    var single = text.match(/^\\s*(-?\\d+)\\s*$/);
+    if (single) {
+      var idx = _clampIndex(single[1], 0, max);
+      return idx == null ? null : { start: idx, end: idx };
+    }
+    var range = text.match(/^\\s*(-?\\d+)\\s*-\\s*(-?\\d+)\\s*$/);
+    if (!range) return null;
+    var a = _clampIndex(range[1], 0, max);
+    var b = _clampIndex(range[2], 0, max);
+    if (a == null || b == null) return null;
+    return { start: Math.min(a, b), end: Math.max(a, b) };
+  }
+
+  function _getLocalChatMessages(range, options) {
+    options = options || {};
+    var parsed = _parseMessageRange(range);
+    if (!parsed) return [];
+    var result = [];
+    for (var i = parsed.start; i <= parsed.end; i++) {
+      var message = _chatMessages[i];
+      if (!message) continue;
+      if (options.role && options.role !== 'all' && message.role !== options.role) continue;
+      if (options.hide_state && options.hide_state !== 'all') {
+        if (options.hide_state === 'hidden' && !message.is_hidden) continue;
+        if (options.hide_state === 'unhidden' && message.is_hidden) continue;
+      }
+      if (options.include_swipes) {
+        result.push({
+          message_id: message.message_id,
+          name: message.name,
+          role: message.role,
+          is_hidden: message.is_hidden,
+          swipe_id: message.swipe_id,
+          swipes: _clone(message.swipes),
+          swipes_data: _clone(message.swipes_data),
+          swipes_info: _clone(message.swipes_info)
+        });
+      } else {
+        result.push({
+          message_id: message.message_id,
+          name: message.name,
+          role: message.role,
+          is_hidden: message.is_hidden,
+          message: message.message,
+          data: _clone(message.data),
+          extra: _clone(message.extra),
+          swipe_id: message.swipe_id,
+          swipes: _clone(message.swipes),
+          swipes_data: _clone(message.swipes_data)
+        });
+      }
+    }
+    return result;
+  }
+
+  function _emitRuntimeEvents(previous, next, reason) {
+    if (!_runtimeInitialized) {
+      eventEmit('chatLoaded');
+      if (next.length > 0) {
+        var current = next[next.length - 1];
+        eventEmit(current.role === 'user' ? 'user_message_rendered' : 'character_message_rendered', current.message_id);
+      }
+      _runtimeInitialized = true;
+      return;
+    }
+    if (next.length < previous.length) {
+      eventEmit('message_deleted');
+    }
+    var max = Math.max(previous.length, next.length);
+    for (var i = 0; i < max; i++) {
+      var before = previous[i];
+      var after = next[i];
+      if (!after) continue;
+      if (!before) {
+        eventEmit(after.role === 'user' ? 'user_message_rendered' : 'character_message_rendered', after.message_id);
+        continue;
+      }
+      if (before.swipe_id !== after.swipe_id) {
+        eventEmit('message_swiped', after.message_id);
+      }
+      if (before.message !== after.message || before.swipe_id !== after.swipe_id) {
+        eventEmit('message_updated', after.message_id);
+      }
+    }
+    if (reason) eventEmit('xrp_runtime_updated', reason);
+  }
+
+  function _setRuntime(runtime, reason) {
+    var previous = _chatMessages.slice();
+    _runtime = runtime || null;
+    _normalizeRuntime(_runtime);
+    _emitRuntimeEvents(previous, _chatMessages, reason || 'runtimeUpdated');
+  }
 
   // ── Variables store (mirrors host state) ──
   // Must be synchronous for Mvu.getMvuData() compatibility.
@@ -209,11 +427,26 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
 
   // Chat messages
   window.getChatMessages = function(messageId, options) {
+    if (_chatMessages.length > 0) {
+      return Promise.resolve(_getLocalChatMessages(messageId, options || {}));
+    }
     return _apiCall('getChatMessages', { messageId: messageId, options: options || {} });
   };
 
-  window.setChatMessage = function(message, messageId, options) {
-    return _apiCall('setChatMessage', { message: message, messageId: messageId, options: options || {} });
+  window.setChatMessage = function(fieldValues, messageId, options) {
+    options = options || {};
+    var payload = {};
+    if (fieldValues && typeof fieldValues === 'object' && !Array.isArray(fieldValues)) {
+      for (var key in fieldValues) payload[key] = fieldValues[key];
+    } else if (fieldValues !== undefined) {
+      payload.message = String(fieldValues);
+    }
+    if (messageId !== undefined) payload.messageId = messageId;
+    if (payload.message_id !== undefined && payload.messageId === undefined) payload.messageId = payload.message_id;
+    if (options.swipe_id !== undefined && payload.swipeId === undefined) payload.swipeId = options.swipe_id;
+    if (payload.swipe_id !== undefined && payload.swipeId === undefined) payload.swipeId = payload.swipe_id;
+    payload.options = options;
+    return _apiCall('setChatMessage', payload);
   };
 
   window.setChatMessages = function(messages, options) {
@@ -233,7 +466,13 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
   window.eventEmit = eventEmit;
   window.eventOn = eventOn;
   window.eventOnce = eventOnce;
+  window.eventMakeFirst = eventOn;
+  window.eventMakeLast = eventOn;
+  window.eventEmitAndWait = eventEmitAndWait;
   window.eventRemoveListener = eventRemoveListener;
+  window.eventClearEvent = eventClearEvent;
+  window.eventClearListener = eventClearListener;
+  window.eventClearAll = eventClearAll;
 
   // Generation
   window.generate = function(options) {
@@ -262,10 +501,12 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
 
   // Utility
   window.getLastMessageId = function() {
+    if (_chatMessages.length > 0) return Promise.resolve(_lastMessageId());
     return _apiCall('getLastMessageId', {});
   };
 
   window.substitudeMacros = function(text) {
+    if (_chatMessages.length > 0) return Promise.resolve(_demacroText(text));
     return _apiCall('substitudeMacros', { text: text });
   };
 
@@ -299,6 +540,16 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
     substitudeMacros: window.substitudeMacros,
     initializeGlobal: window.initializeGlobal,
     waitGlobalInitialized: window.waitGlobalInitialized,
+    eventOn: window.eventOn,
+    eventOnce: window.eventOnce,
+    eventMakeFirst: window.eventMakeFirst,
+    eventMakeLast: window.eventMakeLast,
+    eventEmit: window.eventEmit,
+    eventEmitAndWait: window.eventEmitAndWait,
+    eventRemoveListener: window.eventRemoveListener,
+    eventClearEvent: window.eventClearEvent,
+    eventClearListener: window.eventClearListener,
+    eventClearAll: window.eventClearAll,
   };
 
   // ── Message handler: responses from host + variable updates ──
@@ -331,6 +582,11 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
           el.textContent = data.variables[key] != null ? String(data.variables[key]) : '';
         }
       }
+      return;
+    }
+
+    if (data.type === 'runtimeUpdated') {
+      _setRuntime(data.runtime || null, data.reason || 'runtimeUpdated');
       return;
     }
 
@@ -370,6 +626,13 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
       return window.__xpVariables || {};
     },
   };
+
+  // ── Cleanup stale floating UI DOM: when iframe is rebuilt (greeting switch),
+  // the old iframe's JS context is dead but its parent-DOM-injected widgets remain.
+  // Delete them via postMessage so the new iframe instance recreates them fresh.
+  window.parent.postMessage({ type: 'cleanup-floating-ui' }, '*');
+
+  _setRuntime(_runtime, 'initial');
 
   // Report initial height and notify rendered
   if (document.readyState === 'complete') {

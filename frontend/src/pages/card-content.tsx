@@ -20,7 +20,6 @@ const ST_CDN_LIBS = {
   fontAwesomeCss: 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css',
   tailwindCss: 'https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css',
   jquery: 'https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js',
-  zod: 'https://cdnjs.cloudflare.com/ajax/libs/zod/3.23.8/zod.min.js',
   vue: 'https://cdnjs.cloudflare.com/ajax/libs/vue/2.7.14/vue.min.js',
 };
 
@@ -57,21 +56,38 @@ export function buildTavernHelperScriptTags(card: CharacterCard | null): string 
   const scripts = getTavernHelperScripts(card);
   if (scripts.length === 0) return '';
 
+  // Unique per-build nonce to bust ES module import cache.
+  // When iframe is rebuilt (greeting switch), the new Blob URL is in a
+  // different origin-like context, but the browser still caches ES modules
+  // by their URL. Without a cache buster, import 'https://cdn/.../index.js'
+  // returns the already-evaluated module and its side effects (creating the
+  // floating "灵" button etc.) never re-execute.
+  const cacheBuster = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
   return scripts
-    .map((s, i) => {
-      const content = (s.content || '').trim();
-      if (!content) return '';
+      .map((s, i) => {
+        const content = (s.content || '').trim();
+        if (!content) return '';
 
-      // ES module import statement → type="module"
-      if (/^import\s/.test(content) || /^export\s/.test(content)) {
-        return `<script type="module" id="th-script-${i}">${content}</script>`;
-      }
+        // ES module import statement → type="module"
+        if (/^import\s/.test(content) || /^export\s/.test(content)) {
+          // Add cache-busting query param to import URL to force re-evaluation
+          // of module side effects when iframe is rebuilt.
+          const rewritten = content.replace(
+            /(import\s+[^"']*["'])([^"']+)(["'])/g,
+            (_m, prefix, url, suffix) => {
+              const sep = url.includes('?') ? '&' : '?';
+              return String(prefix) + String(url) + sep + '_xrp_cb=' + cacheBuster + String(suffix);
+            },
+          );
+          return `<script type="module" id="th-script-${i}">${rewritten}</script>`;
+        }
 
-      // Regular inline script
-      return `<script defer id="th-script-${i}">${content}</script>`;
-    })
-    .filter(Boolean)
-    .join('\n');
+        // Regular inline script
+        return `<script defer id="th-script-${i}">${content}</script>`;
+      })
+      .filter(Boolean)
+      .join('\n');
 }
 
 // ── CDN URL rewriting — some CDNs (bootcdn.net) are commonly blocked by
@@ -132,8 +148,118 @@ function buildHeadBridgeScript(): string {
 (function() {
   'use strict';
 
-  // ── Zod shim — card scripts (MVU etc.) depend on global z ──
-  window.z = window.Zod || window.z || (window.parent && window.parent.Zod) || (window.parent && window.parent.z);
+  // ── Zod shim (inline) ──
+  // Card scripts use Zod via global 'z'. CDN builds are unreliable across
+  // providers (cdnjs lacks Zod, jsdelivr paths differ between versions), so we
+  // inline a minimal API surface that covers the subset card MVU schemas need:
+  //   z.object(), z.string(), z.number(), z.enum(), z.record(), z.array()
+  //   .prefault(), .describe(), .transform(), z.coerce.number()
+  (function() {
+    function ZodType(def) { this._def = def || {}; }
+    ZodType.prototype.prefault = function(v) { this._def.defaultValue = v; return this; };
+    ZodType.prototype.describe = function(d) { this._def.description = d; return this; };
+    ZodType.prototype.transform = function(fn) {
+      var inner = this;
+      function Transformed() { this._inner = inner; this._fn = fn; }
+      Transformed.prototype.prefault = function(v) {
+        // Apply transform to default value if set
+        try { this._inner._def.defaultValue = fn(v); } catch(e) {}
+        return this;
+      };
+      Transformed.prototype.describe = function(d) { return this; };
+      Transformed.prototype._isZodTransform = true;
+      return new Transformed();
+    };
+
+    // Helper: walk a shape and set defaults on leaf types, handling
+    // Transformed wrappers (which have ._inner instead of ._def).
+    function setDefaultOnType(t, val) {
+      if (!t) return;
+      if (t._isZodTransform) {
+        // Transformed wraps another type — apply transform, then set on inner
+        try { val = t._fn(val); } catch(e) {}
+        setDefaultOnType(t._inner, val);
+        return;
+      }
+      if (t._def) { t._def.defaultValue = val; }
+    }
+
+    function ZodObject(shape) { ZodType.call(this); this._shape = shape || {}; }
+    ZodObject.prototype = Object.create(ZodType.prototype);
+    ZodObject.prototype.prefault = function(v) {
+      if (v && typeof v === 'object') {
+        for (var k in v) {
+          if (this._shape[k]) {
+            setDefaultOnType(this._shape[k], v[k]);
+          }
+        }
+      }
+      return this;
+    };
+
+    function ZodString() { ZodType.call(this); }
+    ZodString.prototype = Object.create(ZodType.prototype);
+
+    function ZodNumber() { ZodType.call(this); }
+    ZodNumber.prototype = Object.create(ZodType.prototype);
+
+    function ZodBoolean() { ZodType.call(this); }
+    ZodBoolean.prototype = Object.create(ZodType.prototype);
+
+    function ZodEnum(values) { ZodType.call(this); this._values = values; }
+    ZodEnum.prototype = Object.create(ZodType.prototype);
+
+    function ZodRecord(keyType, valueType) { ZodType.call(this); this._keyType = keyType; this._valueType = valueType; }
+    ZodRecord.prototype = Object.create(ZodType.prototype);
+    ZodRecord.prototype.prefault = function(v) {
+      if (v && typeof v === 'object') { this._def.defaultValue = v; }
+      return this;
+    };
+
+    function ZodArray(itemType) { ZodType.call(this); this._itemType = itemType; }
+    ZodArray.prototype = Object.create(ZodType.prototype);
+    ZodArray.prototype.prefault = function(v) { this._def.defaultValue = v; return this; };
+
+    // Optional / nullable wrappers (no-op at runtime — just pass through)
+    function ZodOptional(inner) { ZodType.call(this); this._inner = inner; this._isOptional = true; }
+    ZodOptional.prototype = Object.create(ZodType.prototype);
+    ZodOptional.prototype.prefault = function(v) { setDefaultOnType(this._inner, v); return this; };
+    ZodOptional.prototype.describe = function(d) { return this; };
+
+    function ZodNullable(inner) { ZodType.call(this); this._inner = inner; this._isNullable = true; }
+    ZodNullable.prototype = Object.create(ZodType.prototype);
+    ZodNullable.prototype.prefault = function(v) { if (v != null) setDefaultOnType(this._inner, v); return this; };
+    ZodNullable.prototype.describe = function(d) { return this; };
+
+    window.z = {
+      object: function(shape) { return new ZodObject(shape); },
+      string: function() { return new ZodString(); },
+      number: function() { return new ZodNumber(); },
+      boolean: function() { return new ZodBoolean(); },
+      enum: function(values) { return new ZodEnum(values); },
+      record: function(k, v) { return new ZodRecord(k, v); },
+      array: function(item) { return new ZodArray(item); },
+      coerce: {
+        number: function() { return new ZodNumber(); },
+        string: function() { return new ZodString(); },
+        boolean: function() { return new ZodBoolean(); }
+      }
+    };
+
+    // Augment ZodObject / ZodString / ZodNumber / ZodBoolean / ZodArray with
+    // .optional() / .nullable() so card schemas that use them don't crash.
+    function addOptionalNullable(proto) {
+      proto.optional = function() { return new ZodOptional(this); };
+      proto.nullable = function() { return new ZodNullable(this); };
+    }
+    addOptionalNullable(ZodObject.prototype);
+    addOptionalNullable(ZodString.prototype);
+    addOptionalNullable(ZodNumber.prototype);
+    addOptionalNullable(ZodBoolean.prototype);
+    addOptionalNullable(ZodArray.prototype);
+    addOptionalNullable(ZodEnum.prototype);
+    addOptionalNullable(ZodRecord.prototype);
+  })();
 
   // ── Minimal event system for global initialization signaling ──
   var _headEvents = {};
@@ -203,11 +329,14 @@ export function buildIframeDocument(
     headExtras?: string;
     /** Character card to extract tavern_helper scripts from. */
     card?: CharacterCard | null;
+    /** Initial ST-like runtime snapshot for scripts that run before body bridge. */
+    runtime?: Record<string, unknown> | null;
   },
 ): string {
   const { headExtras = '', card = null } = options || {};
   const thScriptTags = buildTavernHelperScriptTags(card);
   const headBridge = buildHeadBridgeScript();
+  const runtimeBootstrap = `<script>window.__XRP_INITIAL_RUNTIME=null;</script>`;
 
   return `<!DOCTYPE html>
 <html>
@@ -216,13 +345,15 @@ export function buildIframeDocument(
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" href="${ST_CDN_LIBS.fontAwesomeCss}">
 <link rel="stylesheet" href="${ST_CDN_LIBS.tailwindCss}">
+<!-- Head bridge before CDN + card scripts: must exist before card JS runs -->
+${runtimeBootstrap}
+<script>${headBridge}</script>
 <script src="${ST_CDN_LIBS.jquery}"></script>
-<script src="${ST_CDN_LIBS.zod}"></script>
 <script src="${ST_CDN_LIBS.vue}"></script>
+	<!-- thScriptTags execute as inline scripts — need z (in headBridge), $, Vue all ready -->
 ${thScriptTags}
 ${headExtras}
 <style>html,body{margin:0;padding:0;overflow:hidden}</style>
-<script>${headBridge}</script>
 </head>
 <body>${replaceViewportUnits(bodyHtml)}
 <script>${VH_REPLACEMENT_SCRIPT}</script>
@@ -397,6 +528,7 @@ export function renderCardFormattedContent(
   sessionId?: string,
   worldBookId?: string,
   onMessagesChanged?: () => void,
+  runtime?: Record<string, unknown> | null,
 ): React.ReactNode {
   const normalized = content
     .replace(/<\/?正文>/g, '')
@@ -439,13 +571,18 @@ export function renderCardFormattedContent(
             // CSS into <head>, JS before </body> (or at document end if no </body>).
             const libCss = `<link rel="stylesheet" href="${ST_CDN_LIBS.fontAwesomeCss}">
 <link rel="stylesheet" href="${ST_CDN_LIBS.tailwindCss}">`;
+            const runtimeBootstrap = `<script>window.__XRP_INITIAL_RUNTIME=null;</script>`;
+            const headJs = `${runtimeBootstrap}<script>${buildHeadBridgeScript()}</script>`;
             const libJs = `<script src="${ST_CDN_LIBS.jquery}"></script>
 <script src="${ST_CDN_LIBS.vue}"></script>
 <script>${VH_REPLACEMENT_SCRIPT}</script>
 <script>${bridgeScript}</script>`;
 
             let injected = replaceViewportUnits(rewritten);
-            // Inject CSS before </head>
+            // headBridge must be the FIRST script in <head> — inject right after <head>
+            if (/<head[^>]*>/i.test(injected)) {
+              injected = injected.replace(/(<head[^>]*>)/i, `$1\n${headJs}`);
+            }
             if (/<\/head>/i.test(injected)) {
               injected = injected.replace(/<\/head>/i, `${libCss}</head>`);
             }
@@ -458,7 +595,7 @@ export function renderCardFormattedContent(
             return injected;
           }
           // Fragment with scripts — wrap in a standard document with ST libs
-          return buildIframeDocument(rewritten, bridgeScript, { card });
+          return buildIframeDocument(rewritten, bridgeScript, { card, runtime });
         })();
 
         return (
@@ -466,6 +603,7 @@ export function renderCardFormattedContent(
             key={`html-iframe-${index}`}
             documentHtml={iframeSrcDoc}
             className="card-regex-html"
+            runtime={runtime || undefined}
             sessionId={sessionId}
             worldBookId={worldBookId}
             onMessagesChanged={onMessagesChanged}
@@ -497,11 +635,12 @@ export function renderCardIframeHtml(
   sessionId?: string,
   worldBookId?: string,
   card?: CharacterCard | null,
+  runtime?: Record<string, unknown> | null,
 ): string {
   const macroContext = createMacroContext({ variables, userName, charName });
   const processed = processMacros(html, macroContext);
   const rewritten = rewriteCdnUrls(processed);
   const bridgeScript = buildIframeBridgeScript(sessionId, worldBookId);
 
-  return buildIframeDocument(rewritten, bridgeScript, { card });
+  return buildIframeDocument(rewritten, bridgeScript, { card, runtime });
 }

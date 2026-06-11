@@ -354,18 +354,24 @@ export default function Chat() {
       : msg.turn_number === 0 && characterCard
         ? characterCard.name
         : '助手';
-    const messageVariants = getVariants(msg);
     const openingSwipes = msg.turn_number === 0 && characterCard
       ? parseGreetings(characterCard)
       : [];
-    const swipes = messageVariants.length > 0 ? messageVariants : openingSwipes;
     const comparableContent = cleanComparableMessageText(runtimeContent);
     const matchedOpeningIndex = openingSwipes.findIndex(swipe => cleanComparableMessageText(swipe) === comparableContent);
-    const activeSwipeIndex = msg.variant_index >= 0
-      ? msg.variant_index
-      : matchedOpeningIndex >= 0
-        ? matchedOpeningIndex
-        : swipes.length;
+    const messageVariants = getVariants(msg);
+    let swipes: string[];
+    let activeSwipeIndex: number;
+    if (openingSwipes.length > 0) {
+      swipes = openingSwipes;
+      activeSwipeIndex = matchedOpeningIndex >= 0 ? matchedOpeningIndex : 0;
+    } else if (msg.role === 'assistant' && messageVariants.length > 0) {
+      swipes = [runtimeContent, ...messageVariants];
+      activeSwipeIndex = 0;
+    } else {
+      swipes = [runtimeContent];
+      activeSwipeIndex = 0;
+    }
 
     return {
       id: msg.id,

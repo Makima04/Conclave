@@ -10,6 +10,13 @@ import type { CharacterCard, SessionRuntimeAssets } from '../api/types';
 
 // ── PNG 元数据提取 ──
 
+// ST PNG 的 base64 内容是 UTF-8 字节编码，atob() 返回 Latin1 二进制串，需要当 UTF-8 解码
+function base64ToUtf8(b64: string): string {
+  const binStr = atob(b64);
+  const bytes = Uint8Array.from(binStr, c => c.charCodeAt(0));
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
 async function extractCardFromPng(file: File): Promise<Record<string, unknown>> {
   const buffer = await file.arrayBuffer();
   const bytes = new Uint8Array(buffer);
@@ -32,7 +39,7 @@ async function extractCardFromPng(file: File): Promise<Record<string, unknown>> 
         const key = new TextDecoder().decode(data.slice(0, nullIdx));
         if (key === 'chara' || key === 'Source') {
           const b64 = new TextDecoder().decode(data.slice(nullIdx + 1));
-          return JSON.parse(atob(b64));
+          return JSON.parse(base64ToUtf8(b64));
         }
       }
     }
@@ -49,7 +56,7 @@ async function extractCardFromPng(file: File): Promise<Record<string, unknown>> 
           textStart = data.indexOf(0, textStart) + 1; // language tag
           textStart = data.indexOf(0, textStart) + 1; // translated keyword
           const text = new TextDecoder().decode(data.slice(textStart)).trim();
-          try { return JSON.parse(text); } catch { return JSON.parse(atob(text)); }
+          try { return JSON.parse(text); } catch { return JSON.parse(base64ToUtf8(text)); }
         }
       }
     }

@@ -480,14 +480,14 @@ export function useMessageStream({
       setStreamError('对话开始后不能切换开场白');
       return;
     }
-    const index = swipeId - 1;
     const greetings = getParsedGreetings(characterCard);
-    const greeting = greetings[index + 1] || greetings[0];
+    const index = Math.max(0, swipeId);
+    const greeting = greetings[index];
     if (!greeting) {
       setStreamError(`找不到开场白 swipe ${swipeId}`);
       return;
     }
-    setSelectedGreetingIndex(index);
+    setSelectedGreetingIndex(index - 1);
     await applyOpeningContent(greeting, '切换开场白失败', canApplyOpening);
   }
 
@@ -687,8 +687,7 @@ export function useMessageStream({
       return;
     }
     if (event.action === 'setChatMessage') {
-      // Card JS follows ST convention: may send swipe_id + message_id without a message body.
-      // e.g. {message_id: 0, swipe_id: 1} = switch opening message to alternate greeting 0
+      // Card JS follows ST convention: may send 0-based swipe_id + message_id without a body.
       const message = String(event.payload?.message || '').trim();
       const swipeId = Number(event.payload?.swipeId ?? event.payload?.swipe_id ?? event.payload?.options?.swipe_id);
       const messageRef = event.payload?.messageId ?? event.payload?.message_id;

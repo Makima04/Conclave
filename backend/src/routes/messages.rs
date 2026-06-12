@@ -499,11 +499,12 @@ pub async fn apply_opening(
         }
         Err(e) => {
             tracing::warn!(session = %session_id, "Failed to initialize session state from opening content: {}", e);
-            if let Err(fallback_err) = state_initializer::reinitialize_session_state_from_world_book(
-                &state.pool,
-                &session_id,
-            )
-            .await
+            if let Err(fallback_err) =
+                state_initializer::reinitialize_session_state_from_world_book(
+                    &state.pool,
+                    &session_id,
+                )
+                .await
             {
                 tracing::warn!(session = %session_id, "Fallback world-book initialization failed before applying opening: {}", fallback_err);
             }
@@ -518,6 +519,33 @@ pub async fn apply_opening(
 
     let id = existing_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let mut tx = state.pool.begin().await?;
+    let state_variables: serde_json::Value = sqlx::query_scalar::<_, String>(
+        "SELECT state_json FROM state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 1",
+    )
+    .bind(&session_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok())
+    .and_then(|value| value.get("variables").cloned())
+    .filter(|value| value.is_object())
+    .unwrap_or_else(|| serde_json::json!({}));
+    let state_variables_str =
+        serde_json::to_string(&state_variables).unwrap_or_else(|_| "{}".to_string());
+    sqlx::query(
+        "INSERT INTO session_variables (id, session_id, variables, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(session_id) DO UPDATE SET
+             variables = excluded.variables,
+             updated_at = excluded.updated_at",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(&session_id)
+    .bind(&state_variables_str)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *tx)
+    .await?;
+
     if sqlx::query_scalar::<_, String>("SELECT id FROM messages WHERE id = ?")
         .bind(&id)
         .fetch_optional(&mut *tx)
@@ -1248,12 +1276,7 @@ pub async fn read_variables(
         "canonical" | "platform" | "platform_state" => state_value
             .get("platform_state")
             .cloned()
-            .filter(|value| {
-                !value
-                    .as_object()
-                    .map(|obj| obj.is_empty())
-                    .unwrap_or(false)
-            })
+            .filter(|value| !value.as_object().map(|obj| obj.is_empty()).unwrap_or(false))
             .or_else(|| {
                 if should_fallback_platform_to_projection {
                     state_value.get("variables").cloned()
@@ -1298,7 +1321,6 @@ pub async fn read_variables(
         "values": values,
     })))
 }
-
 
 pub async fn get_memory_events(
     State(state): State<Arc<AppState>>,

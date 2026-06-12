@@ -271,7 +271,7 @@ export default function Chat() {
   const openingGreetingVariables = React.useMemo(
     () => buildGreetingVariableSnapshots(
       characterCard,
-      cardProjectionVariables as Record<string, unknown>,
+      openingVariableBase(cardProjectionVariables as Record<string, unknown>),
     ),
     [characterCard, cardProjectionVariables],
   );
@@ -437,6 +437,16 @@ export default function Chat() {
     return greetings.map(greeting => mergeVariableObjects(baseVariables, parseInitVariables(greeting)));
   }
 
+  function openingVariableBase(currentVariables: Record<string, unknown>): Record<string, unknown> {
+    const base: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(currentVariables)) {
+      if (key.startsWith('_') || key.startsWith('$') || key.startsWith('cx_')) {
+        base[key] = value;
+      }
+    }
+    return base;
+  }
+
   function prepareOpeningTextDisplayContent(content: string, options?: { hideStatusPlaceholder?: boolean }): string {
     let text = stripKnownOpeningHtmlTriggers(content).trim();
     if (options?.hideStatusPlaceholder) {
@@ -514,7 +524,10 @@ export default function Chat() {
         index,
       },
       variables: messageVariables,
-      swipes_data: swipes.map(swipe => mergeVariableObjects(chatVariables, parseInitVariables(swipe))),
+      swipes_data: swipes.map(swipe => mergeVariableObjects(
+        openingSwipes.length > 0 ? openingVariableBase(chatVariables) : chatVariables,
+        parseInitVariables(swipe),
+      )),
       swipes_info: swipes.map(() => ({})),
     };
   }

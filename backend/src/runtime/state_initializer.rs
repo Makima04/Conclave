@@ -74,6 +74,9 @@ async fn initialize_session_state_with_variables(
     } else {
         latest_state(pool, session_id).await?
     };
+    if !force_reset && has_initialized_state(&current_state) {
+        return Ok(false);
+    }
     let current_variables = current_state.get("variables").cloned();
     let merged_variables =
         merge_with_existing_variables(initial_variables, current_variables.as_ref());
@@ -617,6 +620,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lazy_world_book_initialization_does_not_merge_over_existing_state() {
+        let pool = setup_test_pool().await;
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let world_pack_id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        sqlx::query(
+            "INSERT INTO world_books (id, name, description, original_format, source_data, created_at, updated_at)
+             VALUES (?, 'world', '', 'test', '{}', ?, ?)",
+        )
+        .bind(&world_pack_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("insert world book");
+
+        sqlx::query(
+            "INSERT INTO sessions (id, title, mode, config, world_pack_id, current_turn, title_source, status, created_at, updated_at)
+             VALUES (?, '', 'single_agent', '{}', ?, 0, 'auto', 'idle', ?, ?)",
+        )
+        .bind(&session_id)
+        .bind(&world_pack_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("insert session");
+
+        sqlx::query(
+            "INSERT INTO world_book_entries (id, world_book_id, keys, secondary_keys, comment, content, enabled, priority, created_at, updated_at)
+             VALUES (?, ?, '[]', '[]', '[InitVar]', ?, 1, 0, ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&world_pack_id)
+        .bind(
+            r#"<UpdateVariable>
+<initvar>
+人际交往:
+  当前接触人物:
+    沈慕微:
+      心情: 心虚
+</initvar>
+</UpdateVariable>"#,
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("insert init var entry");
+
+        sqlx::query(
+            "INSERT INTO state_snapshots (id, session_id, version, state_json, risk_level, committed_by, created_at)
+             VALUES (?, ?, 1, ?, 'low', 'runtime', ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&session_id)
+        .bind(
+            serde_json::json!({
+                "variables": {
+                    "世界系统": { "当前地址": "承安城·皇宫外殿" },
+                    "人际交往": {
+                        "当前接触人物": {
+                            "姜澄鸢": { "心情": "平静" }
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("insert existing snapshot");
+
+        let changed = initialize_session_state_from_world_book(&pool, &session_id)
+            .await
+            .expect("lazy initialize");
+
+        assert!(!changed);
+        let latest = latest_state(&pool, &session_id)
+            .await
+            .expect("latest state");
+        assert!(latest["variables"]["人际交往"]["当前接触人物"]["沈慕微"].is_null());
+        assert_eq!(
+            latest["variables"]["人际交往"]["当前接触人物"]["姜澄鸢"]["心情"],
+            serde_json::json!("平静")
+        );
+    }
+
+    #[tokio::test]
     async fn initializes_session_state_from_opening_content() {
         let pool = setup_test_pool().await;
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -667,7 +761,9 @@ mod tests {
 
         assert!(changed);
 
-        let latest = latest_state(&pool, &session_id).await.expect("latest state");
+        let latest = latest_state(&pool, &session_id)
+            .await
+            .expect("latest state");
         assert_eq!(
             latest["variables"]["<user>"]["精神状态数值"]["调教值"][0],
             serde_json::json!("12 | 初始")

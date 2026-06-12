@@ -204,11 +204,14 @@ export function IframeHtmlRuntimeHost({
 
   useEffect(() => {
     if (!loaded || !iframeRef.current?.contentWindow) return;
+    if (className?.includes('card-runtime-assets-host')) {
+      cleanupIframeParentRuntimeUi();
+    }
     iframeRef.current.contentWindow.postMessage(
       { type: 'runtimeUpdated', runtime, reason: 'host-runtime-change' },
       '*',
     );
-  }, [loaded, runtime]);
+  }, [className, loaded, runtime]);
 
   return (
     <iframe

@@ -302,8 +302,8 @@ export default function CardRenderLab() {
         {characterCard && openingContent && (
           <div style={{ marginBottom: 24 }}>
             <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Opening Preview（主开场白）</div>
-            <div className="message assistant opening-preview" style={{ background: '#fff', borderRadius: 8, padding: 16 }}>
-              <div className="message-role" style={{ fontWeight: 600, marginBottom: 8, color: '#333' }}>{cardName}</div>
+            <div className="message assistant opening-preview" style={{ background: '#1a1a1a', borderRadius: 8, padding: 16 }}>
+              <div className="message-role" style={{ fontWeight: 600, marginBottom: 8, color: '#ddd' }}>{cardName}</div>
               <div className="message-content">
                 <MessageContent
                   content={openingContent}
@@ -325,8 +325,8 @@ export default function CardRenderLab() {
             <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>
               Alternate Greeting #{idx + 1}
             </div>
-            <div className="message assistant" style={{ background: '#fff', borderRadius: 8, padding: 16 }}>
-              <div className="message-role" style={{ fontWeight: 600, marginBottom: 8, color: '#333' }}>{cardName}</div>
+            <div className="message assistant" style={{ background: '#1a1a1a', borderRadius: 8, padding: 16 }}>
+              <div className="message-role" style={{ fontWeight: 600, marginBottom: 8, color: '#ddd' }}>{cardName}</div>
               <div className="message-content">
                 <MessageContent
                   content={greeting}

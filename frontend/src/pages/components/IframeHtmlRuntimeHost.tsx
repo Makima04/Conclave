@@ -3,6 +3,17 @@ import * as api from '../../api/client';
 
 const MIN_IFRAME_HEIGHT = 360;
 const MAX_MESSAGE_IFRAME_HEIGHT = 720;
+const KNOWN_PARENT_UI_SELECTORS = [
+  '#cx-floating-status-root',
+  '#cx-floating-status-style',
+  '[id^="cx-floating-status-"]',
+];
+
+export function cleanupIframeParentRuntimeUi() {
+  for (const selector of KNOWN_PARENT_UI_SELECTORS) {
+    document.querySelectorAll(selector).forEach(element => element.remove());
+  }
+}
 
 function safeJsonForInlineScript(value: unknown): string {
   return JSON.stringify(value ?? null)
@@ -56,10 +67,7 @@ export function IframeHtmlRuntimeHost({
     // so bridge's cleanup-floating-ui postMessage is too late — the card JS
     // already saw stale parent DOM and skipped creating fresh widgets.
     // Clean up HERE, in React-land, before the new blob URL is set.
-    for (const id of ['cx-floating-status-root', 'cx-floating-status-style']) {
-      const el = document.getElementById(id);
-      if (el) el.remove();
-    }
+    cleanupIframeParentRuntimeUi();
 
     const runtimeDocumentHtml = documentHtml.replace(
       'window.__XRP_INITIAL_RUNTIME=null;',
@@ -140,17 +148,16 @@ export function IframeHtmlRuntimeHost({
       // cleanup-floating-ui: when iframe is rebuilt (greeting switch),
       // remove stale floating UI DOM injected into parent by old iframe's JS
       if (data?.type === 'cleanup-floating-ui') {
-        const ids = ['cx-floating-status-root'];
-        for (const id of ids) {
-          const el = document.getElementById(id);
-          if (el) el.remove();
-        }
+        cleanupIframeParentRuntimeUi();
         return;
       }
 
       // setVariables / card-sandbox-action (existing bridge)
       if (data?.type === 'setVariables' && data.changes) {
-        onAction?.({ action: 'setVariables', payload: data.changes });
+        const payload = data.changes?.variables
+          ? data.changes
+          : { variables: data.changes, options: { merge: true } };
+        onAction?.({ action: 'setVariables', payload });
         return;
       }
 
@@ -337,9 +344,10 @@ async function handleThApi(
 
       case 'setChatMessage': {
         // Card JS follows ST convention: may pass message, swipe_id, message_id
-        const payload: Record<string, any> = {};
-        const message = String(params.message || '').trim();
-        if (message) payload.message = message;
+        const payload: Record<string, any> = { ...params };
+        if (params.message !== undefined) {
+          payload.message = String(params.message).trim();
+        }
         if (params.swipe_id !== undefined || params.swipeId !== undefined) {
           payload.swipeId = Number(params.swipe_id ?? params.swipeId);
         }
@@ -347,7 +355,7 @@ async function handleThApi(
           payload.messageId = String(params.message_id ?? params.messageId);
         }
         if (Object.keys(payload).length > 0) {
-          onAction?.({ action: 'setChatMessage', payload });
+          await onAction?.({ action: 'setChatMessage', payload });
         }
         return { result: true };
       }
@@ -357,7 +365,7 @@ async function handleThApi(
         for (const msg of messages) {
           // Card JS follows ST convention: {message_id, swipe_id}
           // Normalize to camelCase for downstream handlers.
-          const payload: Record<string, any> = {};
+          const payload: Record<string, any> = msg && typeof msg === 'object' ? { ...msg } : {};
           if (msg.message !== undefined) {
             payload.message = String(msg.message).trim();
           }
@@ -368,7 +376,7 @@ async function handleThApi(
             payload.messageId = String(msg.message_id ?? msg.messageId);
           }
           if (Object.keys(payload).length > 0) {
-            onAction?.({ action: 'setChatMessage', payload });
+            await onAction?.({ action: 'setChatMessage', payload });
           }
         }
         return { result: true };

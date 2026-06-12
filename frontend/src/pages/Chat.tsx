@@ -6,7 +6,7 @@ import {
   renderCardIframeHtml,
 } from './card-content';
 import { MessageContent } from './components/MessageContent';
-import { IframeHtmlRuntimeHost } from './components/IframeHtmlRuntimeHost';
+import { cleanupIframeParentRuntimeUi, IframeHtmlRuntimeHost } from './components/IframeHtmlRuntimeHost';
 import '../styles/chat.css';
 import { ToolRail } from './components/ToolRail';
 import { ToolDrawer } from './components/ToolDrawer';
@@ -20,6 +20,7 @@ import {
   getOpeningHtmlAppHostContent,
   stripKnownOpeningHtmlTriggers,
 } from './st-opening-ui';
+import { mergeVariableObjects, parseInitVariables } from './st-init-variables';
 
 // --- inline SandboxRuntime types (replacing deleted sandbox-runtime-types module) ---
 
@@ -28,6 +29,8 @@ interface SandboxRuntimeMessage {
   message_id: string;
   swipe_id?: number;
   swipes?: string[];
+  swipes_data?: Record<string, any>[];
+  swipes_info?: Record<string, any>[];
   role: string;
   name: string;
   message: string;
@@ -73,6 +76,14 @@ interface SandboxRuntimeContext {
   platformState?: Record<string, unknown>;
   writableState?: Record<string, unknown>;
   submission?: SandboxRuntimeSubmission | null;
+}
+
+function simpleHash(source: string): string {
+  let hash = 5381;
+  for (let index = 0; index < source.length; index++) {
+    hash = ((hash << 5) + hash + source.charCodeAt(index)) | 0;
+  }
+  return (hash >>> 0).toString(36);
 }
 
 export default function Chat() {
@@ -257,6 +268,29 @@ export default function Chat() {
     selectedGreetingText || characterCard?.first_mes || '',
     { hideStatusPlaceholder: Boolean(openingUiHostContent) },
   );
+  const openingGreetingVariables = React.useMemo(
+    () => buildGreetingVariableSnapshots(
+      characterCard,
+      cardProjectionVariables as Record<string, unknown>,
+    ),
+    [characterCard, cardProjectionVariables],
+  );
+  const selectedOpeningVariables = React.useMemo(
+    () => {
+      if (openingGreetingVariables.length === 0) return cardProjectionVariables as Record<string, unknown>;
+      return openingGreetingVariables[selectedGreetingIndex + 1]
+        || openingGreetingVariables[0]
+        || cardProjectionVariables as Record<string, unknown>;
+    },
+    [openingGreetingVariables, selectedGreetingIndex, cardProjectionVariables],
+  );
+  const openingRuntimeFingerprint = React.useMemo(
+    () => simpleHash(JSON.stringify({
+      selectedGreetingIndex,
+      variables: selectedOpeningVariables,
+    })),
+    [selectedGreetingIndex, selectedOpeningVariables],
+  );
   const sandboxSubmissionRuntime = React.useMemo<SandboxRuntimeSubmission | null>(() => {
     if (!sandboxSubmission) return null;
     return {
@@ -301,10 +335,23 @@ export default function Chat() {
       runtimeAssets,
     );
   }, [activeWorldBook?.id, cardProjectionVariables, characterCard, runtimeAssets, sessionId, userPersona.name, visibleMessages.length]);
+  const runtimeAssetHostKey = React.useMemo(
+    () => simpleHash(JSON.stringify({
+      cardId: characterCard?.id || null,
+      sessionId,
+      messageCount: visibleMessages.length,
+      variables: cardProjectionVariables,
+    })),
+    [cardProjectionVariables, characterCard?.id, sessionId, visibleMessages.length],
+  );
   const openingPreviewRuntime = React.useMemo(
     () => buildEmptySessionPreviewRuntime(openingPreviewText),
-    [openingPreviewText, runtimeSharedSaves, cardProjectionVariables, cardPlatformState, cardWritableState, characterCard?.name, sandboxSubmissionRuntime, sessionId, cardVariableContract],
+    [openingPreviewText, runtimeSharedSaves, selectedOpeningVariables, openingGreetingVariables, cardPlatformState, cardWritableState, characterCard?.name, sandboxSubmissionRuntime, sessionId, cardVariableContract, selectedGreetingIndex],
   );
+
+  React.useEffect(() => () => {
+    cleanupIframeParentRuntimeUi();
+  }, [sessionId, characterCard?.id]);
   // --- local helpers ---
   const handleRailClick = React.useCallback((tab: InspectorTab) => {
     setDrawerTab(tab);
@@ -379,6 +426,15 @@ export default function Chat() {
   function parseGreetings(card: CharacterCard | null): string[] {
     if (!card) return [];
     return [card.first_mes, ...(card.alternate_greetings || [])].filter(Boolean);
+  }
+
+  function buildGreetingVariableSnapshots(
+    card: CharacterCard | null,
+    baseVariables: Record<string, unknown>,
+  ): Record<string, unknown>[] {
+    const greetings = parseGreetings(card);
+    if (greetings.length === 0) return [];
+    return greetings.map(greeting => mergeVariableObjects(baseVariables, parseInitVariables(greeting)));
   }
 
   function prepareOpeningTextDisplayContent(content: string, options?: { hideStatusPlaceholder?: boolean }): string {
@@ -458,6 +514,8 @@ export default function Chat() {
         index,
       },
       variables: messageVariables,
+      swipes_data: swipes.map(swipe => mergeVariableObjects(chatVariables, parseInitVariables(swipe))),
+      swipes_info: swipes.map(() => ({})),
     };
   }
 
@@ -520,7 +578,7 @@ export default function Chat() {
   }
 
   function buildEmptySessionPreviewRuntime(content: string): SandboxRuntimeContext {
-    const projectionVariables = cardProjectionVariables;
+    const projectionVariables = selectedOpeningVariables;
     const openingSwipes = characterCard
       ? parseGreetings(characterCard)
       : [];
@@ -561,6 +619,8 @@ export default function Chat() {
         writable_state: cardWritableState,
       },
       variables: projectionVariables,
+      swipes_data: openingSwipes.map((_, index) => openingGreetingVariables[index] || projectionVariables),
+      swipes_info: openingSwipes.map(() => ({})),
     };
 
     return {
@@ -843,7 +903,7 @@ export default function Chat() {
         {/* Messages list */}
         {runtimeAssetHostDocument && (
           <IframeHtmlRuntimeHost
-            key={`runtime-assets-${characterCard?.id || 'session'}`}
+            key={`runtime-assets-${runtimeAssetHostKey}`}
             className="card-runtime-assets-host"
             ariaHidden
             tabIndex={-1}
@@ -870,10 +930,11 @@ export default function Chat() {
               <div className="message-content">
                 {openingUiHostContent && (
                   <MessageContent
+                    key={`opening-ui-${openingRuntimeFingerprint}`}
                     content={openingUiHostContent}
                     card={characterCard}
                     runtimeAssets={runtimeAssets}
-                    variables={cardProjectionVariables}
+                    variables={selectedOpeningVariables}
                     runtime={openingPreviewRuntime}
                     onSandboxAction={(event) => handleCardSandboxAction(event, 'opening-preview')}
                     onMessagesChanged={handleMessagesChanged}
@@ -888,7 +949,7 @@ export default function Chat() {
                     content={openingPreviewText}
                     card={characterCard}
                     runtimeAssets={runtimeAssets}
-                    variables={cardProjectionVariables}
+                    variables={selectedOpeningVariables}
                     runtime={openingPreviewRuntime}
                     onSandboxAction={(event) => handleCardSandboxAction(event, 'opening-preview')}
                     onMessagesChanged={handleMessagesChanged}

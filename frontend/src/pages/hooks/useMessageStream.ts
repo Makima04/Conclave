@@ -506,6 +506,15 @@ export function useMessageStream({
     return messages[numeric] || messages.find(msg => msg.turn_number === numeric) || null;
   }
 
+  function isOpeningPreviewReference(messageRef: unknown): boolean {
+    if (messageRef == null) return true;
+    const text = String(messageRef).trim();
+    return text === ''
+      || text === '0'
+      || text === 'current'
+      || text === 'opening-preview';
+  }
+
   // --- sandbox action routing ---
 
   function sendFromSandbox(content: string, sourceMessageId?: string | number | null, generationId?: string | number | null) {
@@ -547,7 +556,7 @@ export function useMessageStream({
     if (event.action === 'applyOpeningSwipe') {
       const swipeId = Number(event.payload?.swipeId);
       if (Number.isInteger(swipeId)) {
-        applyOpeningSwipe(swipeId, canApplyOpening);
+        await applyOpeningSwipe(swipeId, canApplyOpening);
       }
       return;
     }
@@ -684,8 +693,14 @@ export function useMessageStream({
       const swipeId = Number(event.payload?.swipeId ?? event.payload?.swipe_id ?? event.payload?.options?.swipe_id);
       const messageRef = event.payload?.messageId ?? event.payload?.message_id;
       const targetMessage = resolveMessageReference(messageRef ?? (canApplyOpening ? 0 : 'latest'));
-      if (Number.isInteger(swipeId) && targetMessage?.turn_number === 0) {
-        applyOpeningSwipe(swipeId, canApplyOpening);
+      const targetsOpeningPreview = canApplyOpening
+        && (!targetMessage || targetMessage.turn_number === 0)
+        && (
+          isOpeningPreviewReference(messageRef)
+          || event.payload?.sourceMessageId === 'opening-preview'
+        );
+      if (Number.isInteger(swipeId) && (targetMessage?.turn_number === 0 || targetsOpeningPreview)) {
+        await applyOpeningSwipe(swipeId, canApplyOpening);
         return;
       }
       if (Number.isInteger(swipeId) && targetMessage?.role === 'assistant' && sessionId) {

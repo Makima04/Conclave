@@ -30,6 +30,7 @@
 | `IframeHtmlRuntimeHost.tsx` | 渲染 Blob URL 到 iframe，处理 postMessage 通信（`th_api`、变量同步、sandbox-resize） |
 | `iframe-bridge.ts` | `buildIframeBridgeScript()` 注入 TavernHelper API shim、Mvu shim、`_` lodash-like 工具 |
 | `MessageContent.tsx` | React 组件，根据 `RenderOutput.type` 决定走 iframe 还是内联路径 |
+| `st-init-variables.ts` | 前端预览用的 `<UpdateVariable><initvar>` / JSON 初始变量解析，给 opening swipes 构造 `swipes_data` |
 | `st-rendering-engine.ts` | ST 兼容的正则引擎 `getRegexedString()`（移植自 ST 的 `engine.js`） |
 
 ## iframe 注入的资源
@@ -88,6 +89,26 @@ iframe 通过 `postMessage` 与父窗口通信：
 | `th_api_response` | API 调用结果，含 `requestId` 匹配请求 |
 | `variablesUpdated` | 推送最新变量数据到 iframe 内的 `window.__xpVariables` |
 | `th_event` | 推送事件到 iframe |
+| `runtimeUpdated` | 推送 ST-like runtime 快照，包含 messages/currentMessage/sharedSaves/submission 等 |
+
+## 开场白预览与运行时生命周期
+
+空会话进入角色卡时，聊天区会先挂载 opening preview。若卡牌存在 HTML app / `tavern_helper.scripts`，预览 iframe 负责展示初始 UI；当用户通过卡内按钮调用 ST API（如 `setChatMessage({ swipe_id }, 0)`）时，父窗口把 `message_id: 0` 映射为 opening preview，并切换或应用对应开场白。
+
+每个 opening swipe 都会暴露给 iframe：
+
+- `swipes`：主开场白 + alternate greetings 原文。
+- `swipe_id`：当前开场白的 0 基下标，与 ST 消息 swipe 语义一致。
+- `swipes_data`：从对应开场白中的 `<UpdateVariable><initvar>` 或 JSON 初始变量解析出的变量快照，叠加当前会话变量后传入。
+- `variables` / `data.stat_data` / `data.display_data`：当前 active swipe 的变量快照。
+
+选择并写入开场白后，正文消息只渲染可见文本；原始初始 UI 不再附着在 turn 0 正文里。需要继续执行的 TavernHelper 辅助脚本由隐藏 runtime host 承载，该 host 不参与布局，仅负责脚本副作用和父窗口通信。
+
+卡牌脚本可能把浮动按钮或状态栏挂到父页面 DOM。宿主在以下时机清理已知父页面浮层 DOM，避免切换会话或退出到首页后残留：
+
+- iframe 文档重建前；
+- iframe 主动发送 `cleanup-floating-ui`；
+- `Chat` 组件卸载、`sessionId` 改变或角色卡改变时。
 
 ## 已解决的问题
 
@@ -97,3 +118,6 @@ iframe 通过 `postMessage` 与父窗口通信：
 | 2026-06-11 | iframe 缺 jQuery/Vue/FontAwesome/Tailwind | 注入 ST 标准第三方库 CDN |
 | 2026-06-11 | `100vh` 导致 iframe 布局溢出 | CSS 替换 `vh` → `calc(... * var(--TH-viewport-height))` + 运行时设置 CSS 变量 |
 | 2026-06-11 | `sandbox="allow-scripts"` 限制功能 | 移除 sandbox 属性，Blob URL 已提供 origin 隔离 |
+| 2026-06-12 | 退出会话后父页面浮层残留 | 会话/角色卡切换和 iframe 重建时清理父页面 runtime UI |
+| 2026-06-12 | 卡内初始 UI 无法切换开场白 | 将空会话 `message_id: 0` 映射为 opening preview，并等待 `setChatMessage` 操作完成 |
+| 2026-06-12 | 不同开场白变量预览一致 | 为每个 opening swipe 构造 `swipes_data`，当前 swipe 使用对应变量快照 |

@@ -565,6 +565,7 @@
 }
 
 .card-runtime-assets-host {
+  display: none;
   position: fixed;
   inset: auto auto 0 0;
   width: 0 !important;

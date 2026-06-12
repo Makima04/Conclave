@@ -48,7 +48,7 @@
 
 ### 工程 — [卡牌渲染流水线](card-rendering-pipeline.md)
 
-定义卡牌渲染流水线：ST + JS-Slash-Runner 兼容路径、iframe 注入资源、tavern_helper 脚本执行、postMessage 通信协议。
+定义卡牌渲染流水线：ST + JS-Slash-Runner 兼容路径、iframe 注入资源、tavern_helper 脚本执行、postMessage 通信协议、变量状态双层存储与同步、开场白切换生命周期、浮动状态栏宿主管理。
 
 ### 工程 — [Artifact Renderer 规范](artifact-renderer.md)
 
@@ -75,7 +75,7 @@
 | 5 | [Actor Agent 架构](actor-agent-architecture.md) | 明确互动角色如何统一建模。 |
 | 6 | [技术选型](tech-selection.md) | 最后再看技术栈，确保技术选择服务架构目标。 |
 | 7 | [数据库与 API 规范](database-api.md) | 进入实现前先明确数据模型和 API 契约。 |
-| 8 | [卡牌渲染流水线](card-rendering-pipeline.md) | 理解 ST 兼容方案：regex macros → iframe 注入 → tavern_helper 脚本 → postMessage 通信。 |
+| 8 | [卡牌渲染流水线](card-rendering-pipeline.md) | 理解 ST 兼容方案：regex macros → iframe 注入 → tavern_helper 脚本 → postMessage 通信 → 变量双层存储同步。 |
 | 9 | [Artifact Renderer 规范](artifact-renderer.md) | 防止 LLM 生成代码污染 DOM 或拖垮长会话性能。 |
 | 10 | [测试与评测规范](testing.md) | 平台核心风险必须能回归验证。 |
 | 11 | [项目实现优先级](implementation-priority.md) | 进入实现前确认先做哪些契约、MVP 和核心 Runtime 能力。 |

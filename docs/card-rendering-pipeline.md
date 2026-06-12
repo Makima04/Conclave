@@ -110,6 +110,61 @@ iframe 通过 `postMessage` 与父窗口通信：
 - iframe 主动发送 `cleanup-floating-ui`；
 - `Chat` 组件卸载、`sessionId` 改变或角色卡改变时。
 
+## 变量状态双层存储与同步机制
+
+角色卡运行时涉及两层后端存储，职责不同：
+
+| 表 | 职责 | 写入方 | 读取方 |
+|---|---|---|---|
+| `session_variables` | 卡片变量接口 / 投影缓存（canonical → projection 映射后的变量） | 前端 `setVariables` / `apply_opening` / `persist_normalized_changes_tx` | `/variables` API、iframe bridge `th_api` |
+| `state_snapshots` | 运行时结构化状态快照，包含 `variables`、`platform_state`、记忆数据等 | Runtime 压缩 Agent、`mirror_variables_to_state_snapshot_tx`、`reconcile_session_variables_snapshot` | `/state` API、小界面状态栏、Runtime 上下文构建 |
+
+### 写入路径
+
+卡片变量变更的完整写入链路：
+
+1. 前端通过 `th_api` → `setVariables` 或 `/variable-changes` 提交变更。
+2. 后端 `card_state_adapter::persist_normalized_changes_tx` 将变更 deep-set 到 `session_variables.variables`。
+3. **同一事务内**调用 `mirror_variables_to_state_snapshot_tx`：读取最新 `state_snapshots`，将 `variables` 字段替换为最新投影值，写入新版本快照（`committed_by = 'variable_projection'`）。
+
+开场白切换（`apply_opening`）的写入链路：
+
+1. `state_initializer::initialize_session_state_from_content` 从开场白内容初始化状态。
+2. `apply_opening` 从最新 `state_snapshots` 读取 `variables`，upsert 到 `session_variables`。
+3. 后续 `/state` 读取时，reconcile 机制检测到 `session_variables.updated_at > state_snapshots.created_at`，自动合并。
+
+### 读取时 reconcile
+
+`GET /state` 在返回数据前执行 `reconcile_session_variables_snapshot`：
+
+1. 比较 `session_variables.updated_at` 与最新 `state_snapshots.created_at`。
+2. 若 `session_variables` 更新（即投影缓存比快照新），将 `variables` 合并进最新快照并写入新版本（`committed_by = 'variable_projection_reconcile'`）。
+3. 这保证了即使写入路径未执行 mirror（如旧分叉会话、直接数据库修改），`/state` 仍能返回最新变量。
+
+### 之前的问题
+
+切换开场白后，正文内容已更新，但 `state_snapshots.variables` 仍残留旧开场白的人物变量（如上一次开场白的角色名"沈慕微"）。前端 `/variables` 接口返回正确值（从 `session_variables` 读取），但 `/state` 返回旧值（从 `state_snapshots` 读取），导致小界面状态栏显示过期数据。
+
+根因：`session_variables` 和 `state_snapshots` 的 `variables` 字段各自独立演化，缺少同步机制。
+
+## 开场白切换与 swipe_id 映射
+
+开场白切换使用 0-based 下标，与 ST 的 `swipe_id` 语义一致：
+
+- `selectedGreetingIndex = -1` 表示主开场白（`first_mes`），对应 `swipe_id = 0`。
+- `selectedGreetingIndex = 0` 表示第一个 alternate greeting，对应 `swipe_id = 1`。
+- 前端 `greetingOptions` 中 `value: index - 1`，使下标从 `-1` 开始；传入 iframe 时映射为 0-based `swipe_id`。
+
+之前的问题：`swipe_id` 映射未统一为 0-based，导致卡内 UI 请求 `setChatMessage({ swipe_id }, 0)` 时指向错误的开场白。
+
+## 浮动状态栏宿主生命周期
+
+卡牌脚本可将浮动按钮或状态栏挂载到父页面 DOM（如 `document.body`）。宿主（floating status host）负责管理这些浮层的生命周期。
+
+`runtimeUpdated` 事件推送 ST-like runtime 快照到 iframe。当 Runtime 更新触发 iframe 文档重建时，宿主必须保留而不被销毁——它管理的是父页面 DOM 节点，不是 iframe 内容。
+
+之前的问题：Runtime 更新导致 iframe 文档重建时，父级 floating status host 被误删，浮动状态栏消失。修复后，runtimeUpdated 不再触发父级宿主的卸载，仅更新 iframe 内的运行时快照。
+
 ## 已解决的问题
 
 | 日期 | 问题 | 修复 |
@@ -121,3 +176,7 @@ iframe 通过 `postMessage` 与父窗口通信：
 | 2026-06-12 | 退出会话后父页面浮层残留 | 会话/角色卡切换和 iframe 重建时清理父页面 runtime UI |
 | 2026-06-12 | 卡内初始 UI 无法切换开场白 | 将空会话 `message_id: 0` 映射为 opening preview，并等待 `setChatMessage` 操作完成 |
 | 2026-06-12 | 不同开场白变量预览一致 | 为每个 opening swipe 构造 `swipes_data`，当前 swipe 使用对应变量快照 |
+| 2026-06-12 | 切换开场白后小界面状态栏显示旧值 | `persist_normalized_changes_tx` 写入 `session_variables` 后同步 mirror 到 `state_snapshots`；`/state` 读取时 reconcile 检测时间戳差异自动合并 |
+| 2026-06-12 | 开场白切换混入默认 InitVar | `apply_opening` 不再将世界书默认变量覆盖开场白内容中解析出的变量 |
+| 2026-06-12 | `swipe_id` 映射偏移 | 统一为 0-based：主开场白 = 0，alternate greetings = 1, 2, ... |
+| 2026-06-12 | `runtimeUpdated` 误删父级 floating status host | Runtime 更新仅推送快照到 iframe，不触发父页面宿主的卸载 |

@@ -3,8 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import * as api from '../api/client';
 import {
   cleanCardDisplayText,
+  renderCardIframeHtml,
 } from './card-content';
 import { MessageContent } from './components/MessageContent';
+import { IframeHtmlRuntimeHost } from './components/IframeHtmlRuntimeHost';
 import '../styles/chat.css';
 import { ToolRail } from './components/ToolRail';
 import { ToolDrawer } from './components/ToolDrawer';
@@ -269,6 +271,36 @@ export default function Chat() {
   }, [sandboxSubmission]);
   const sandboxSubmissionSourceId = sandboxSubmission?.sourceMessageId || null;
   const isSandboxInlineStreaming = Boolean(sandboxSubmission);
+  const runtimeAssetHostRuntime = React.useMemo(() => {
+    const currentMessage = sandboxRuntimeMessages[sandboxRuntimeMessages.length - 1] || null;
+    return withSandboxSubmission({
+      sessionId,
+      messages: sandboxRuntimeMessages,
+      currentMessage,
+      currentMessageId: currentMessage?.message_id ?? currentMessage?.id ?? null,
+      sharedSaves: runtimeSharedSaves,
+      variableContract: cardVariableContract,
+      platformState: cardPlatformState,
+      writableState: cardWritableState,
+      submission: sandboxSubmissionRuntime,
+    });
+  }, [sandboxRuntimeMessages, runtimeSharedSaves, sessionId, cardVariableContract, cardPlatformState, cardWritableState, sandboxSubmissionRuntime]);
+  const runtimeAssetHostDocument = React.useMemo(() => {
+    if (!characterCard || visibleMessages.length === 0 || runtimeAssets.tavern_helper_scripts.length === 0) {
+      return null;
+    }
+    return renderCardIframeHtml(
+      '',
+      cardProjectionVariables,
+      userPersona.name || '你',
+      characterCard.name || '{{char}}',
+      sessionId,
+      activeWorldBook?.id || characterCard.world_book_id,
+      characterCard,
+      null,
+      runtimeAssets,
+    );
+  }, [activeWorldBook?.id, cardProjectionVariables, characterCard, runtimeAssets, sessionId, userPersona.name, visibleMessages.length]);
   const openingPreviewRuntime = React.useMemo(
     () => buildEmptySessionPreviewRuntime(openingPreviewText),
     [openingPreviewText, runtimeSharedSaves, cardProjectionVariables, cardPlatformState, cardWritableState, characterCard?.name, sandboxSubmissionRuntime, sessionId, cardVariableContract],
@@ -809,10 +841,29 @@ export default function Chat() {
         </div>
 
         {/* Messages list */}
+        {runtimeAssetHostDocument && (
+          <IframeHtmlRuntimeHost
+            key={`runtime-assets-${characterCard?.id || 'session'}`}
+            className="card-runtime-assets-host"
+            ariaHidden
+            tabIndex={-1}
+            documentHtml={runtimeAssetHostDocument}
+            variables={cardProjectionVariables}
+            runtime={runtimeAssetHostRuntime}
+            sessionId={sessionId}
+            worldBookId={activeWorldBook?.id || characterCard?.world_book_id}
+            onAction={(event) => handleCardSandboxAction(event, 'card-runtime')}
+            onMessagesChanged={handleMessagesChanged}
+          />
+        )}
         <div className="messages">
           {characterCard && (
             visibleMessages.length === 0
-            || (isSandboxInlineStreaming && sandboxSubmissionSourceId === 'opening-preview')
+            || (
+              isSandboxInlineStreaming
+              && sandboxSubmissionSourceId === 'opening-preview'
+              && visibleMessages.length === 0
+            )
           ) && (
             <div className="message assistant opening-preview">
               <div className="message-role">{characterCard.name}</div>
@@ -841,7 +892,7 @@ export default function Chat() {
                     runtime={openingPreviewRuntime}
                     onSandboxAction={(event) => handleCardSandboxAction(event, 'opening-preview')}
                     onMessagesChanged={handleMessagesChanged}
-                    renderMode={openingUiHostContent ? 'text' : renderMode}
+                    renderMode={renderMode}
                     userName={userPersona.name || '你'}
                     sessionId={sessionId}
                     worldBookId={activeWorldBook?.id || characterCard?.world_book_id}
@@ -882,21 +933,6 @@ export default function Chat() {
                         <pre className="msg-raw">{msg.content}</pre>
                       ) : (
                         <>
-                          {msg.turn_number === 0 && openingUiHostContent && (
-                            <MessageContent
-                              content={openingUiHostContent}
-                              card={characterCard}
-                              runtimeAssets={runtimeAssets}
-                              variables={cardProjectionVariables}
-                              runtime={buildSandboxRuntime(msg)}
-                              onSandboxAction={(event) => handleCardSandboxAction(event, msg.id)}
-                              onMessagesChanged={handleMessagesChanged}
-                              renderMode={renderMode}
-                              userName={userPersona.name || '你'}
-                              sessionId={sessionId}
-                              worldBookId={activeWorldBook?.id || characterCard?.world_book_id}
-                            />
-                          )}
                           <MessageContent
                             content={getMessageDisplayContent(msg)}
                             card={characterCard}
@@ -905,7 +941,7 @@ export default function Chat() {
                             runtime={buildSandboxRuntime(msg)}
                             onSandboxAction={(event) => handleCardSandboxAction(event, msg.id)}
                             onMessagesChanged={handleMessagesChanged}
-                            renderMode={msg.turn_number === 0 && openingUiHostContent ? 'text' : renderMode}
+                            renderMode={renderMode}
                             userName={userPersona.name || '你'}
                             sessionId={sessionId}
                             worldBookId={activeWorldBook?.id || characterCard?.world_book_id}

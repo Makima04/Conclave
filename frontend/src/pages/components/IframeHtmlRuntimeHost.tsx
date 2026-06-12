@@ -14,6 +14,8 @@ function safeJsonForInlineScript(value: unknown): string {
 interface IframeHtmlRuntimeHostProps {
   documentHtml: string;
   className?: string;
+  ariaHidden?: boolean;
+  tabIndex?: number;
   variables?: Record<string, unknown>;
   runtime?: Record<string, any>;
   sessionId?: string;
@@ -26,6 +28,8 @@ interface IframeHtmlRuntimeHostProps {
 export function IframeHtmlRuntimeHost({
   documentHtml,
   className,
+  ariaHidden,
+  tabIndex,
   variables,
   runtime,
   sessionId,
@@ -203,6 +207,8 @@ export function IframeHtmlRuntimeHost({
     <iframe
       ref={iframeRef}
       className={`${className ?? ''}${isRendered ? ' sandbox-rendered' : ''}`}
+      aria-hidden={ariaHidden}
+      tabIndex={tabIndex}
       src={blobUrl || undefined}
       style={{ height: Math.max(height, viewportFitHeight) }}
       onLoad={() => {

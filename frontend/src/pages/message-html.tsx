@@ -74,6 +74,20 @@ function stripCodeFence(source: string): string {
   return close >= 0 ? withoutOpen.slice(0, close) : withoutOpen;
 }
 
+function stripTextOnlyCustomTags(source: string): string {
+  return source
+    .replace(/<StatusPlaceHolderImpl\s*\/>/gi, '')
+    .replace(/<UpdateVariable(?:variable)?\b[^>]*>[\s\S]*?<\/UpdateVariable(?:variable)?>/gi, '')
+    .replace(/<options\b[^>]*>[\s\S]*?<\/options>/gi, '')
+    .replace(/<\/?(?:inner|正文|initvar|user|char)\b[^>]*>/gi, '')
+    .replace(/&lt;\/?(?:inner|正文|initvar|user|char)\b[^&]*?&gt;/gi, '');
+}
+
+function shouldRenderInlineMarkdown(source: string): boolean {
+  const withoutTextTags = stripTextOnlyCustomTags(source);
+  return !/<\/?[a-zA-Z][\w:-]*(?:\s[^>]*)?>/.test(withoutTextTags);
+}
+
 // ── Unified rendering ──
 
 export interface RenderOutput {
@@ -81,8 +95,12 @@ export interface RenderOutput {
   type: 'iframe' | 'inline';
   /** For iframe: srcdoc HTML document. For inline: purified HTML string. */
   html: string;
+  /** Markdown/plain-text source after macros + ST regex, when it is safe to render as Markdown. */
+  markdown?: string;
   /** Segments split by <StatusPlaceHolderImpl/> marker (inline only) */
   segments?: string[];
+  /** Markdown/plain-text segments split by <StatusPlaceHolderImpl/> marker. */
+  markdownSegments?: string[];
 }
 
 /**
@@ -146,14 +164,18 @@ export function renderMessageHtml(
   const encoded = encodeStyleTags(processed);
   const purified = DOMPurify.sanitize(encoded, PURIFY_CONFIG);
   const decoded = decodeStyleTags(purified, '.mes-text ');
+  const markdown = shouldRenderInlineMarkdown(processed) ? processed : undefined;
 
   // Split on <StatusPlaceHolderImpl/> for component injection by the caller
   const marker = '<StatusPlaceHolderImpl/>';
   const segments = decoded.split(marker);
+  const markdownSegments = markdown ? markdown.split(marker) : undefined;
 
   return {
     type: 'inline',
     html: decoded,
+    markdown,
     segments: segments.length > 1 ? segments : undefined,
+    markdownSegments: markdownSegments && markdownSegments.length > 1 ? markdownSegments : undefined,
   };
 }

@@ -183,7 +183,8 @@ fn apply_single_change(state: &mut Value, change: &StateChangeCandidate) {
 // 8. Persistence
 // ---------------------------------------------------------------------------
 
-/// Persist a set of state changes to the `session_variables` table.
+/// Persist a set of state changes to the `session_variables` table and mirror
+/// the resulting projection into the latest state snapshot.
 ///
 /// Reads the current variables blob, applies the changes via deep-set, and
 /// upserts back. This is the v3 replacement for the old contract-aware
@@ -249,11 +250,58 @@ pub async fn persist_normalized_changes_tx(
     .execute(&mut **tx)
     .await?;
 
+    mirror_variables_to_state_snapshot_tx(tx, session_id, variables, &now).await?;
+
     tracing::info!(
         session = session_id,
         changes = changes.len(),
-        "Persisted variable changes to session_variables"
+        "Persisted variable changes to session_variables and state_snapshots"
     );
+
+    Ok(())
+}
+
+async fn mirror_variables_to_state_snapshot_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    session_id: &str,
+    variables: Value,
+    now: &str,
+) -> Result<(), AppError> {
+    let current_state: Option<String> = sqlx::query_scalar(
+        "SELECT state_json FROM state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 1",
+    )
+    .bind(session_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    let mut state: Value = current_state
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    if !state.is_object() {
+        state = Value::Object(Map::new());
+    }
+
+    if let Some(obj) = state.as_object_mut() {
+        obj.insert("variables".to_string(), variables);
+    }
+
+    let max_version: Option<i32> =
+        sqlx::query_scalar("SELECT MAX(version) FROM state_snapshots WHERE session_id = ?")
+            .bind(session_id)
+            .fetch_one(&mut **tx)
+            .await?;
+
+    sqlx::query(
+        "INSERT INTO state_snapshots (id, session_id, version, state_json, risk_level, committed_by, created_at)
+         VALUES (?, ?, ?, ?, 'low', 'variable_projection', ?)",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(session_id)
+    .bind(max_version.unwrap_or(0) + 1)
+    .bind(state.to_string())
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
 
     Ok(())
 }
@@ -379,5 +427,127 @@ fn remove_by_path(root: &mut Value, path: &str) {
         if let Value::Object(map) = cursor {
             map.remove(key);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+
+    async fn setup_test_pool() -> SqlitePool {
+        let url = format!(
+            "sqlite:file:{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4()
+        );
+        let pool = db::create_pool(&url).await.expect("create pool");
+        db::run_migrations(&pool).await.expect("run migrations");
+        pool
+    }
+
+    #[tokio::test]
+    async fn persisting_variables_mirrors_projection_into_state_snapshot() {
+        let pool = setup_test_pool().await;
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        sqlx::query(
+            "INSERT INTO sessions (id, title, mode, config, world_pack_id, current_turn, title_source, status, created_at, updated_at)
+             VALUES (?, '', 'single_agent', '{}', NULL, 0, 'auto', 'idle', ?, ?)",
+        )
+        .bind(&session_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("insert session");
+
+        sqlx::query(
+            "INSERT INTO session_variables (id, session_id, variables, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&session_id)
+        .bind(
+            serde_json::json!({
+                "人际交往": {
+                    "当前接触人物": {
+                        "沈慕微": { "心情": "心虚" }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("insert variables");
+
+        sqlx::query(
+            "INSERT INTO state_snapshots (id, session_id, version, state_json, risk_level, committed_by, created_at)
+             VALUES (?, ?, 1, ?, 'low', 'runtime', ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&session_id)
+        .bind(
+            serde_json::json!({
+                "variables": {
+                    "世界系统": { "当前地址": "承安城·皇宫外殿" },
+                    "人际交往": {
+                        "当前接触人物": {
+                            "沈慕微": { "心情": "心虚" }
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("insert snapshot");
+
+        let mut tx = pool.begin().await.expect("begin tx");
+        persist_normalized_changes_tx(
+            &mut tx,
+            &session_id,
+            &[StateChangeCandidate {
+                op: "update".to_string(),
+                target: "variables.人际交往.当前接触人物".to_string(),
+                from: None,
+                to: serde_json::json!({}),
+                evidence_turns: vec![],
+            }],
+            "test",
+        )
+        .await
+        .expect("persist changes");
+        tx.commit().await.expect("commit tx");
+
+        let latest_state: String = sqlx::query_scalar(
+            "SELECT state_json FROM state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 1",
+        )
+        .bind(&session_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load latest snapshot");
+        let latest_state: Value = serde_json::from_str(&latest_state).expect("parse state");
+        assert_eq!(
+            latest_state["variables"]["人际交往"]["当前接触人物"],
+            serde_json::json!({})
+        );
+
+        let variables: String =
+            sqlx::query_scalar("SELECT variables FROM session_variables WHERE session_id = ?")
+                .bind(&session_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load variables");
+        let variables: Value = serde_json::from_str(&variables).expect("parse variables");
+        assert_eq!(
+            latest_state["variables"]["人际交往"]["当前接触人物"],
+            variables["人际交往"]["当前接触人物"]
+        );
     }
 }

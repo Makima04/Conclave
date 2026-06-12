@@ -1092,6 +1092,9 @@ pub async fn get_state(
     {
         tracing::warn!(session = %session_id, "Failed to lazily initialize session state: {}", e);
     }
+    if let Err(e) = reconcile_session_variables_snapshot(&state.pool, &session_id).await {
+        tracing::warn!(session = %session_id, "Failed to reconcile session variables snapshot: {}", e);
+    }
 
     let state_data: Option<String> = sqlx::query_scalar(
         "SELECT state_json FROM state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 1",
@@ -1131,6 +1134,72 @@ pub async fn get_state(
     }
 
     Ok(Json(value))
+}
+
+async fn reconcile_session_variables_snapshot(
+    pool: &SqlitePool,
+    session_id: &str,
+) -> Result<(), AppError> {
+    let variables_row = sqlx::query_as::<_, (String, String)>(
+        "SELECT variables, updated_at FROM session_variables WHERE session_id = ?",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((variables_json, variables_updated_at)) = variables_row else {
+        return Ok(());
+    };
+
+    let snapshot_row = sqlx::query_as::<_, (i32, String, String)>(
+        "SELECT version, state_json, created_at FROM state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 1",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let should_reconcile = match snapshot_row.as_ref() {
+        Some((_, _, snapshot_created_at)) => variables_updated_at > *snapshot_created_at,
+        None => true,
+    };
+    if !should_reconcile {
+        return Ok(());
+    }
+
+    let variables: serde_json::Value =
+        serde_json::from_str(&variables_json).unwrap_or_else(|_| serde_json::json!({}));
+    if !variables.is_object() {
+        return Ok(());
+    }
+
+    let (max_version, mut state_value) = match snapshot_row {
+        Some((version, state_json, _)) => (
+            version,
+            serde_json::from_str::<serde_json::Value>(&state_json)
+                .unwrap_or_else(|_| serde_json::json!({})),
+        ),
+        None => (0, serde_json::json!({})),
+    };
+    if !state_value.is_object() {
+        state_value = serde_json::json!({});
+    }
+    if let Some(obj) = state_value.as_object_mut() {
+        obj.insert("variables".to_string(), variables);
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO state_snapshots (id, session_id, version, state_json, risk_level, committed_by, created_at)
+         VALUES (?, ?, ?, ?, 'low', 'variable_projection_reconcile', ?)",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(session_id)
+    .bind(max_version + 1)
+    .bind(state_value.to_string())
+    .bind(now)
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 pub async fn update_projection_changes(
@@ -1815,4 +1884,99 @@ pub async fn reconnect_stream(
 
     let sse_stream: SseStream = Box::pin(stream);
     Ok((headers, Sse::new(sse_stream)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+
+    async fn setup_test_pool() -> SqlitePool {
+        let url = format!(
+            "sqlite:file:{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4()
+        );
+        let pool = db::create_pool(&url).await.expect("create pool");
+        db::run_migrations(&pool).await.expect("run migrations");
+        pool
+    }
+
+    #[tokio::test]
+    async fn reconciles_newer_session_variables_into_state_snapshot() {
+        let pool = setup_test_pool().await;
+        let session_id = uuid::Uuid::new_v4().to_string();
+
+        sqlx::query(
+            "INSERT INTO sessions (id, title, mode, config, world_pack_id, current_turn, title_source, status, created_at, updated_at)
+             VALUES (?, '', 'single_agent', '{}', NULL, 0, 'auto', 'idle', ?, ?)",
+        )
+        .bind(&session_id)
+        .bind("2026-06-12T00:00:00Z")
+        .bind("2026-06-12T00:00:00Z")
+        .execute(&pool)
+        .await
+        .expect("insert session");
+
+        sqlx::query(
+            "INSERT INTO state_snapshots (id, session_id, version, state_json, risk_level, committed_by, created_at)
+             VALUES (?, ?, 1, ?, 'low', 'runtime', ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&session_id)
+        .bind(
+            serde_json::json!({
+                "variables": {
+                    "人际交往": {
+                        "当前接触人物": {
+                            "沈慕微": { "心情": "心虚" }
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .bind("2026-06-12T00:00:00Z")
+        .execute(&pool)
+        .await
+        .expect("insert old snapshot");
+
+        sqlx::query(
+            "INSERT INTO session_variables (id, session_id, variables, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&session_id)
+        .bind(
+            serde_json::json!({
+                "人际交往": {
+                    "当前接触人物": {}
+                }
+            })
+            .to_string(),
+        )
+        .bind("2026-06-12T00:00:01Z")
+        .bind("2026-06-12T00:00:01Z")
+        .execute(&pool)
+        .await
+        .expect("insert newer variables");
+
+        reconcile_session_variables_snapshot(&pool, &session_id)
+            .await
+            .expect("reconcile");
+
+        let latest_state: String = sqlx::query_scalar(
+            "SELECT state_json FROM state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 1",
+        )
+        .bind(&session_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load latest snapshot");
+        let latest_state: serde_json::Value =
+            serde_json::from_str(&latest_state).expect("parse state");
+
+        assert_eq!(
+            latest_state["variables"]["人际交往"]["当前接触人物"],
+            serde_json::json!({})
+        );
+    }
 }

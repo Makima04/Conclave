@@ -1,5 +1,9 @@
 # 卡牌渲染流水线
 
+> ⚠️ **本文档描述 v3 现状架构（postMessage bridge 模型）**。该架构已确认存在根本性错位（同步 API 被异步化、脚本库误注入消息 iframe、高度钳制），正在迁移到 v4 同源直连运行时。
+>
+> **目标架构与迁移计划见 [card-runtime-architecture-v4.md](card-runtime-architecture-v4.md)**。迁移期间新改动以 v4 文档为准；迁移完成后本文档将被重写。
+
 ## 概述
 
 本系统完全适配 SillyTavern (ST) + JS-Slash-Runner 渲染流水线。核心思路是，卡牌作者已经按照 ST 运行时写好了 HTML/CSS/JS，我们只需要提供一个足够像 ST 的运行环境。

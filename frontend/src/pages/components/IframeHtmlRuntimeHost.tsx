@@ -217,7 +217,7 @@ export function IframeHtmlRuntimeHost({
       aria-hidden={ariaHidden}
       tabIndex={tabIndex}
       src={blobUrl || undefined}
-      style={{ height: Math.max(height, viewportFitHeight) }}
+      style={{ width: '100%', height: Math.max(height, viewportFitHeight), border: 0, display: 'block' }}
       onLoad={() => {
         setLoaded(true);
         const iframe = iframeRef.current;
@@ -339,7 +339,7 @@ async function handleThApi(
           return { result: data.items };
         }
         const msg = data.items.find((m: any) => m.id === String(messageId) || m.turn_number === Number(messageId));
-        return { result: data.items };
+        return { result: msg ? [msg] : data.items };
       }
 
       case 'setChatMessage': {

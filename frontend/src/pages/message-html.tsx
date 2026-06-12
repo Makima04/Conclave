@@ -17,6 +17,7 @@ import {
 import { processMacros, createMacroContext } from './macro-engine';
 import type { RegexScript } from './st-regex-executor';
 import type { CharacterCard, SessionRuntimeAssets } from '../api/types';
+import { getRegexScripts } from './st-regex-scripts';
 
 // ── DOMPurify hooks (matching ST's addDOMPurifyHooks in chats.js:1901-2051) ──
 
@@ -48,22 +49,6 @@ const PURIFY_CONFIG = {
 
 // ── Helpers ──
 
-function toRegexScript(value: unknown): RegexScript | null {
-  if (!value || typeof value !== 'object') return null;
-  const script = value as Partial<RegexScript>;
-  return typeof script.findRegex === 'string' && typeof script.replaceString === 'string'
-    ? { ...script, findRegex: script.findRegex, replaceString: script.replaceString }
-    : null;
-}
-
-function getRegexScripts(card: CharacterCard | null, runtimeAssets?: SessionRuntimeAssets | null): RegexScript[] {
-  if (runtimeAssets?.regex_scripts?.length) {
-    return runtimeAssets.regex_scripts.map(toRegexScript).filter((script): script is RegexScript => script !== null);
-  }
-  const scripts = (card?.extensions as Record<string, unknown> | undefined)?.regex_scripts;
-  return Array.isArray(scripts) ? scripts.map(toRegexScript).filter((script): script is RegexScript => script !== null) : [];
-}
-
 function stripCodeFence(source: string): string {
   const trimmed = source.trim();
   if (!trimmed.startsWith('```')) return source;
@@ -92,15 +77,59 @@ function shouldRenderInlineMarkdown(source: string): boolean {
 
 export interface RenderOutput {
   /** 'iframe' = full HTML app (JS-Slash-Runner path), 'inline' = ST direct DOM path */
-  type: 'iframe' | 'inline';
+  type: 'iframe' | 'inline' | 'mixed';
   /** For iframe: srcdoc HTML document. For inline: purified HTML string. */
-  html: string;
+  html?: string;
   /** Markdown/plain-text source after macros + ST regex, when it is safe to render as Markdown. */
   markdown?: string;
   /** Segments split by <StatusPlaceHolderImpl/> marker (inline only) */
   segments?: string[];
   /** Markdown/plain-text segments split by <StatusPlaceHolderImpl/> marker. */
   markdownSegments?: string[];
+  /** Ordered inline/iframe parts when a message embeds a full HTML app after text. */
+  parts?: RenderOutput[];
+}
+
+function renderInlineProcessed(processed: string): RenderOutput {
+  const encoded = encodeStyleTags(processed);
+  const purified = DOMPurify.sanitize(encoded, PURIFY_CONFIG);
+  const decoded = decodeStyleTags(purified, '.mes-text ');
+  const markdown = shouldRenderInlineMarkdown(processed) ? processed : undefined;
+
+  const marker = '<StatusPlaceHolderImpl/>';
+  const segments = decoded.split(marker);
+  const markdownSegments = markdown ? markdown.split(marker) : undefined;
+
+  return {
+    type: 'inline',
+    html: decoded,
+    markdown,
+    segments: segments.length > 1 ? segments : undefined,
+    markdownSegments: markdownSegments && markdownSegments.length > 1 ? markdownSegments : undefined,
+  };
+}
+
+function splitEmbeddedHtmlDocuments(processed: string): RenderOutput[] | null {
+  const htmlDocumentRe = /<!DOCTYPE\s+html[\s\S]*?<\/html>|<html\b[\s\S]*?<\/html>/ig;
+  const parts: RenderOutput[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = htmlDocumentRe.exec(processed)) !== null) {
+    const before = processed.slice(cursor, match.index);
+    if (before.trim()) parts.push(renderInlineProcessed(before));
+    parts.push({ type: 'iframe', html: match[0] });
+    cursor = match.index + match[0].length;
+  }
+
+  if (parts.length === 0) return null;
+  const rest = processed.slice(cursor);
+  if (rest.trim()) parts.push(renderInlineProcessed(rest));
+
+  if (parts.length === 1 && parts[0].type === 'iframe' && processed.trim() === (parts[0].html || '').trim()) {
+    return null;
+  }
+  return parts;
 }
 
 /**
@@ -150,8 +179,16 @@ export function renderMessageHtml(
 
   // Step 2: Detect rendering path
   // JS-Slash-Runner path: full HTML document or script-bearing content → iframe
-  const isFullHtmlDoc = /^<!DOCTYPE\s+html|<html\b/i.test(processed.trim());
+  const isFullHtmlDoc = /^(?:<!DOCTYPE\s+html\b|<html\b)/i.test(processed.trim());
   const hasScript = /<script\b/i.test(processed);
+  const embeddedHtmlParts = isFullHtmlDoc ? null : splitEmbeddedHtmlDocuments(processed);
+
+  if (embeddedHtmlParts) {
+    return {
+      type: 'mixed',
+      parts: embeddedHtmlParts,
+    };
+  }
 
   if (isFullHtmlDoc || hasScript) {
     return {
@@ -161,21 +198,5 @@ export function renderMessageHtml(
   }
 
   // Step 3: ST path — encode <style>, DOMPurify, decode <style> with scoping
-  const encoded = encodeStyleTags(processed);
-  const purified = DOMPurify.sanitize(encoded, PURIFY_CONFIG);
-  const decoded = decodeStyleTags(purified, '.mes-text ');
-  const markdown = shouldRenderInlineMarkdown(processed) ? processed : undefined;
-
-  // Split on <StatusPlaceHolderImpl/> for component injection by the caller
-  const marker = '<StatusPlaceHolderImpl/>';
-  const segments = decoded.split(marker);
-  const markdownSegments = markdown ? markdown.split(marker) : undefined;
-
-  return {
-    type: 'inline',
-    html: decoded,
-    markdown,
-    segments: segments.length > 1 ? segments : undefined,
-    markdownSegments: markdownSegments && markdownSegments.length > 1 ? markdownSegments : undefined,
-  };
+  return renderInlineProcessed(processed);
 }

@@ -1,28 +1,13 @@
 import type { CharacterCard, SessionRuntimeAssets } from '../api/types';
 import type { RegexScript } from './st-regex-executor';
 import { regexFromString, regex_placement } from './st-rendering-engine';
+import { getRegexScripts } from './st-regex-scripts';
 
 const KNOWN_OPENING_TRIGGER_PATTERN = String.raw`(?:^|\n)\s*(?:\[attachment\]|\[开局\]|【GameStart】|【游戏开始】)\s*`;
 
 export const HTML_APP_TRIGGER_RE = new RegExp(KNOWN_OPENING_TRIGGER_PATTERN, 'i');
 
 const HTML_APP_TRIGGER_GLOBAL_RE = new RegExp(KNOWN_OPENING_TRIGGER_PATTERN, 'gi');
-
-function toRegexScript(value: unknown): RegexScript | null {
-  if (!value || typeof value !== 'object') return null;
-  const script = value as Partial<RegexScript>;
-  return typeof script.findRegex === 'string' && typeof script.replaceString === 'string'
-    ? { ...script, findRegex: script.findRegex, replaceString: script.replaceString }
-    : null;
-}
-
-function getRegexScripts(card: CharacterCard | null, runtimeAssets?: SessionRuntimeAssets | null): RegexScript[] {
-  if (runtimeAssets?.regex_scripts?.length) {
-    return runtimeAssets.regex_scripts.map(toRegexScript).filter((script): script is RegexScript => script !== null);
-  }
-  const scripts = (card?.extensions as Record<string, unknown> | undefined)?.regex_scripts;
-  return Array.isArray(scripts) ? scripts.map(toRegexScript).filter((script): script is RegexScript => script !== null) : [];
-}
 
 function stripCodeFence(source: string): string {
   const trimmed = source.trim();

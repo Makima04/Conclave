@@ -11,11 +11,7 @@ import type { useStreamRecovery } from './useStreamRecovery';
 import { cleanCardDisplayText } from '../card-content';
 import type { SessionRuntimeAssets } from '../../api/types';
 import { stripKnownOpeningHtmlTriggers } from '../st-opening-ui';
-
-function hasStatusRenderer(card: CharacterCard | null): boolean {
-  const extensions = card?.extensions as Record<string, any> | undefined;
-  return typeof extensions?.status_replace_string === 'string' && Boolean(extensions.status_replace_string.trim());
-}
+import { ensureStatusPlaceholder } from '../st-status-ui';
 
 function cleanComparableMessageText(content: string): string {
   return cleanCardDisplayText(stripKnownOpeningHtmlTriggers(content))
@@ -179,11 +175,7 @@ export function useMessageStream({
 
   function prepareOpeningContent(greeting: string): string {
     let content = stripKnownOpeningHtmlTriggers(greeting).trim();
-    const cardHasStatus = hasStatusRenderer(characterCard);
-    if (cardHasStatus && !content.includes('<StatusPlaceHolderImpl/>')) {
-      content = `${content.trim()}\n\n<StatusPlaceHolderImpl/>`;
-    }
-    return content;
+    return ensureStatusPlaceholder(content, characterCard, runtimeAssets);
   }
 
   async function ensureOpeningMessageBeforeFirstTurn() {

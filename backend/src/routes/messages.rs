@@ -27,6 +27,52 @@ use crate::runtime::variable_update;
 
 type SseStream = Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>;
 
+fn variable_payload_score(value: &serde_json::Value) -> usize {
+    let Some(map) = value.as_object() else {
+        return 0;
+    };
+    let mut score: usize = 0;
+    for key in map.keys() {
+        if matches!(
+            key.as_str(),
+            "<user>" | "世界" | "时幼微" | "variables" | "chat_variables"
+        ) {
+            score += 4;
+        }
+        if key.len() > 80 || key.contains('。') || key.contains('，') || key.contains('\n') {
+            score = score.saturating_sub(2);
+        }
+    }
+    score + map.len().min(8)
+}
+
+async fn best_snapshot_variables(
+    pool: &SqlitePool,
+    session_id: &str,
+) -> Result<Option<serde_json::Value>, AppError> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT state_json FROM state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 12",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut best: Option<(usize, serde_json::Value)> = None;
+    for row in rows {
+        let Ok(state) = serde_json::from_str::<serde_json::Value>(&row) else {
+            continue;
+        };
+        let Some(variables) = state.get("variables").cloned().filter(|value| value.is_object()) else {
+            continue;
+        };
+        let score = variable_payload_score(&variables);
+        if best.as_ref().map_or(true, |(best_score, _)| score > *best_score) {
+            best = Some((score, variables));
+        }
+    }
+    Ok(best.map(|(_, variables)| variables))
+}
+
 fn sse_event_to_axum_event(event: SseEvent) -> Event {
     match event {
         SseEvent::TurnStart { turn_number } => Event::default()
@@ -1107,6 +1153,18 @@ pub async fn get_state(
         .map(|s| serde_json::from_str(&s).unwrap_or(serde_json::json!({})))
         .unwrap_or_else(|| serde_json::json!({}));
 
+    if let Some(best_variables) = best_snapshot_variables(&state.pool, &session_id).await? {
+        let current_score = value
+            .get("variables")
+            .map(variable_payload_score)
+            .unwrap_or(0);
+        if variable_payload_score(&best_variables) > current_score {
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("variables".to_string(), best_variables);
+            }
+        }
+    }
+
     let fallback_variables = value.get("variables").cloned();
     if let Ok(Some(contract)) = card_state_adapter::load_session_contract(
         &state.pool,
@@ -1182,6 +1240,14 @@ async fn reconcile_session_variables_snapshot(
     if !state_value.is_object() {
         state_value = serde_json::json!({});
     }
+    let current_variables = state_value.get("variables").cloned();
+    if current_variables
+        .as_ref()
+        .is_some_and(|current| variable_payload_score(current) > variable_payload_score(&variables))
+    {
+        return Ok(());
+    }
+
     if let Some(obj) = state_value.as_object_mut() {
         obj.insert("variables".to_string(), variables);
     }
@@ -1978,5 +2044,79 @@ mod tests {
             latest_state["variables"]["人际交往"]["当前接触人物"],
             serde_json::json!({})
         );
+    }
+
+    #[tokio::test]
+    async fn ignores_fragment_like_session_variables_when_snapshot_has_card_variables() {
+        let pool = setup_test_pool().await;
+        let session_id = uuid::Uuid::new_v4().to_string();
+
+        sqlx::query(
+            "INSERT INTO sessions (id, title, mode, config, world_pack_id, current_turn, title_source, status, created_at, updated_at)
+             VALUES (?, '', 'single_agent', '{}', NULL, 0, 'auto', 'idle', ?, ?)",
+        )
+        .bind(&session_id)
+        .bind("2026-06-12T00:00:00Z")
+        .bind("2026-06-12T00:00:00Z")
+        .execute(&pool)
+        .await
+        .expect("insert session");
+
+        sqlx::query(
+            "INSERT INTO state_snapshots (id, session_id, version, state_json, risk_level, committed_by, created_at)
+             VALUES (?, ?, 1, ?, 'low', 'runtime', ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&session_id)
+        .bind(
+            serde_json::json!({
+                "variables": {
+                    "<user>": { "内心想法": ["这里是哪里", "说明"] },
+                    "世界": { "当前日期": ["2025年/03月/24日", "说明"] },
+                    "时幼微": { "当前所想": ["终于醒了", "说明"] }
+                }
+            })
+            .to_string(),
+        )
+        .bind("2026-06-12T00:00:00Z")
+        .execute(&pool)
+        .await
+        .expect("insert old snapshot");
+
+        sqlx::query(
+            "INSERT INTO session_variables (id, session_id, variables, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&session_id)
+        .bind(
+            serde_json::json!({
+                "<正文>**不幸-开场白一": "加班后的疲惫叹息**",
+                "<user>的大脑宕机了半秒。他没想到在这种时间、这种地点，会有一个如此漂亮的女孩主动和自己搭话": "没什么，就是工作有点累"
+            })
+            .to_string(),
+        )
+        .bind("2026-06-12T00:00:01Z")
+        .bind("2026-06-12T00:00:01Z")
+        .execute(&pool)
+        .await
+        .expect("insert fragment variables");
+
+        reconcile_session_variables_snapshot(&pool, &session_id)
+            .await
+            .expect("reconcile");
+
+        let latest_state: String = sqlx::query_scalar(
+            "SELECT state_json FROM state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 1",
+        )
+        .bind(&session_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load latest snapshot");
+        let latest_state: serde_json::Value =
+            serde_json::from_str(&latest_state).expect("parse state");
+
+        assert_eq!(latest_state["variables"]["世界"]["当前日期"][0], "2025年/03月/24日");
+        assert!(latest_state["variables"]["<正文>**不幸-开场白一"].is_null());
     }
 }

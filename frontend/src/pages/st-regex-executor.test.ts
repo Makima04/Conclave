@@ -2,6 +2,7 @@
 // Run: npx tsx frontend/src/pages/st-regex-executor.test.ts
 
 import { executeStRegexScripts, parseFindRegex, type RegexScript, type StRegexResult } from './st-regex-executor';
+import { ensureRegexStatusPlaceholder, hasRegexStatusRenderer, hasStatusPlaceholder } from './st-status-ui';
 
 let passed = 0;
 let failed = 0;
@@ -199,6 +200,37 @@ console.log('\n--- Test 10: Replacement preserves JavaScript dollar-backtick seq
   assertEq(result.matched, true, 'matched is true');
   assert(result.html.includes('*)$`') || result.html.includes('*)$\\`'), 'dollar-backtick sequence is preserved');
   assert(result.html.includes('new RegExp'), 'script replacement is present');
+}
+
+// ──────────────────────────────────────────────
+console.log('\n--- Test 11: Regex status UI detection ignores prompt-only hide scripts ---');
+{
+  const card = {
+    extensions: {
+      regex_scripts: [
+        {
+          scriptName: 'hide status from prompt',
+          findRegex: '<StatusPlaceHolderImpl/>',
+          replaceString: '',
+          disabled: false,
+          promptOnly: true,
+          placement: [2],
+        },
+        {
+          scriptName: 'render status',
+          findRegex: '<StatusPlaceHolderImpl/>',
+          replaceString: '```html\n<!DOCTYPE html><html><body><div id="status-card"></div><script></script></body></html>\n```',
+          disabled: false,
+          markdownOnly: true,
+          placement: [2],
+        },
+      ] as RegexScript[],
+    },
+  };
+  const content = ensureRegexStatusPlaceholder('story text', card);
+  assert(hasRegexStatusRenderer(card), 'html status regex is detected');
+  assert(hasStatusPlaceholder(content), 'status placeholder was appended');
+  assert(content.startsWith('story text'), 'original story text is preserved');
 }
 
 // ──────────────────────────────────────────────

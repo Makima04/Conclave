@@ -29,11 +29,21 @@ pub async fn initialize_session_state_from_content(
     content: &str,
     force_reset: bool,
 ) -> Result<bool, AppError> {
+    if !contains_variable_initializer(content) {
+        return Ok(false);
+    }
     let Some(initial_variables) = parse_init_variables(content).filter(has_object_content) else {
         return Ok(false);
     };
 
     initialize_session_state_with_variables(pool, session_id, initial_variables, force_reset).await
+}
+
+fn contains_variable_initializer(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    lower.contains("<initvar")
+        || lower.contains("<updatevariable")
+        || lower.contains("<updatevariablevariable")
 }
 
 async fn initialize_session_state_from_world_book_inner(
@@ -772,5 +782,38 @@ mod tests {
             latest["variables"]["世界"]["当前日期"][0],
             serde_json::json!("2026年6月9日")
         );
+    }
+
+    #[tokio::test]
+    async fn does_not_initialize_state_from_plain_story_text() {
+        let pool = setup_test_pool().await;
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        sqlx::query(
+            "INSERT INTO sessions (id, title, mode, config, world_pack_id, current_turn, title_source, status, created_at, updated_at)
+             VALUES (?, '', 'single_agent', '{}', NULL, 0, 'auto', 'idle', ?, ?)",
+        )
+        .bind(&session_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("insert session");
+
+        let changed = initialize_session_state_from_content(
+            &pool,
+            &session_id,
+            "<正文>**不幸-开场白一：加班后的疲惫叹息**\n\n浅野堇回答：没什么，就是工作有点累。",
+            true,
+        )
+        .await
+        .expect("initialize from content");
+
+        assert!(!changed);
+        let latest = latest_state(&pool, &session_id)
+            .await
+            .expect("latest state");
+        assert!(latest.get("variables").is_none());
     }
 }

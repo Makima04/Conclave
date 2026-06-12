@@ -191,6 +191,41 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
     return Array.isArray(value) ? value : [];
   }
 
+  function _isPlainObject(value) {
+    return value != null && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  function _hasKeys(value) {
+    return _isPlainObject(value) && Object.keys(value).length > 0;
+  }
+
+  function _wrapMessageData(value) {
+    var data = _isPlainObject(value) ? value : {};
+    var variables = _isPlainObject(data.variables) ? data.variables
+      : _isPlainObject(data.stat_data) ? data.stat_data
+      : _isPlainObject(data.display_data) ? data.display_data
+      : data;
+    var wrapped = {};
+    for (var key in data) {
+      if (Object.prototype.hasOwnProperty.call(data, key)) wrapped[key] = data[key];
+    }
+    wrapped.stat_data = _isPlainObject(data.stat_data) ? data.stat_data : variables;
+    wrapped.display_data = _isPlainObject(data.display_data) ? data.display_data : variables;
+    wrapped.variables = variables;
+    wrapped.chat_variables = _isPlainObject(data.chat_variables) ? data.chat_variables : variables;
+    if (data.platform_state !== undefined) wrapped.platform_state = data.platform_state;
+    if (data.writable_state !== undefined) wrapped.writable_state = data.writable_state;
+    return wrapped;
+  }
+
+  function _runtimeMessageId(message, fallbackIndex) {
+    if (!message) return fallbackIndex;
+    if (message.message_id != null) return message.message_id;
+    if (message.messageId != null) return message.messageId;
+    if (message.id != null) return message.id;
+    return fallbackIndex;
+  }
+
   function _activeText(message) {
     return String(message && (message.message != null ? message.message : message.content != null ? message.content : '') || '');
   }
@@ -211,27 +246,26 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
     }
     if (!swipes[swipeId] && text) swipes[swipeId] = text;
 
-    var baseData = message.variables
-      || (message.data && (message.data.variables || message.data.stat_data || message.data.display_data))
-      || {};
+    var baseData = message.data || message.variables || {};
     var swipesData = _asArray(message.swipes_data || message.swipesData).map(function(item) { return item || {}; });
     var swipesInfo = _asArray(message.swipes_info || message.swipesInfo).map(function(item) { return item || {}; });
     while (swipesData.length < swipes.length) swipesData.push(swipeId === swipesData.length ? baseData : {});
     while (swipesInfo.length < swipes.length) swipesInfo.push({});
+    var activeData = _hasKeys(swipesData[swipeId]) ? swipesData[swipeId] : baseData;
 
     return {
       id: message.id,
-      message_id: index,
+      message_id: _runtimeMessageId(message, index),
       name: String(message.name || (role === 'user' ? '{{user}}' : '{{char}}')),
       role: role,
       is_hidden: Boolean(message.is_system || message.is_hidden),
       message: swipes[swipeId] || text,
       content: swipes[swipeId] || text,
-      data: swipesData[swipeId] || baseData || {},
+      data: _wrapMessageData(activeData),
       extra: swipesInfo[swipeId] || {},
       swipe_id: swipeId,
       swipes: swipes,
-      swipes_data: swipesData,
+      swipes_data: swipesData.map(_wrapMessageData),
       swipes_info: swipesInfo,
       created_at: message.created_at,
       send_date: message.send_date || message.created_at
@@ -250,6 +284,13 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
     return _chatMessages.length > 0 ? _chatMessages[_chatMessages.length - 1].message_id : -1;
   }
 
+  function _currentMessageId() {
+    if (_runtime && _runtime.currentMessageId != null) return _runtime.currentMessageId;
+    if (_runtime && _runtime.currentMessage && _runtime.currentMessage.message_id != null) return _runtime.currentMessage.message_id;
+    if (_runtime && _runtime.currentMessage && _runtime.currentMessage.id != null) return _runtime.currentMessage.id;
+    return _lastMessageId();
+  }
+
   function _demacroText(text) {
     return String(text == null ? '' : text)
       .replace(/\\{\\{lastMessageId\\}\\}/gi, String(_lastMessageId()))
@@ -265,11 +306,24 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
     return n;
   }
 
+  function _findMessageIndex(input) {
+    if (input === undefined || input === null) return -1;
+    var text = String(input);
+    for (var i = 0; i < _chatMessages.length; i++) {
+      var message = _chatMessages[i];
+      if (!message) continue;
+      if (String(message.message_id) === text || String(message.id) === text) return i;
+    }
+    return -1;
+  }
+
   function _parseMessageRange(input) {
     var max = _chatMessages.length - 1;
     if (max < 0) return null;
     if (input === undefined || input === null || input === 'all') return { start: 0, end: max };
     if (input === 'latest') return { start: max, end: max };
+    var exactIndex = _findMessageIndex(input);
+    if (exactIndex >= 0) return { start: exactIndex, end: exactIndex };
     var text = _demacroText(input);
     var single = text.match(/^\\s*(-?\\d+)\\s*$/);
     if (single) {
@@ -505,6 +559,10 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
     return _apiCall('getLastMessageId', {});
   };
 
+  window.getCurrentMessageId = function() {
+    return _currentMessageId();
+  };
+
   window.substitudeMacros = function(text) {
     if (_chatMessages.length > 0) return Promise.resolve(_demacroText(text));
     return _apiCall('substitudeMacros', { text: text });
@@ -537,6 +595,7 @@ export function buildIframeBridgeScript(sessionId?: string, worldBookId?: string
     getVariables: window.getVariables,
     replaceVariables: window.replaceVariables,
     getLastMessageId: window.getLastMessageId,
+    getCurrentMessageId: window.getCurrentMessageId,
     substitudeMacros: window.substitudeMacros,
     initializeGlobal: window.initializeGlobal,
     waitGlobalInitialized: window.waitGlobalInitialized,

@@ -106,8 +106,8 @@ multi-agent-rp-platform/
     database-api.md
     content-packages.md
     card-import-normalization.md
-    card-rendering-runtime.md
-    card-runtime-refactor-architecture.md
+    card-rendering-pipeline.md
+    card-runtime-architecture-v4.md
     artifact-renderer.md
     testing.md
     docs-sync.md
@@ -290,8 +290,8 @@ multi-agent-rp-platform/
 9. `docs/database-api.md`
 10. `docs/content-packages.md`
 11. `docs/card-import-normalization.md`
-12. `docs/card-rendering-runtime.md`
-13. `docs/card-runtime-refactor-architecture.md`
+12. `docs/card-rendering-pipeline.md`
+13. `docs/card-runtime-architecture-v4.md`
 14. `docs/artifact-renderer.md`
 15. `docs/testing.md`
 16. `docs/implementation-priority.md`
@@ -310,8 +310,8 @@ multi-agent-rp-platform/
 - 改数据库 schema、API 端点或数据模型：读 `docs/database-api.md`
 - 改内容包格式、manifest 或导入导出：读 `docs/content-packages.md`
 - 改卡片导入、ST 迁移、导入报告：读 `docs/card-import-normalization.md`
-- 改角色卡渲染、sandbox、共享存档、开场白、iframe 性能：读 `docs/card-rendering-runtime.md`
-- 改角色卡兼容重构、前端 regex 单点执行、统一运行时模型或 canonical state/card projection 变量链路：读 `docs/card-runtime-refactor-architecture.md`
+- 改角色卡渲染、sandbox、共享存档、开场白、iframe 性能：读 `docs/card-runtime-architecture-v4.md`（目标架构）和 `docs/card-rendering-pipeline.md`（v3 现状）
+- 改角色卡兼容架构、TavernHelper shim、同源直连运行时、变量投影链路：读 `docs/card-runtime-architecture-v4.md`
 - 改 Artifact 渲染、沙箱或资源预算：读 `docs/artifact-renderer.md`
 - 改测试场景、性能基准或 Mock Provider：读 `docs/testing.md`
 - 改文档维护规则或索引维护：读 `docs/docs-sync.md`
@@ -329,8 +329,7 @@ multi-agent-rp-platform/
 - 修改数据库 schema、API 端点或数据模型：更新 `docs/database-api.md`
 - 修改内容包格式、manifest 或导入导出：更新 `docs/content-packages.md`
 - 修改卡片导入或 ST 迁移：更新 `docs/card-import-normalization.md`
-- 修改角色卡渲染、sandbox、共享存档、开场白或 iframe 性能：更新 `docs/card-rendering-runtime.md`
-- 修改角色卡兼容架构、前端 regex 真相源、统一运行时模型或动态变量投影链路：更新 `docs/card-runtime-refactor-architecture.md`
+- 修改角色卡渲染、sandbox、共享存档、开场白、iframe 性能或 TavernHelper shim：更新 `docs/card-runtime-architecture-v4.md`（目标架构）和 `docs/card-rendering-pipeline.md`（v3 现状，迁移完成后删除）
 - 修改 Artifact 渲染、沙箱或资源预算：更新 `docs/artifact-renderer.md`
 - 修改测试场景、性能基准或 Mock Provider：更新 `docs/testing.md`
 - 修改实现顺序、阶段目标、MVP 范围或项目进度：更新 `docs/implementation-priority.md`
@@ -442,7 +441,7 @@ Character Card Rendering 负责：
 - 开场白选择。
 - iframe 懒挂载、resize 节流和重载控制。
 
-不要为单张卡无限新增私有运行时 API；新增 shim 必须能服务一类卡，并更新 `docs/card-rendering-runtime.md`。
+不要为单张卡无限新增私有运行时 API；新增 shim 必须能服务一类卡，并更新 `docs/card-runtime-architecture-v4.md`。
 
 ### Content Package
 
@@ -641,8 +640,8 @@ Provider Adapter 负责统一接入模型供应商。
 
 - 内容包规范 → `docs/content-packages.md`
 - 卡片导入标准化规范 → `docs/card-import-normalization.md`
-- 角色卡渲染运行时 → `docs/card-rendering-runtime.md`
-- 角色卡兼容运行时重构架构 → `docs/card-runtime-refactor-architecture.md`
+- 角色卡渲染流水线（v3 现状） → `docs/card-rendering-pipeline.md`
+- 角色卡运行时架构 v4（同源直连，迁移中） → `docs/card-runtime-architecture-v4.md`
 - Artifact Renderer 规范 → `docs/artifact-renderer.md`
 - 数据库与 API 规范 → `docs/database-api.md`
 - 测试与评测规范 → `docs/testing.md`

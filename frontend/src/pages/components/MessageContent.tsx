@@ -35,6 +35,7 @@ function renderMarkdownDecorators(
   let cursor = 0;
   const source = content
     .replace(/&lt;(\/?inner)&gt;/gi, '<$1>')
+    .replace(/&lt;\/?正文&gt;/gi, '')
     .replace(/<UpdateVariable(?:variable)?\b[^>]*>[\s\S]*?<\/UpdateVariable(?:variable)?>/gi, '')
     .replace(/<options\b[^>]*>[\s\S]*?<\/options>/gi, '')
     .replace(/<\/?正文>/g, '')
@@ -45,6 +46,10 @@ function renderMarkdownDecorators(
     .replace(/<char>/g, charName)
     .replace(/<\/char>/g, '')
     .replace(/<\/?initvar>/gi, '');
+  const preserveLineBreaks = (value: string) => value
+    .split(/(\n{2,})/g)
+    .map(part => /^\n{2,}$/.test(part) ? part : part.replace(/\n/g, '  \n'))
+    .join('');
   const innerRegex = /<inner>([\s\S]*?)<\/inner>/gi;
   let match: RegExpExecArray | null;
 
@@ -53,7 +58,7 @@ function renderMarkdownDecorators(
     if (before.trim()) {
       parts.push(
         <ReactMarkdown key={`md-${cursor}`} remarkPlugins={[remarkGfm]} components={{ code: CodeBlock }}>
-          {before}
+          {preserveLineBreaks(before)}
         </ReactMarkdown>,
       );
     }
@@ -69,7 +74,7 @@ function renderMarkdownDecorators(
   if (rest.trim() || parts.length === 0) {
     parts.push(
       <ReactMarkdown key={`md-rest-${cursor}`} remarkPlugins={[remarkGfm]} components={{ code: CodeBlock }}>
-        {rest}
+        {preserveLineBreaks(rest)}
       </ReactMarkdown>,
     );
   }
@@ -113,11 +118,11 @@ export const MessageContent = React.memo(function MessageContent({
 
   // Unified ST + JS-Slash-Runner rendering
   const output = renderMessageHtml(content, { card, runtimeAssets, userName, charName });
+  const schema = buildStatusSchema(card);
 
-  // JS-Slash-Runner path: full HTML doc → iframe
-  if (output.type === 'iframe') {
+  function renderIframeOutput(html: string, key?: React.Key): React.ReactNode {
     const iframeHtml = renderCardIframeHtml(
-      output.html,
+      html,
       (variables as Record<string, unknown>) || {},
       userName,
       charName,
@@ -129,7 +134,7 @@ export const MessageContent = React.memo(function MessageContent({
     );
     return (
       <IframeHtmlRuntimeHost
-        key={simpleHash(iframeHtml)}
+        key={key ?? simpleHash(iframeHtml)}
         documentHtml={iframeHtml}
         variables={(variables as Record<string, unknown>) || {}}
         runtime={runtime}
@@ -141,60 +146,79 @@ export const MessageContent = React.memo(function MessageContent({
     );
   }
 
+  function renderInlineOutput(inlineOutput: typeof output, keyPrefix = 'inline'): React.ReactNode {
+    const markdownSegments = inlineOutput.markdownSegments;
+    const segments = inlineOutput.segments;
+
+    if (markdownSegments && markdownSegments.length > 1) {
+      return (
+        <React.Fragment key={keyPrefix}>
+          {markdownSegments.map((segment, index) => (
+            <React.Fragment key={`${keyPrefix}-md-${index}`}>
+              <div className="mes-text">
+                {renderMarkdownDecorators(segment, userName, charName)}
+              </div>
+              {index < markdownSegments.length - 1 && schema && (
+                <CustomStatusRenderer schema={schema} variables={(variables as Record<string, unknown>) || {}} />
+              )}
+            </React.Fragment>
+          ))}
+        </React.Fragment>
+      );
+    }
+
+    if (inlineOutput.markdown) {
+      return (
+        <div key={keyPrefix} className="mes-text">
+          {renderMarkdownDecorators(inlineOutput.markdown, userName, charName)}
+        </div>
+      );
+    }
+
+    if (segments && segments.length > 1) {
+      return (
+        <React.Fragment key={keyPrefix}>
+          {segments.map((segment, index) => (
+            <React.Fragment key={`${keyPrefix}-html-${index}`}>
+              <div
+                className="mes-text"
+                dangerouslySetInnerHTML={{ __html: segment }}
+              />
+              {index < segments.length - 1 && schema && (
+                <CustomStatusRenderer schema={schema} variables={(variables as Record<string, unknown>) || {}} />
+              )}
+            </React.Fragment>
+          ))}
+        </React.Fragment>
+      );
+    }
+
+    return (
+      <div
+        key={keyPrefix}
+        className="mes-text"
+        dangerouslySetInnerHTML={{ __html: inlineOutput.html || '' }}
+      />
+    );
+  }
+
+  if (output.type === 'mixed') {
+    return (
+      <>
+        {(output.parts || []).map((part, index) => (
+          part.type === 'iframe'
+            ? renderIframeOutput(part.html || '', `mixed-iframe-${index}-${simpleHash(part.html || '')}`)
+            : renderInlineOutput(part, `mixed-inline-${index}`)
+        ))}
+      </>
+    );
+  }
+
+  // JS-Slash-Runner path: full HTML doc → iframe
+  if (output.type === 'iframe') {
+    return renderIframeOutput(output.html || '');
+  }
+
   // ST path: inline HTML with DOMPurify + style scoping
-  const schema = buildStatusSchema(card);
-  const markdownSegments = output.markdownSegments;
-  const segments = output.segments;
-
-  if (markdownSegments && markdownSegments.length > 1) {
-    // Has <StatusPlaceHolderImpl/> marker → split around it
-    return (
-      <>
-        {markdownSegments.map((segment, index) => (
-          <React.Fragment key={index}>
-            <div className="mes-text">
-              {renderMarkdownDecorators(segment, userName, charName)}
-            </div>
-            {index < markdownSegments.length - 1 && schema && (
-              <CustomStatusRenderer schema={schema} variables={(variables as Record<string, unknown>) || {}} />
-            )}
-          </React.Fragment>
-        ))}
-      </>
-    );
-  }
-
-  if (output.markdown) {
-    return (
-      <div className="mes-text">
-        {renderMarkdownDecorators(output.markdown, userName, charName)}
-      </div>
-    );
-  }
-
-  if (segments && segments.length > 1) {
-    return (
-      <>
-        {segments.map((segment, index) => (
-          <React.Fragment key={index}>
-            <div
-              className="mes-text"
-              dangerouslySetInnerHTML={{ __html: segment }}
-            />
-            {index < segments.length - 1 && schema && (
-              <CustomStatusRenderer schema={schema} variables={(variables as Record<string, unknown>) || {}} />
-            )}
-          </React.Fragment>
-        ))}
-      </>
-    );
-  }
-
-  // No marker: render entire content as one block
-  return (
-    <div
-      className="mes-text"
-      dangerouslySetInnerHTML={{ __html: output.html }}
-    />
-  );
+  return renderInlineOutput(output);
 });

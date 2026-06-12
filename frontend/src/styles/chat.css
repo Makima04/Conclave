@@ -972,6 +972,10 @@
   opacity: 1;
 }
 
+.message.assistant .message-content .mes-text {
+  white-space: pre-wrap;
+}
+
 .message.assistant .message-content p {
   margin: 0 0 0.6em;
   color: var(--text);

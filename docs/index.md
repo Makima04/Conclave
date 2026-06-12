@@ -23,7 +23,8 @@
 - [动态总控架构](dynamic-master-architecture.md)
 - [实现优先级](implementation-priority.md)
 - [数据库与 API](database-api.md)
-- [卡牌渲染流水线](card-rendering-pipeline.md)
+- [卡牌渲染流水线](card-rendering-pipeline.md)（v3 现状，见下方迁移说明）
+- [角色卡运行时架构 v4](card-runtime-architecture-v4.md)（v4 目标架构与迁移计划）
 - [Artifact Renderer](artifact-renderer.md)
 - [测试与评测](testing.md)
 - [文档维护规则](docs-sync.md)
@@ -65,17 +66,17 @@
 
 ---
 
-## 角色卡运行时（v3 极简架构）
+## 角色卡运行时（v3 → v4 迁移中）
 
-采用与 SillyTavern 一致的极简方案：
+采用与 SillyTavern + 酒馆助手（JS-Slash-Runner）一致的极简方案：
 
 - **导入**：PNG/JSON 解析 → 存储原始字段，不做导入时分析
 - **宏引擎**：纯正则 `String.replace()` 方案，不认识的 `{{macro}}` 原样保留
-- **渲染**：始终 `<iframe srcdoc="...">`，通过 `postMessage` 通信
+- **渲染**：同源 blob URL iframe，卡片 JS 直连宿主 TavernHelper（同步 API，与 ST + 酒馆助手机制一致）
 - **变量**：简单嵌套 JSON 存储 + 路径读写，LLM 通过 `read_variable` / `write_variable` 工具调用
-- **安全**：LLM 写入路径白名单 + session 隔离
+- **安全**：与 ST 一致的同源信任模型（自托管单用户）
 
-详见 [卡牌渲染流水线](card-rendering-pipeline.md)。
+详见 [卡牌渲染流水线](card-rendering-pipeline.md)（v3 现状）和 [角色卡运行时架构 v4](card-runtime-architecture-v4.md)（目标架构与迁移计划）。
 
 ---
 

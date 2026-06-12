@@ -361,13 +361,53 @@ ${runtimeBootstrap}
 	<!-- thScriptTags execute as inline scripts — need z (in headBridge), $, Vue all ready -->
 ${thScriptTags}
 ${headExtras}
-<style>html,body{margin:0;padding:0;overflow:hidden}</style>
+<style>html,body{margin:0;padding:0;overflow-x:hidden;overflow-y:auto}</style>
 </head>
 <body>${replaceViewportUnits(bodyHtml)}
 <script>${VH_REPLACEMENT_SCRIPT}</script>
 <script>${bridgeScript}</script>
 </body>
 </html>`;
+}
+
+export function injectBridgeIntoIframeDocument(
+  documentHtml: string,
+  bridgeScript: string,
+  options?: {
+    card?: CharacterCard | null;
+    runtimeAssets?: SessionRuntimeAssets | null;
+  },
+): string {
+  const { card = null, runtimeAssets = null } = options || {};
+  const runtimeScripts = runtimeAssets?.tavern_helper_scripts as TavernHelperScript[] | undefined;
+  const thScriptTags = runtimeScripts && runtimeScripts.length > 0
+    ? buildTavernHelperScriptTagsFromScripts(runtimeScripts)
+    : buildTavernHelperScriptTags(card);
+  const libCss = `<link rel="stylesheet" href="${ST_CDN_LIBS.fontAwesomeCss}">
+<link rel="stylesheet" href="${ST_CDN_LIBS.tailwindCss}">`;
+  const headJs = `<script>window.__XRP_INITIAL_RUNTIME=null;</script>
+<script>${buildHeadBridgeScript()}</script>`;
+  const libJs = `<script src="${ST_CDN_LIBS.jquery}"></script>
+<script src="${ST_CDN_LIBS.vue}"></script>
+${thScriptTags}
+<script>${VH_REPLACEMENT_SCRIPT}</script>
+<script>${bridgeScript}</script>`;
+
+  let injected = replaceViewportUnits(documentHtml);
+  if (/<head[^>]*>/i.test(injected)) {
+    injected = injected.replace(/(<head[^>]*>)/i, `$1\n${headJs}`);
+  } else {
+    injected = injected.replace(/<html[^>]*>/i, match => `${match}\n<head>${headJs}</head>`);
+  }
+  if (/<\/head>/i.test(injected)) {
+    injected = injected.replace(/<\/head>/i, `${libCss}</head>`);
+  }
+  if (/<\/body>/i.test(injected)) {
+    injected = injected.replace(/<\/body>/i, `${libJs}</body>`);
+  } else {
+    injected += libJs;
+  }
+  return injected;
 }
 
 // --- GROUP 6: Character card inspection utilities ---
@@ -558,7 +598,7 @@ export function renderCardFormattedContent(
   return parts.map((part, index) => {
     if (part.type === 'html') {
       const trimmedContent = part.content.trim();
-      const isFullHtmlDoc = /^<!DOCTYPE\s+html|<html\b/i.test(trimmedContent);
+      const isFullHtmlDoc = /^(?:<!DOCTYPE\s+html\b|<html\b)/i.test(trimmedContent);
       const hasScript = /<script\b/i.test(trimmedContent);
 
       if (isFullHtmlDoc || hasScript) {
@@ -650,6 +690,10 @@ export function renderCardIframeHtml(
   const processed = processMacros(html, macroContext);
   const rewritten = rewriteCdnUrls(processed);
   const bridgeScript = buildIframeBridgeScript(sessionId, worldBookId);
+
+  if (/^<!DOCTYPE\s+html\b|^<html\b/i.test(rewritten.trim())) {
+    return injectBridgeIntoIframeDocument(rewritten, bridgeScript, { card, runtimeAssets });
+  }
 
   return buildIframeDocument(rewritten, bridgeScript, { card, runtime, runtimeAssets });
 }

@@ -20,6 +20,7 @@ import {
   getOpeningHtmlAppHostContent,
   stripKnownOpeningHtmlTriggers,
 } from './st-opening-ui';
+import { closeDanglingBodyTag, ensureRegexStatusPlaceholder, hasStatusRenderer } from './st-status-ui';
 import { mergeVariableObjects, parseInitVariables } from './st-init-variables';
 
 // --- inline SandboxRuntime types (replacing deleted sandbox-runtime-types module) ---
@@ -146,12 +147,8 @@ export default function Chat() {
 
   // --- derived ---
   const cardHasStatusRenderer = React.useMemo(
-    () => {
-      if (!characterCard) return false;
-      const content = characterCard.first_mes || '';
-      return /<[a-zA-Z][^>]*>/.test(content);
-    },
-    [characterCard],
+    () => hasStatusRenderer(characterCard, runtimeAssets),
+    [characterCard, runtimeAssets],
   );
   const hasStarted = React.useMemo(() => messages.some(msg => msg.turn_number > 0), [messages]);
   const canApplyOpening = !hasStarted;
@@ -264,10 +261,14 @@ export default function Chat() {
     () => getOpeningHtmlAppHostContent(characterCard, runtimeAssets),
     [characterCard, runtimeAssets],
   );
-  const openingPreviewText = prepareOpeningTextDisplayContent(
-    selectedGreetingText || characterCard?.first_mes || '',
-    { hideStatusPlaceholder: Boolean(openingUiHostContent) },
-  );
+  const openingPreviewText = React.useMemo(() => {
+    const cleaned = prepareOpeningTextDisplayContent(
+      selectedGreetingText || characterCard?.first_mes || '',
+      { hideStatusPlaceholder: Boolean(openingUiHostContent) },
+    );
+    if (openingUiHostContent) return cleaned;
+    return ensureRegexStatusPlaceholder(cleaned, characterCard, runtimeAssets);
+  }, [characterCard, openingUiHostContent, runtimeAssets, selectedGreetingText]);
   const openingGreetingVariables = React.useMemo(
     () => buildGreetingVariableSnapshots(
       characterCard,
@@ -456,10 +457,14 @@ export default function Chat() {
   }
 
   function getMessageDisplayContent(msg: Message): string {
+    let content = msg.content;
     if (msg.role === 'assistant' && msg.turn_number === 0) {
-      return prepareOpeningTextDisplayContent(msg.content, { hideStatusPlaceholder: Boolean(openingUiHostContent) });
+      content = prepareOpeningTextDisplayContent(msg.content, { hideStatusPlaceholder: Boolean(openingUiHostContent) });
     }
-    return msg.content;
+    if (msg.role !== 'assistant') return content;
+    if (msg.turn_number === 0 && openingUiHostContent) return content;
+    if (content.trim() === 'false') return content;
+    return ensureRegexStatusPlaceholder(closeDanglingBodyTag(content), characterCard, runtimeAssets);
   }
 
   function isHtmlAppInternalMessage(msg: Message): boolean {

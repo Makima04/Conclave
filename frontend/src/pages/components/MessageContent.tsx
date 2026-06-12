@@ -4,7 +4,7 @@
 //     – Everything else → DOMPurify + style scoping + inline DOM (ST path)
 
 import React from 'react';
-import type { CharacterCard } from '../../api/types';
+import type { CharacterCard, SessionRuntimeAssets } from '../../api/types';
 import type { SandboxCardAction } from '../card-schema-types';
 import { CustomStatusRenderer } from './CustomStatusRenderer';
 import { IframeHtmlRuntimeHost } from './IframeHtmlRuntimeHost';
@@ -26,6 +26,7 @@ function simpleHash(s: string): string {
 export const MessageContent = React.memo(function MessageContent({
   content,
   card,
+  runtimeAssets,
   variables,
   runtime,
   onSandboxAction,
@@ -37,6 +38,7 @@ export const MessageContent = React.memo(function MessageContent({
 }: {
   content: string;
   card: CharacterCard | null;
+  runtimeAssets?: SessionRuntimeAssets | null;
   variables: unknown;
   runtime?: SandboxRuntimeContext;
   onSandboxAction?: (action: SandboxCardAction) => void;
@@ -57,7 +59,7 @@ export const MessageContent = React.memo(function MessageContent({
   }
 
   // Unified ST + JS-Slash-Runner rendering
-  const output = renderMessageHtml(content, { card, userName, charName });
+  const output = renderMessageHtml(content, { card, runtimeAssets, userName, charName });
 
   // JS-Slash-Runner path: full HTML doc → iframe
   if (output.type === 'iframe') {
@@ -70,6 +72,7 @@ export const MessageContent = React.memo(function MessageContent({
       worldBookId,
       card,
       runtime,
+      runtimeAssets,
     );
     return (
       <IframeHtmlRuntimeHost

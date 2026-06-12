@@ -5,7 +5,7 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { CharacterCard } from '../api/types';
+import type { CharacterCard, SessionRuntimeAssets } from '../api/types';
 import { CodeBlock } from './components/CodeBlock';
 import { IframeHtmlRuntimeHost } from './components/IframeHtmlRuntimeHost';
 import type { RegexScript } from './st-regex-executor';
@@ -53,7 +53,10 @@ export function getTavernHelperScripts(card: CharacterCard | null): TavernHelper
  * - If content is empty/absent, skip (external scripts loaded via src are not supported)
  */
 export function buildTavernHelperScriptTags(card: CharacterCard | null): string {
-  const scripts = getTavernHelperScripts(card);
+  return buildTavernHelperScriptTagsFromScripts(getTavernHelperScripts(card));
+}
+
+export function buildTavernHelperScriptTagsFromScripts(scripts: TavernHelperScript[]): string {
   if (scripts.length === 0) return '';
 
   // Unique per-build nonce to bust ES module import cache.
@@ -329,12 +332,17 @@ export function buildIframeDocument(
     headExtras?: string;
     /** Character card to extract tavern_helper scripts from. */
     card?: CharacterCard | null;
+    /** Effective ST runtime assets for this session. */
+    runtimeAssets?: SessionRuntimeAssets | null;
     /** Initial ST-like runtime snapshot for scripts that run before body bridge. */
     runtime?: Record<string, unknown> | null;
   },
 ): string {
-  const { headExtras = '', card = null } = options || {};
-  const thScriptTags = buildTavernHelperScriptTags(card);
+  const { headExtras = '', card = null, runtimeAssets = null } = options || {};
+  const runtimeScripts = runtimeAssets?.tavern_helper_scripts as TavernHelperScript[] | undefined;
+  const thScriptTags = runtimeScripts && runtimeScripts.length > 0
+    ? buildTavernHelperScriptTagsFromScripts(runtimeScripts)
+    : buildTavernHelperScriptTags(card);
   const headBridge = buildHeadBridgeScript();
   const runtimeBootstrap = `<script>window.__XRP_INITIAL_RUNTIME=null;</script>`;
 
@@ -636,11 +644,12 @@ export function renderCardIframeHtml(
   worldBookId?: string,
   card?: CharacterCard | null,
   runtime?: Record<string, unknown> | null,
+  runtimeAssets?: SessionRuntimeAssets | null,
 ): string {
   const macroContext = createMacroContext({ variables, userName, charName });
   const processed = processMacros(html, macroContext);
   const rewritten = rewriteCdnUrls(processed);
   const bridgeScript = buildIframeBridgeScript(sessionId, worldBookId);
 
-  return buildIframeDocument(rewritten, bridgeScript, { card, runtime });
+  return buildIframeDocument(rewritten, bridgeScript, { card, runtime, runtimeAssets });
 }

@@ -24,8 +24,8 @@ use tracing_subscriber::EnvFilter;
 use crate::config::AppConfig;
 use crate::error::AppError;
 use crate::routes::{
-    agents, card_import, charactercards, health, messages, presets, proposals, providers, sessions,
-    settings, variables, worldbooks,
+    agents, card_import, charactercards, health, messages, presets, proposals, providers,
+    runtime_assets, sessions, settings, variables, worldbooks,
 };
 
 #[tokio::main]
@@ -156,6 +156,10 @@ async fn create_app(config: AppConfig) -> Router {
             delete(messages::delete_message),
         )
         .route("/api/sessions/{id}/opening", post(messages::apply_opening))
+        .route(
+            "/api/sessions/{id}/runtime-assets",
+            get(runtime_assets::get_session_runtime_assets),
+        )
         .route(
             "/api/sessions/{id}/reconnect",
             get(messages::reconnect_stream),

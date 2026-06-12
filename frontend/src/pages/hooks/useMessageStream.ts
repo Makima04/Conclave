@@ -9,6 +9,8 @@ import type { RenderMode } from '../../api/types';
 import type { useStreamRecovery } from './useStreamRecovery';
 
 import { cleanCardDisplayText } from '../card-content';
+import type { SessionRuntimeAssets } from '../../api/types';
+import { stripKnownOpeningHtmlTriggers } from '../st-opening-ui';
 
 function hasStatusRenderer(card: CharacterCard | null): boolean {
   const extensions = card?.extensions as Record<string, any> | undefined;
@@ -16,15 +18,15 @@ function hasStatusRenderer(card: CharacterCard | null): boolean {
 }
 
 function cleanComparableMessageText(content: string): string {
-  return cleanCardDisplayText(content)
+  return cleanCardDisplayText(stripKnownOpeningHtmlTriggers(content))
     .replace(/\s+/g, '')
     .trim();
 }
 
-  function getParsedGreetings(card: CharacterCard | null): string[] {
-    if (!card) return [];
-    return [card.first_mes, ...(card.alternate_greetings ?? [])];
-  }
+function getParsedGreetings(card: CharacterCard | null): string[] {
+  if (!card) return [];
+  return [card.first_mes, ...(card.alternate_greetings ?? [])];
+}
 
 type RecoveryApi = ReturnType<typeof useStreamRecovery>;
 
@@ -45,6 +47,7 @@ export function useMessageStream({
   config,
   configDirty,
   characterCard,
+  runtimeAssets,
   selectedGreetingIndex,
   setSelectedGreetingIndex,
   saveConfig,
@@ -78,6 +81,7 @@ export function useMessageStream({
   config: SessionConfig;
   configDirty: boolean;
   characterCard: CharacterCard | null;
+  runtimeAssets?: SessionRuntimeAssets | null;
   selectedGreetingIndex: number;
   setSelectedGreetingIndex: (value: React.SetStateAction<number>) => void;
   saveConfig: () => Promise<void>;
@@ -173,20 +177,8 @@ export function useMessageStream({
     return `${text.slice(0, max)}...`;
   }
 
-  function isHtmlAppCard(): boolean {
-    return characterCard?.conclave_package?.ui?.type === 'html_app'
-      && Boolean(String(characterCard.conclave_package?.ui?.html || '').trim());
-  }
-
-  function hasHtmlAppTrigger(content: string): boolean {
-    return /(?:^|\n)\s*(?:\[attachment\]|\[开局\]|【GameStart】|【游戏开始】)\s*(?:\n|$)/i.test(content);
-  }
-
   function prepareOpeningContent(greeting: string): string {
-    let content = greeting.trim();
-    if (isHtmlAppCard() && content && !hasHtmlAppTrigger(content)) {
-      content = `[attachment]\n${content}`;
-    }
+    let content = stripKnownOpeningHtmlTriggers(greeting).trim();
     const cardHasStatus = hasStatusRenderer(characterCard);
     if (cardHasStatus && !content.includes('<StatusPlaceHolderImpl/>')) {
       content = `${content.trim()}\n\n<StatusPlaceHolderImpl/>`;

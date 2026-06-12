@@ -16,7 +16,7 @@ import {
 } from './st-rendering-engine';
 import { processMacros, createMacroContext } from './macro-engine';
 import type { RegexScript } from './st-regex-executor';
-import type { CharacterCard } from '../api/types';
+import type { CharacterCard, SessionRuntimeAssets } from '../api/types';
 
 // ── DOMPurify hooks (matching ST's addDOMPurifyHooks in chats.js:1901-2051) ──
 
@@ -48,9 +48,20 @@ const PURIFY_CONFIG = {
 
 // ── Helpers ──
 
-function getRegexScripts(card: CharacterCard | null): RegexScript[] {
+function toRegexScript(value: unknown): RegexScript | null {
+  if (!value || typeof value !== 'object') return null;
+  const script = value as Partial<RegexScript>;
+  return typeof script.findRegex === 'string' && typeof script.replaceString === 'string'
+    ? { ...script, findRegex: script.findRegex, replaceString: script.replaceString }
+    : null;
+}
+
+function getRegexScripts(card: CharacterCard | null, runtimeAssets?: SessionRuntimeAssets | null): RegexScript[] {
+  if (runtimeAssets?.regex_scripts?.length) {
+    return runtimeAssets.regex_scripts.map(toRegexScript).filter((script): script is RegexScript => script !== null);
+  }
   const scripts = (card?.extensions as Record<string, unknown> | undefined)?.regex_scripts;
-  return Array.isArray(scripts) ? scripts : [];
+  return Array.isArray(scripts) ? scripts.map(toRegexScript).filter((script): script is RegexScript => script !== null) : [];
 }
 
 function stripCodeFence(source: string): string {
@@ -83,11 +94,12 @@ export function renderMessageHtml(
   content: string,
   options: {
     card?: CharacterCard | null;
+    runtimeAssets?: SessionRuntimeAssets | null;
     userName?: string;
     charName?: string;
   } = {},
 ): RenderOutput {
-  const { card, userName = '{{user}}', charName = '{{char}}' } = options;
+  const { card, runtimeAssets, userName = '{{user}}', charName = '{{char}}' } = options;
 
   // Normalize content (matching ST's messageFormatting substitutions)
   let processed = processMacros(content, createMacroContext({
@@ -97,7 +109,7 @@ export function renderMessageHtml(
   }));
 
   // Step 1: Run regex scripts (ST engine.js — two-phase, matching messageFormatting)
-  const scripts = getRegexScripts(card ?? null);
+  const scripts = getRegexScripts(card ?? null, runtimeAssets);
   if (scripts.length > 0) {
     const preparedScripts: RegexScript[] = scripts.map(s => {
       if (typeof s.replaceString === 'string' && s.replaceString.trim().startsWith('```')) {

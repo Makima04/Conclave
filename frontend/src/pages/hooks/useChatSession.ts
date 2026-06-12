@@ -4,7 +4,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import * as api from '../../api/client';
-import type { CharacterCard, Message, Preset, RenderMode, SessionConfig, UserPersona, UserSettingMergeStrategy, WorldBook } from '../../api/types';
+import type { CharacterCard, Message, Preset, RenderMode, SessionConfig, SessionRuntimeAssets, UserPersona, UserSettingMergeStrategy, WorldBook } from '../../api/types';
 import { DEFAULT_SESSION_CONFIG } from '../../api/types';
 import { loadGlobalSessionDefaults, loadUserPersonaPresets, normalizeRenderMode, normalizeSessionConfig, saveGlobalSessionDefaults, type UserPersonaPreset } from '../../settings/sessionDefaults';
 import { useProviders } from '../../contexts/AppContext';
@@ -44,6 +44,7 @@ export function useChatSession() {
   const [sessionMode, setSessionMode] = useState<string>('single_agent');
   const [selectedGreetingIndex, setSelectedGreetingIndex] = useState(-1);
   const [sessionState, setSessionState] = useState<any>({});
+  const [runtimeAssets, setRuntimeAssets] = useState<SessionRuntimeAssets>({ regex_scripts: [], tavern_helper_scripts: [] });
   const [showVariableDebug, setShowVariableDebug] = useState(false);
   const [titleInput, setTitleInput] = useState('');
   const [editingTitle, setEditingTitle] = useState(false);
@@ -123,6 +124,20 @@ export function useChatSession() {
     }
   }
 
+  async function loadRuntimeAssets() {
+    if (!sessionId) return;
+    try {
+      const value = await api.getSessionRuntimeAssets(sessionId);
+      setRuntimeAssets({
+        regex_scripts: Array.isArray(value.regex_scripts) ? value.regex_scripts : [],
+        tavern_helper_scripts: Array.isArray(value.tavern_helper_scripts) ? value.tavern_helper_scripts : [],
+      });
+    } catch (err) {
+      setRuntimeAssets({ regex_scripts: [], tavern_helper_scripts: [] });
+      console.error('Failed to load runtime assets:', err);
+    }
+  }
+
   // --- config persistence ---
 
   async function persistConfig(nextConfig: SessionConfig): Promise<boolean> {
@@ -197,6 +212,7 @@ export function useChatSession() {
         setSelectedGreetingIndex(-1);
       }
       await loadSessionState();
+      await loadRuntimeAssets();
     } catch (err) {
       setActiveWorldBookId(previousWorldBookId);
       setStreamError(err instanceof Error ? err.message : '切换世界书失败');
@@ -222,6 +238,8 @@ export function useChatSession() {
       const ok = await persistConfig(nextConfig);
       if (!ok) {
         setStreamError('保存预设设置失败');
+      } else {
+        await loadRuntimeAssets();
       }
     } finally {
       setSessionResourceSaving(null);
@@ -331,6 +349,8 @@ export function useChatSession() {
     setSelectedGreetingIndex,
     sessionState,
     setSessionState,
+    runtimeAssets,
+    setRuntimeAssets,
     showVariableDebug,
     setShowVariableDebug,
     titleInput,
@@ -346,6 +366,7 @@ export function useChatSession() {
     loadCharacterCard,
     loadMessages,
     loadSessionState,
+    loadRuntimeAssets,
     // config
     persistConfig,
     saveConfig,

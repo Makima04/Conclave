@@ -6,6 +6,7 @@ pub mod messages;
 pub mod presets;
 pub mod proposals;
 pub mod providers;
+pub mod runtime_assets;
 pub mod sessions;
 pub mod settings;
 pub mod variables;

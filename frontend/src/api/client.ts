@@ -4,7 +4,7 @@ import type {
   ParsedWorldBookEntry, Preset, PresetDetail,
   ImportDraftResponse, ConfirmImportRequest, ImportReport,
   LlmAssistRequest, LlmAssistResponse, RawPreviewResponse,
-  RuntimeSettings,
+  RuntimeSettings, SessionRuntimeAssets,
   DebugMessage, DebugTurnSummary, AgentDebugSnapshot,
 } from './types';
 import { consumeSseResponse, type ChatSseHandler } from './sse';
@@ -68,6 +68,10 @@ export async function listSharedSaves(params: { worldPackId: string; limit?: num
 
 export async function getSession(id: string): Promise<Session> {
   return request(`/sessions/${id}`);
+}
+
+export async function getSessionRuntimeAssets(id: string): Promise<SessionRuntimeAssets> {
+  return request(`/sessions/${id}/runtime-assets`);
 }
 
 export async function deleteSession(id: string): Promise<void> {

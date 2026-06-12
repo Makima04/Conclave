@@ -14,6 +14,10 @@ import type { CharacterCard, Message, Session } from '../api/types';
 import { useChatSession } from './hooks/useChatSession';
 import { useStreamRecovery } from './hooks/useStreamRecovery';
 import { useMessageStream } from './hooks/useMessageStream';
+import {
+  getOpeningHtmlAppHostContent,
+  stripKnownOpeningHtmlTriggers,
+} from './st-opening-ui';
 
 // --- inline SandboxRuntime types (replacing deleted sandbox-runtime-types module) ---
 
@@ -78,10 +82,10 @@ export default function Chat() {
     config, setConfig, configDirty, setConfigDirty, characterCard,
     providers, worldBooks, presets, activeWorldBookId, sessionResourceSaving,
     renderMode, userPersona, userPresets, sessionMode, selectedGreetingIndex,
-    setSelectedGreetingIndex, sessionState, showVariableDebug, setShowVariableDebug,
+    setSelectedGreetingIndex, sessionState, runtimeAssets, showVariableDebug, setShowVariableDebug,
     titleInput, setTitleInput, editingTitle, setEditingTitle, streamError,
     titleInputRef, loadSessionResources, loadSession,
-    loadMessages, loadSessionState, saveConfig, updateConfig, updateRenderMode,
+    loadMessages, loadSessionState, loadRuntimeAssets, saveConfig, updateConfig, updateRenderMode,
     updateUserPersona, updateUserSettingMergeStrategy, updateSessionWorldBook,
     updateSessionPreset, applyUserPersonaPreset, applyGlobalDefaultsToSession,
     saveCurrentSessionAsGlobalDefaults, selectedGreetingText: selectedGreetingText_,
@@ -100,6 +104,7 @@ export default function Chat() {
   // --- hook: message stream ---
   const stream = useMessageStream({
     sessionId, messages, setMessages, config, configDirty, characterCard,
+    runtimeAssets,
     selectedGreetingIndex, setSelectedGreetingIndex, saveConfig, loadMessages,
     loadSessionState, recovering, failedContent, setFailedContent, memoryPending,
     setMemoryBusy, agentStatuses, setAgentStatuses,
@@ -137,9 +142,10 @@ export default function Chat() {
   );
   const hasStarted = React.useMemo(() => messages.some(msg => msg.turn_number > 0), [messages]);
   const canApplyOpening = !hasStarted;
-  const hasOnlyOpeningMessage = React.useMemo(() =>
-    messages.length > 0 && !hasStarted && messages.some(msg => msg.turn_number === 0 && msg.role === 'assistant'),
-  [messages, hasStarted]);
+  const visibleMessages = React.useMemo(
+    () => messages.filter(message => !isHtmlAppInternalMessage(message)),
+    [messages],
+  );
   const cardProjectionVariables = sessionState?.variables || emptyVariables;
   const cardPlatformState = sessionState?.platform_state && typeof sessionState.platform_state === 'object'
     ? sessionState.platform_state
@@ -241,7 +247,14 @@ export default function Chat() {
     })),
     [messages, sandboxRuntimeMessages, sandboxRuntimeById, runtimeSharedSaves, sessionId, cardVariableContract, cardPlatformState, cardWritableState],
   );
-  const openingPreviewContent = selectedGreetingText || characterCard?.first_mes || '';
+  const openingUiHostContent = React.useMemo(
+    () => getOpeningHtmlAppHostContent(characterCard, runtimeAssets),
+    [characterCard, runtimeAssets],
+  );
+  const openingPreviewText = prepareOpeningTextDisplayContent(
+    selectedGreetingText || characterCard?.first_mes || '',
+    { hideStatusPlaceholder: Boolean(openingUiHostContent) },
+  );
   const sandboxSubmissionRuntime = React.useMemo<SandboxRuntimeSubmission | null>(() => {
     if (!sandboxSubmission) return null;
     return {
@@ -257,8 +270,8 @@ export default function Chat() {
   const sandboxSubmissionSourceId = sandboxSubmission?.sourceMessageId || null;
   const isSandboxInlineStreaming = Boolean(sandboxSubmission);
   const openingPreviewRuntime = React.useMemo(
-    () => buildEmptySessionPreviewRuntime(openingPreviewContent),
-    [openingPreviewContent, runtimeSharedSaves, cardProjectionVariables, cardPlatformState, cardWritableState, characterCard?.name, sandboxSubmissionRuntime, sessionId, cardVariableContract],
+    () => buildEmptySessionPreviewRuntime(openingPreviewText),
+    [openingPreviewText, runtimeSharedSaves, cardProjectionVariables, cardPlatformState, cardWritableState, characterCard?.name, sandboxSubmissionRuntime, sessionId, cardVariableContract],
   );
   // --- local helpers ---
   const handleRailClick = React.useCallback((tab: InspectorTab) => {
@@ -336,6 +349,21 @@ export default function Chat() {
     return [card.first_mes, ...(card.alternate_greetings || [])].filter(Boolean);
   }
 
+  function prepareOpeningTextDisplayContent(content: string, options?: { hideStatusPlaceholder?: boolean }): string {
+    let text = stripKnownOpeningHtmlTriggers(content).trim();
+    if (options?.hideStatusPlaceholder) {
+      text = text.replace(/<StatusPlaceHolderImpl\/>/g, '').trim();
+    }
+    return text;
+  }
+
+  function getMessageDisplayContent(msg: Message): string {
+    if (msg.role === 'assistant' && msg.turn_number === 0) {
+      return prepareOpeningTextDisplayContent(msg.content, { hideStatusPlaceholder: Boolean(openingUiHostContent) });
+    }
+    return msg.content;
+  }
+
   function isHtmlAppInternalMessage(msg: Message): boolean {
     return parseMessageMetadata(msg).html_app_internal === true;
   }
@@ -402,7 +430,7 @@ export default function Chat() {
   }
 
   function cleanComparableMessageText(content: string): string {
-    return cleanCardDisplayText(content, userPersona.name || '你', characterCard?.name || '')
+    return cleanCardDisplayText(stripKnownOpeningHtmlTriggers(content), userPersona.name || '你', characterCard?.name || '')
       .replace(/\s+/g, '')
       .trim();
   }
@@ -681,6 +709,7 @@ export default function Chat() {
     loadSession();
     loadSessionResources();
     loadSessionState();
+    loadRuntimeAssets();
     return () => { stopRecovery(); };
   }, [sessionId]);
 
@@ -782,30 +811,46 @@ export default function Chat() {
         {/* Messages list */}
         <div className="messages">
           {characterCard && (
-            messages.length === 0
-            || hasOnlyOpeningMessage
-            || hasHtmlAppInternalMessages
+            visibleMessages.length === 0
             || (isSandboxInlineStreaming && sandboxSubmissionSourceId === 'opening-preview')
           ) && (
             <div className="message assistant opening-preview">
               <div className="message-role">{characterCard.name}</div>
               <div className="message-content">
-                <MessageContent
-                  content={openingPreviewContent}
-                  card={characterCard}
-                  variables={cardProjectionVariables}
-                  runtime={openingPreviewRuntime}
-                  onSandboxAction={(event) => handleCardSandboxAction(event, 'opening-preview')}
-                  onMessagesChanged={handleMessagesChanged}
-                  renderMode={renderMode}
-                  userName={userPersona.name || '你'}
-                  sessionId={sessionId}
-                  worldBookId={activeWorldBook?.id || characterCard?.world_book_id}
-                />
+                {openingUiHostContent && (
+                  <MessageContent
+                    content={openingUiHostContent}
+                    card={characterCard}
+                    runtimeAssets={runtimeAssets}
+                    variables={cardProjectionVariables}
+                    runtime={openingPreviewRuntime}
+                    onSandboxAction={(event) => handleCardSandboxAction(event, 'opening-preview')}
+                    onMessagesChanged={handleMessagesChanged}
+                    renderMode={renderMode}
+                    userName={userPersona.name || '你'}
+                    sessionId={sessionId}
+                    worldBookId={activeWorldBook?.id || characterCard?.world_book_id}
+                  />
+                )}
+                {openingPreviewText && (
+                  <MessageContent
+                    content={openingPreviewText}
+                    card={characterCard}
+                    runtimeAssets={runtimeAssets}
+                    variables={cardProjectionVariables}
+                    runtime={openingPreviewRuntime}
+                    onSandboxAction={(event) => handleCardSandboxAction(event, 'opening-preview')}
+                    onMessagesChanged={handleMessagesChanged}
+                    renderMode={openingUiHostContent ? 'text' : renderMode}
+                    userName={userPersona.name || '你'}
+                    sessionId={sessionId}
+                    worldBookId={activeWorldBook?.id || characterCard?.world_book_id}
+                  />
+                )}
               </div>
             </div>
           )}
-          {messages.filter(msg => !isHtmlAppInternalMessage(msg)).map(msg => {
+          {visibleMessages.map(msg => {
             const isRaw = rawViewIds.has(msg.id);
             const isEditing = editingId === msg.id;
             const roleLabel = msg.role === 'user'
@@ -836,18 +881,36 @@ export default function Chat() {
                       isRaw ? (
                         <pre className="msg-raw">{msg.content}</pre>
                       ) : (
-                        <MessageContent
-                          content={msg.content}
-                          card={characterCard}
-                          variables={cardProjectionVariables}
-                          runtime={buildSandboxRuntime(msg)}
-                          onSandboxAction={(event) => handleCardSandboxAction(event, msg.id)}
-                          onMessagesChanged={handleMessagesChanged}
-                          renderMode={renderMode}
-                          userName={userPersona.name || '你'}
-                          sessionId={sessionId}
-                          worldBookId={activeWorldBook?.id || characterCard?.world_book_id}
-                        />
+                        <>
+                          {msg.turn_number === 0 && openingUiHostContent && (
+                            <MessageContent
+                              content={openingUiHostContent}
+                              card={characterCard}
+                              runtimeAssets={runtimeAssets}
+                              variables={cardProjectionVariables}
+                              runtime={buildSandboxRuntime(msg)}
+                              onSandboxAction={(event) => handleCardSandboxAction(event, msg.id)}
+                              onMessagesChanged={handleMessagesChanged}
+                              renderMode={renderMode}
+                              userName={userPersona.name || '你'}
+                              sessionId={sessionId}
+                              worldBookId={activeWorldBook?.id || characterCard?.world_book_id}
+                            />
+                          )}
+                          <MessageContent
+                            content={getMessageDisplayContent(msg)}
+                            card={characterCard}
+                            runtimeAssets={runtimeAssets}
+                            variables={cardProjectionVariables}
+                            runtime={buildSandboxRuntime(msg)}
+                            onSandboxAction={(event) => handleCardSandboxAction(event, msg.id)}
+                            onMessagesChanged={handleMessagesChanged}
+                            renderMode={msg.turn_number === 0 && openingUiHostContent ? 'text' : renderMode}
+                            userName={userPersona.name || '你'}
+                            sessionId={sessionId}
+                            worldBookId={activeWorldBook?.id || characterCard?.world_book_id}
+                          />
+                        </>
                       )
                     ) : (
                       cleanCardDisplayText(msg.content, userPersona.name || '你', characterCard?.name || '')
@@ -988,6 +1051,7 @@ export default function Chat() {
                 <MessageContent
                   content={streamText}
                   card={characterCard}
+                  runtimeAssets={runtimeAssets}
                   variables={cardProjectionVariables}
                   runtime={buildStreamingSandboxRuntime(streamText)}
                   onSandboxAction={(event) => handleCardSandboxAction(event, 'streaming')}

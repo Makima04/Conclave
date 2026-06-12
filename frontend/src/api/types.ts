@@ -218,6 +218,25 @@ export interface CharacterCard {
   updated_at: string;
 }
 
+export interface RuntimeAssetSource {
+  scope: string;
+  id?: string | null;
+  name?: string | null;
+}
+
+export interface RuntimeRegexScript extends Record<string, unknown> {
+  source: RuntimeAssetSource;
+}
+
+export interface RuntimeTavernHelperScript extends Record<string, unknown> {
+  source: RuntimeAssetSource;
+}
+
+export interface SessionRuntimeAssets {
+  regex_scripts: RuntimeRegexScript[];
+  tavern_helper_scripts: RuntimeTavernHelperScript[];
+}
+
 export interface ParsedWorldBookEntry {
   keys: string[];
   content: string;

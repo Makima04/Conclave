@@ -111,38 +111,72 @@ export function replaceVhInContent(content: string): string {
 
 // ── Message-level iframe srcdoc ──
 // Full CDN + runtime script shell. Matches JSR createSrcContent order exactly.
-// Differences from card-content.tsx buildIframeDocument:
-//   - No bridge script (postMessage RPC shim) — predefine.js reads TavernHelper from parent directly
-//   - No headBridge (Zod stub / waitGlobalInitialized stub) — predefine.js provides these
-//   - No VH_REPLACEMENT_SCRIPT inline — adjust_viewport.js handles this
-//   - No tavern_helper.scripts injection — M3 handles script injection in script-resident iframe
-//   - Adds jQuery UI + touch-punch (JSR has them, previous implementation omitted them)
+//
+// For FRAGMENTS (no <!DOCTYPE>/<html>): wraps in a fresh document shell.
+// For FULL HTML DOCUMENTS: injects CDN + runtime scripts into the existing <head>,
+//   avoiding nested documents. Same approach as old injectBridgeIntoIframeDocument.
+
+const RUNTIME_SCRIPTS = `<script src="${predefine_url}"></script>
+<script src="${adjust_viewport_url}"></script>
+<script src="${adjust_iframe_height_url}"></script>`;
+
+const CDN_CSS = `<link rel="stylesheet" href="${ST_CDN_LIBS.fontAwesomeCss}"/>
+<link rel="stylesheet" href="${ST_CDN_LIBS.tailwindCss}"/>
+<link rel="stylesheet" href="${ST_CDN_LIBS.jqueryUiCss}"/>`;
+
+const CDN_JS = `<script src="${ST_CDN_LIBS.jquery}"></script>
+<script src="${ST_CDN_LIBS.jqueryUi}"></script>
+<script src="${ST_CDN_LIBS.jqueryUiTouchPunch}"></script>
+<script src="${ST_CDN_LIBS.vue}"></script>
+<script src="${ST_CDN_LIBS.vueRouter}"></script>`;
+
+const RESET_STYLE = `<style>*,*::before,*::after{box-sizing:border-box;}html,body{margin:0!important;padding:0;max-width:100%!important;}</style>`;
+
+const BASE_TAG = `<base href="${window.location.origin}"/>`;
 
 export function createMessageSrcContent(bodyHtml: string): string {
+  const processed = replaceVhInContent(bodyHtml);
+
+  // Full HTML document: inject into existing <head>, don't wrap
+  if (/^<!DOCTYPE\s+html|^<html\b/i.test(processed.trim())) {
+    let injected = processed;
+
+    // Inject base tag + reset style + CDN CSS + CDN JS + runtime scripts into <head>
+    const headInjection = `${BASE_TAG}\n${RESET_STYLE}\n${CDN_CSS}\n${CDN_JS}\n${RUNTIME_SCRIPTS}`;
+
+    if (/<head[^>]*>/i.test(injected)) {
+      injected = injected.replace(/(<head[^>]*>)/i, `$1\n${headInjection}`);
+    } else {
+      // No <head> tag — insert one after <html>
+      injected = injected.replace(/(<html[^>]*>)/i, `$1\n<head>${headInjection}</head>`);
+    }
+
+    // Add reset style to <body> to prevent card's own body styles from hiding overflow
+    // (card might set overflow:hidden which prevents adjust_iframe_height from working)
+    if (/<body[^>]*>/i.test(injected)) {
+      injected = injected.replace(
+        /(<body[^>]*>)/i,
+        `$1\n<style>body{overflow:visible!important;}</style>`,
+      );
+    }
+
+    return injected;
+  }
+
+  // Fragment: wrap in a fresh document shell
   return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<base href="${window.location.origin}"/>
-<style>
-*,*::before,*::after{box-sizing:border-box;}
-html,body{margin:0!important;padding:0;overflow:hidden!important;max-width:100%!important;}
-</style>
-<link rel="stylesheet" href="${ST_CDN_LIBS.fontAwesomeCss}"/>
-<link rel="stylesheet" href="${ST_CDN_LIBS.tailwindCss}"/>
-<script src="${ST_CDN_LIBS.jquery}"></script>
-<script src="${ST_CDN_LIBS.jqueryUi}"></script>
-<link rel="stylesheet" href="${ST_CDN_LIBS.jqueryUiCss}"/>
-<script src="${ST_CDN_LIBS.jqueryUiTouchPunch}"></script>
-<script src="${ST_CDN_LIBS.vue}"></script>
-<script src="${ST_CDN_LIBS.vueRouter}"></script>
-<script src="${predefine_url}"></script>
-<script src="${adjust_viewport_url}"></script>
-<script src="${adjust_iframe_height_url}"></script>
+${BASE_TAG}
+${RESET_STYLE}
+${CDN_CSS}
+${CDN_JS}
+${RUNTIME_SCRIPTS}
 </head>
 <body>
-${replaceVhInContent(bodyHtml)}
+${processed}
 </body>
 </html>`;
 }

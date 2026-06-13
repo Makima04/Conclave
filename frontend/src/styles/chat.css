@@ -584,11 +584,12 @@
   max-width: min(100%, 920px);
   min-width: 0;
   min-height: 200px;
+  max-height: 80vh;
   margin: 0 auto;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: transparent;
-  overflow: auto;
+  overflow-y: auto;
   contain: content;
   content-visibility: auto;
   contain-intrinsic-size: auto 640px;
@@ -660,8 +661,10 @@
   display: block;
   width: 100%;
   min-height: 200px;
+  max-height: 80vh;
   border: 0;
   background: transparent;
+  overflow-y: auto;
   overflow: hidden;
 }
 

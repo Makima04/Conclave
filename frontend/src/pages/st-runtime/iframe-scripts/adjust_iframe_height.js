@@ -1,63 +1,49 @@
 // Ported from JSR adjust_iframe_height.js
 // Observes body resize and sets frameElement.style.height to match content.
-// Depends on lodash `_.throttle` being available on window (injected by predefine.js).
+// Enhanced: MutationObserver to catch dynamic content changes from card scripts.
 
 (function () {
-  let scheduled = false;
-
-  function measureAndPost() {
-    scheduled = false;
+  function measureAndApply() {
     try {
-      const doc = window.document;
-      const body = doc.body;
-      const html = doc.documentElement;
-      if (!body || !html) {
-        return;
-      }
+      const body = window.document.body;
+      const html = window.document.documentElement;
+      if (!body || !html) return;
 
-      let height = 0;
-      height = body.scrollHeight;
-
-      if (!Number.isFinite(height) || height <= 0) {
-        return;
-      }
+      // 取 body.scrollHeight 和 html.scrollHeight 的较大值（某些卡片内容在 html 上）
+      const height = Math.max(body.scrollHeight, html.scrollHeight);
+      if (!Number.isFinite(height) || height <= 0) return;
 
       frameElement.style.height = `${height}px`;
     } catch {
-      //
-    }
-  }
-  const throttledMeasureAndPost = _.throttle(measureAndPost, 500);
-
-  function postIframeHeight() {
-    if (scheduled) {
-      return;
-    }
-    scheduled = true;
-
-    if (typeof window.requestAnimationFrame === 'function') {
-      window.requestAnimationFrame(measureAndPost);
-    } else {
-      throttledMeasureAndPost();
+      // frameElement 不可用（跨域等情况）
     }
   }
 
-  function observeHeightChange() {
+  function startObserving() {
     const body = document.body;
-    if (!body) {
-      return;
-    }
+    if (!body) return;
 
-    const resize_observer = new ResizeObserver(entries => {
-      postIframeHeight();
-    });
-    resize_observer.observe(body);
+    // ResizeObserver：元素尺寸变化时触发
+    const ro = new ResizeObserver(() => measureAndApply());
+    ro.observe(body);
+    // 也 observe html（有些卡片在 html 上设 min-height）
+    ro.observe(document.documentElement);
+
+    // MutationObserver：DOM 子树变化时触发（卡片 JS 动态插入内容）
+    const mo = new MutationObserver(() => measureAndApply());
+    mo.observe(body, { childList: true, subtree: true, characterData: true });
+
+    // 初始测量 + 延迟重测（覆盖卡片 JS 异步渲染场景）
+    measureAndApply();
+    setTimeout(measureAndApply, 300);
+    setTimeout(measureAndApply, 1000);
+    setTimeout(measureAndApply, 3000);
   }
 
-  // Original used $(() => { ... }) for DOMContentLoaded.
-  // Ported to native addEventListener because the script iframe has no jQuery.
-  window.addEventListener('load', () => {
-    postIframeHeight();
-    observeHeightChange();
-  });
+  // load 事件触发后开始监听
+  if (document.readyState === 'complete') {
+    startObserving();
+  } else {
+    window.addEventListener('load', startObserving);
+  }
 })();

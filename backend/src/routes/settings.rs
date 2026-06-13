@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::error::AppError;
 use crate::routes::messages::AppState;
 use crate::runtime::llm_limiter::{
-    DEFAULT_LLM_CONCURRENCY_LIMIT, MIN_LLM_CONCURRENCY_LIMIT, normalize_limit,
+    DEFAULT_LLM_CONCURRENCY_LIMIT, normalize_limit,
 };
 
 #[derive(Debug, Serialize)]
@@ -70,6 +70,7 @@ pub async fn update_runtime_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::llm_limiter::MIN_LLM_CONCURRENCY_LIMIT;
     use sqlx::SqlitePool;
 
     async fn setup_pool() -> SqlitePool {

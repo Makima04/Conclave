@@ -1,5 +1,4 @@
 use crate::importer::types::*;
-use sha2::{Digest, Sha256};
 
 // ─── Public API ───
 
@@ -188,13 +187,6 @@ fn get_arr_str(obj: &serde_json::Value, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// Compute sha256 hex string.
-pub fn compute_hash(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("sha256:{:x}", hasher.finalize())
 }
 
 // ─── Tests ───

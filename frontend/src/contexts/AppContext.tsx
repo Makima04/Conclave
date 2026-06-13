@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import * as api from '../api/client';
 import type { ProviderConfig } from '../api/types';
 
@@ -46,7 +46,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function useAppContext() {
+function useAppContext() {
   const ctx = useContext(AppContext);
   if (!ctx) throw new Error('useAppContext must be used within AppProvider');
   return ctx;

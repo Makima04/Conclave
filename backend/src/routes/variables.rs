@@ -60,23 +60,6 @@ fn parse_path(path: &str) -> Vec<(String, Option<usize>)> {
         .collect()
 }
 
-/// Read the value at the given path from a JSON tree.
-///
-/// Returns `None` if any segment does not exist.
-fn get_by_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
-    let segments = parse_path(path);
-    let mut cursor = root;
-    for (key, index) in &segments {
-        if !key.is_empty() {
-            cursor = cursor.get(key)?;
-        }
-        if let Some(idx) = index {
-            cursor = cursor.get(*idx)?;
-        }
-    }
-    Some(cursor)
-}
-
 /// Ensure `cursor` is a JSON Object, converting it from Null / non-Object
 /// types when necessary.
 fn ensure_object(cursor: &mut Value, key: &str) {
@@ -288,28 +271,6 @@ pub async fn put_variables(
 }
 
 // ---------------------------------------------------------------------------
-// LLM tool helpers (for later ToolDefinition integration)
-// ---------------------------------------------------------------------------
-
-/// Read a single value from the session variables blob.
-///
-/// Intended for LLM tool integration; returns `None` when the path does not
-/// exist in the blob.
-pub fn llm_read_variable(variables: &Value, path: &str) -> Option<Value> {
-    get_by_path(variables, path).cloned()
-}
-
-/// Deep-set a single value in the variables blob and return the full updated
-/// blob.
-///
-/// Intended for LLM tool integration. This is a pure-in-memory operation; the
-/// caller is responsible for persisting the result.
-pub fn llm_write_variable(variables: &mut Value, path: &str, value: Value) -> Value {
-    set_by_path(variables, path, value);
-    variables.clone()
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -349,25 +310,6 @@ mod tests {
     }
 
     #[test]
-    fn get_by_path_reads_nested_key() {
-        let root = json!({ "a": { "b": { "c": 42 } } });
-        assert_eq!(get_by_path(&root, "a.b.c"), Some(&json!(42)));
-    }
-
-    #[test]
-    fn get_by_path_reads_array_element() {
-        let root = json!({ "items": [{"name": "A"}, {"name": "B"}] });
-        assert_eq!(get_by_path(&root, "items[1].name"), Some(&json!("B")));
-    }
-
-    #[test]
-    fn get_by_path_returns_none_for_missing() {
-        let root = json!({ "x": 1 });
-        assert_eq!(get_by_path(&root, "x.y"), None);
-        assert_eq!(get_by_path(&root, "a.b"), None);
-    }
-
-    #[test]
     fn set_by_path_creates_nested_objects() {
         let mut root = json!({});
         set_by_path(&mut root, "a.b.c", json!(42));
@@ -401,14 +343,5 @@ mod tests {
         // The path ". " splits to [""], which has an empty key and no index →
         // no segments are returned, so no mutation happens.
         assert_eq!(root["x"], json!(1));
-    }
-
-    #[test]
-    fn roundtrip_set_then_get() {
-        let mut root = json!({});
-        set_by_path(&mut root, "characters[0].hp", json!(100));
-        set_by_path(&mut root, "characters[1].hp", json!(80));
-        assert_eq!(get_by_path(&root, "characters[0].hp"), Some(&json!(100)));
-        assert_eq!(get_by_path(&root, "characters[1].hp"), Some(&json!(80)));
     }
 }

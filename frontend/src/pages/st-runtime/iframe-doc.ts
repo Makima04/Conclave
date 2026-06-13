@@ -11,7 +11,7 @@ import {
   parent_jquery_url,
 } from './iframe-scripts/script_url';
 
-// ── CDN library URLs (cdnjs, matching card-content.tsx conventions) ──
+// ── CDN library URLs (cdnjs) ──
 // JSR uses jsdelivr; we use cdnjs to avoid ad-blocker interference.
 // jQuery UI + touch-punch added (JSR has them, previous implementation omitted them).
 // Tailwind is CSS-only (JSR uses local JS, but message iframes only need the stylesheet).
@@ -182,10 +182,13 @@ ${processed}
 }
 
 // ── Script-resident iframe srcdoc (M3, reserved for M2) ──
-// Minimal shell: no CDN libs (jQuery/Vue/FontAwesome inherited from parent),
-// only parent_jquery.js (window.$ = window.parent.$) + predefine.js.
+// Minimal shell for script iframes (tavern_helper_scripts).
+// Matches JSR createSrcContent (src/panel/script/iframe.ts):
+//   third_party_script.html (Vue + Vue Router) → parent_jquery → predefine → <script type="module">
 
 export function createScriptSrcContent(bodyHtml: string): string {
+  // Strip markdown code fences if present (JSR: content.match(/^\s*```[^\n]*\n(.*)\n```\s*$/is))
+  const stripped = bodyHtml.replace(/^\s*```[^\n]*\n([\s\S]*)\n```\s*$/, '$1');
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -193,8 +196,15 @@ export function createScriptSrcContent(bodyHtml: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <base href="${window.location.origin}"/>
 <style>*,*::before,*::after{box-sizing:border-box;}html,body{margin:0;padding:0;overflow:hidden;}</style>
-<script src="${parent_jquery_url}"></script>
-<script src="${predefine_url}"></script>
-</head><body>${bodyHtml}</body>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vue/2.7.16/vue.min.js"><\/script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vue-router/3.6.5/vue-router.min.js"><\/script>
+<script src="${parent_jquery_url}"><\/script>
+<script src="${predefine_url}"><\/script>
+</head>
+<body>
+<script type="module">
+${stripped}
+<\/script>
+</body>
 </html>`;
 }

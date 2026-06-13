@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 // ─── Intermediate: unified external card ───
 
@@ -473,3 +474,10 @@ impl std::fmt::Display for ImportError {
 }
 
 impl std::error::Error for ImportError {}
+
+/// Compute sha256 hex string.
+pub fn compute_hash(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("sha256:{:x}", hasher.finalize())
+}

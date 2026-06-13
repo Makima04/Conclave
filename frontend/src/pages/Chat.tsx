@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as api from '../api/client';
-import { cleanCardDisplayText } from './card-content';
+import { cleanCardDisplayText } from './card-text-clean';
 import { MessageContent } from './components/MessageContent';
 import { StMessageIframe } from './st-runtime/StMessageIframe';
 import { createMessageSrcContent } from './st-runtime/iframe-doc';
@@ -11,7 +11,7 @@ import '../styles/chat.css';
 import { ToolRail } from './components/ToolRail';
 import { ToolDrawer } from './components/ToolDrawer';
 import { InputPanel } from './components/InputPanel';
-import type { InspectorTab } from './components/InspectorSidebar';
+import type { InspectorTab } from './components/inspector-types';
 import type { CharacterCard, Message, Session } from '../api/types';
 import { useChatSession } from './hooks/useChatSession';
 import { useStreamRecovery } from './hooks/useStreamRecovery';
@@ -23,7 +23,7 @@ import {
 import { closeDanglingBodyTag, ensureRegexStatusPlaceholder, hasStatusRenderer } from './st-status-ui';
 import { mergeVariableObjects, parseInitVariables } from './st-init-variables';
 
-// --- inline SandboxRuntime types (replacing deleted sandbox-runtime-types module) ---
+// --- SandboxRuntime types (inline) ---
 
 interface SandboxRuntimeMessage {
   id: string | number;
@@ -341,7 +341,7 @@ export default function Chat() {
     // Build script tags from tavern_helper scripts
     const scriptTags = runtimeAssets.tavern_helper_scripts
       .map((s: any) => {
-        const code = s.code || s.script || '';
+        const code = s.content || s.code || s.script || '';
         const isModule = typeof code === 'string' && /\bimport\b/.test(code.slice(0, 200));
         return isModule
           ? `<script type="module">${code}</script>`
@@ -967,9 +967,6 @@ export default function Chat() {
                     card={characterCard}
                     runtimeAssets={runtimeAssets}
                     variables={selectedOpeningVariables}
-                    runtime={openingPreviewRuntime}
-                    onSandboxAction={(event) => handleCardSandboxAction(event, 'opening-preview')}
-                    onMessagesChanged={handleMessagesChanged}
                     renderMode={renderMode}
                     userName={userPersona.name || '你'}
                     sessionId={sessionId}
@@ -982,9 +979,6 @@ export default function Chat() {
                     card={characterCard}
                     runtimeAssets={runtimeAssets}
                     variables={selectedOpeningVariables}
-                    runtime={openingPreviewRuntime}
-                    onSandboxAction={(event) => handleCardSandboxAction(event, 'opening-preview')}
-                    onMessagesChanged={handleMessagesChanged}
                     renderMode={renderMode}
                     userName={userPersona.name || '你'}
                     sessionId={sessionId}
@@ -1031,9 +1025,6 @@ export default function Chat() {
                             card={characterCard}
                             runtimeAssets={runtimeAssets}
                             variables={cardProjectionVariables}
-                            runtime={buildSandboxRuntime(msg)}
-                            onSandboxAction={(event) => handleCardSandboxAction(event, msg.id)}
-                            onMessagesChanged={handleMessagesChanged}
                             renderMode={renderMode}
                             userName={userPersona.name || '你'}
                             sessionId={sessionId}
@@ -1182,8 +1173,6 @@ export default function Chat() {
                   card={characterCard}
                   runtimeAssets={runtimeAssets}
                   variables={cardProjectionVariables}
-                  runtime={buildStreamingSandboxRuntime(streamText)}
-                  onSandboxAction={(event) => handleCardSandboxAction(event, 'streaming')}
                   renderMode="text"
                   userName={userPersona.name || '你'}
                   sessionId={sessionId}

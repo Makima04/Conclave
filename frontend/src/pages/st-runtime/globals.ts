@@ -37,6 +37,8 @@ declare global {
     };
     z?: unknown;
     Mvu?: unknown;
+    getAllVariables?: () => Record<string, any>;
+    getCurrentMessageId?: () => number;
   }
 }
 
@@ -62,7 +64,7 @@ export function installStGlobals(store: StRuntimeStore): TavernHelperObject {
   // toastr — notification facade
   (window as any).toastr = toastrFacade;
 
-  // z (zod) — loaded separately via zod-v3-umd.js <script> tag in card-content.tsx headBridge.
+  // z (zod) — not yet loaded; MagVarUpdate CDN bundle treats `z` as webpack external.
   // window.z is expected to already exist from that script. We do NOT override it here.
 
   // TavernHelper — the full API object
@@ -82,6 +84,13 @@ export function installStGlobals(store: StRuntimeStore): TavernHelperObject {
     }),
   };
 
+  // Expose key helpers on window for card scripts (statusbar bridgeGlobals needs these)
+  (window as any).getAllVariables = tavernHelper._bind._getAllVariables.bind(window);
+  (window as any).getCurrentMessageId = () => {
+    const chat = store.chat;
+    return chat.length > 0 ? chat[chat.length - 1].message_id : 0;
+  };
+
   return tavernHelper;
 }
 
@@ -91,5 +100,7 @@ export function installStGlobals(store: StRuntimeStore): TavernHelperObject {
 export function uninstallStGlobals(): void {
   delete (window as any).TavernHelper;
   delete (window as any).SillyTavern;
+  delete (window as any).getAllVariables;
+  delete (window as any).getCurrentMessageId;
   // Note: _, $, YAML, showdown stay — they're shared libs, not session-scoped
 }

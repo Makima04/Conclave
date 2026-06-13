@@ -79,15 +79,6 @@ export function getOpeningHtmlAppHostContent(card: CharacterCard | null, runtime
   return typeof html === 'string' && html.trim() ? html : null;
 }
 
-export function prepareOpeningHtmlAppContent(card: CharacterCard | null, content: string, runtimeAssets?: SessionRuntimeAssets | null): string {
-  const trimmed = content.trim();
-  if (!trimmed || !hasOpeningHtmlApp(card, runtimeAssets) || contentHasOpeningHtmlAppTrigger(card, trimmed, runtimeAssets)) {
-    return content;
-  }
-  const trigger = openingHtmlAppTrigger(card, runtimeAssets);
-  return trigger ? `${trigger}\n${trimmed}` : content;
-}
-
 export function stripKnownOpeningHtmlTriggers(content: string): string {
   return content.replace(HTML_APP_TRIGGER_GLOBAL_RE, '\n');
 }

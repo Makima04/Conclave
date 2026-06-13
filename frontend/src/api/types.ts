@@ -290,8 +290,6 @@ export interface PresetModule {
 
 // ─── Card Import Normalization Types ───
 
-export type SourceFormat = 'png_ccv3' | 'png_chara' | 'json_v2' | 'json_v3';
-
 export type DiagnosticLevel = 'info' | 'warn' | 'error';
 
 export type ImportStatus = 'success' | 'warning' | 'fallback' | 'blocked';
@@ -308,16 +306,6 @@ export type ActionSource = 'html' | 'js' | 'regex';
 
 export type VariableTypeEnum = 'string' | 'number' | 'boolean' | 'object' | 'array';
 
-export type ApiClassification = 'platform_native' | 'browser_shim' | 'unsupported' | 'dangerous';
-
-export type ResourceKind = 'image' | 'audio' | 'video' | 'css_url' | 'js_static' | 'font';
-
-export interface SourceLocation {
-  file: string;
-  offset: number;
-  excerpt: string;
-}
-
 export interface DiagnosticSource {
   kind: string;
   script_name?: string;
@@ -325,12 +313,6 @@ export interface DiagnosticSource {
   offset?: number;
   selector?: string;
   excerpt?: string;
-}
-
-export interface RegexDiagnostic {
-  level: DiagnosticLevel;
-  message: string;
-  script_index?: number;
 }
 
 export interface StageResult {
@@ -564,34 +546,4 @@ export interface ImportReport {
   rule_traces: RuleTrace[];
   diagnostics: ImportDiagnostic[];
   fallback?: string;
-}
-
-export interface ImportDraftResponse {
-  import_id: string;
-  package_draft: ConclaveCardPackage;
-  import_report: ImportReport;
-}
-
-export interface ConfirmImportRequest {
-  degrade_to_schema?: boolean;
-  user_notes?: string;
-  world_book_id?: string;
-}
-
-export interface LlmAssistRequest {
-  type: 'explain_actions' | 'label_variables' | 'suggest_action_kind' | 'summarize_unsupported';
-  params?: Record<string, unknown>;
-}
-
-export interface LlmAssistResponse {
-  type: string;
-  result: unknown;
-}
-
-export interface RawPreviewResponse {
-  html: string;
-}
-
-export interface FailureSampleRequest {
-  user_notes?: string;
 }

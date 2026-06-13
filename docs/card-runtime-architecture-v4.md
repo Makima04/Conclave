@@ -397,3 +397,70 @@ ${content}   <!-- 卡片 HTML，messageFormatting 之后的产物 -->
 | audio / preset / character CRUD / import_raw / extension / inject API | stub | 按 fixtures 增量 |
 | 流式期间 iframe 渲染（JSR 的 during_streaming 模式） | v4 流式期间只渲染文本，turn 完成后建 iframe | 后续优化 |
 | regex 脚本 GLOBAL/PRESET 类型 | 仅卡片 + runtime assets 的 scoped 脚本 | 平台暂无全局 regex 管理界面 |
+
+## 12. 已修复缺陷记录
+
+### 12.1 开场白切换后浮动状态栏数值不更新
+
+**现象**：选择不同开场白后，卡片脚本创建的浮动状态栏显示空值或旧值。
+
+**根因**：系统存在两套独立的变量存储，互不通信。
+
+| 系统 | 存储位置 | 前端读取点 | 用途 |
+|------|---------|-----------|------|
+| System A | `state_snapshots` 表 | `sessionState?.variables` → `cardProjectionVariables` | 后端 runtime 状态投影 |
+| System B | `session_variables` 表 | `store._chatVariables` → `store.getAllVariables()` | ST 运行时 store，卡片脚本通过 `TavernHelper.getVariables()` 同步读取 |
+
+开场白切换流程 (`applyOpeningContent`)：
+1. 发送原始内容（含 `<UpdateVariable>` 块）到 `POST /api/sessions/{id}/opening`
+2. **后端已正确处理**：`variable_update::extract()` 解析 `<UpdateVariable>` → `persist_extraction_tx` 写入 state snapshot → upsert 到 `session_variables` 表
+3. 前端 `loadSessionState()` 刷新 System A ✅
+4. **前端 store (System B) 从未刷新** ❌ → 浮动状态栏读到旧值
+
+**修复**：
+- `store.ts`：新增 `reloadChatVariables()` — 轻量级只刷新 chat variables，不重载消息
+- `useMessageStream.ts`：`applyOpeningContent` 中 `loadSessionState()` 后追加 `onOpeningApplied?.()` 回调
+- `Chat.tsx`：传入 `onOpeningApplied: () => store.reloadChatVariables()`
+
+**注意事项**：
+- `store.load()` 是全量重载（消息+变量+regex脚本），开销大；`reloadChatVariables()` 只重查 `session_variables`，适合频繁调用
+- `<UpdateVariable>` 的解析始终由后端完成（`variable_update.rs:extract()`），前端不做变量提取——避免双写冲突
+- 未来如果需要前端即时读取新开场白的变量（不等后端 round-trip），可以考虑在 `applyOpeningContent` 中用 `st-init-variables.ts` 的 `parseInitVariables()` 做乐观更新，但目前不需要
+
+### 12.2 变量 flush 400 错误
+
+**现象**：`PUT /api/sessions/{id}/variables` 返回 400，控制台报 `Either 'path' + 'value' or a non-empty 'changes' object is required`。
+
+**根因**：前端发送格式与后端期望不匹配。
+
+```
+前端发送: { "variables": { "key": "val" }, "merge": true }
+后端期望: { "changes": { "key": "val" } }  或  { "path": "...", "value": ... }
+```
+
+后端 `PutVariablesBody` 结构体只有 `path`/`value`/`changes` 三个字段，`variables` 和 `merge` 被 serde 忽略。
+
+**修复**：`client.ts` 的 `updateSessionVariables` 函数改为发送 `{ changes: variables }`。`merge` 参数已移除——后端 `PUT` handler 始终做 deep merge（`set_by_path` 逐条写入），无需前端指定。
+
+**注意事项**：
+- `store.ts` 的 `flush()` 之前用 `api.updateSessionVariables(sid, _chatVariables, true)` 调用，第三个参数 `true`（merge）现已无意义——已删除
+- 如果未来需要"覆盖而非合并"语义，需要后端新增 `PUT` 的 `overwrite` 模式
+
+### 12.3 "灵"浮动按钮面板空白
+
+**现象**：苍玄界卡片的"灵"按钮点击后打开的小界面无任何内容。控制台报 `ReferenceError: z is not defined` 和 `ReferenceError: Vue is not defined`。
+
+**根因**：卡片 JS bundle（MagVarUpdate CDN）将 `z`（Zod）和 `Vue` 声明为 webpack externals，期望它们在全局作用域已存在。清理旧代码时删除了 `zod-v3-umd.js` 和 `card-content.tsx` 的 headBridge 注入逻辑，新的 `createScriptSrcContent` 没有加载 Zod。
+
+**修复**：`iframe-doc.ts` 的 `createScriptSrcContent` 中：
+1. 添加 Zod CDN：`<script src="https://cdn.jsdelivr.net/npm/zod@3.23.8/lib/index.umd.js">`
+2. 添加 bridge shim：`<script>window.z = window.Zod || window.z;</script>`（Zod UMD 设置 `window.Zod` 大写，webpack external 解析 `window.z` 小写）
+3. 修正 vue-router CDN 路径：`vue-router.min.js` → `vue-router.global.prod.min.js`（cdnjs 实际路径）
+
+加载顺序：Vue → Vue Router → Zod → z bridge shim → parent_jquery → predefine（与 JSR `third_party_script.html` 一致）
+
+**注意事项**：
+- cdnjs 已下架 zod 包（返回 404），改用 jsdelivr
+- `globals.ts` 不在宿主侧设置 `window.z`——zod 由每个 iframe 自行通过 CDN 加载，避免将 ~170KB 的 zod 打入主 bundle
+- Vue 2 UMD 在 classic `<script>` 中执行时设置 `window.Vue`，deferred `<script type="module">` 执行时已可访问——理论上 CDN 加载即可工作，无需额外 shim
+- 消息 iframe 的 `ST_CDN_LIBS.vue` 指向 `vue.runtime.global.prod.min.js`，cdnjs 返回 404——这是独立的已知问题（影响消息 iframe，不影响脚本 iframe），待后续修复

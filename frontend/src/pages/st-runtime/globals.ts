@@ -64,8 +64,9 @@ export function installStGlobals(store: StRuntimeStore): TavernHelperObject {
   // toastr — notification facade
   (window as any).toastr = toastrFacade;
 
-  // z (zod) — not yet loaded; MagVarUpdate CDN bundle treats `z` as webpack external.
-  // window.z is expected to already exist from that script. We do NOT override it here.
+  // z (zod) — loaded via CDN in createScriptSrcContent (iframe-doc.ts) as window.Zod,
+  // bridged to window.z by an inline shim. We do NOT override it here so that
+  // iframes that load their own Zod (via CDN) get their own copy.
 
   // TavernHelper — the full API object
   const tavernHelper = getTavernHelper(store);

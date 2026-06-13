@@ -8,7 +8,7 @@ import type { SandboxCardAction } from '../card-schema-types';
 import type { RenderMode } from '../../api/types';
 import type { useStreamRecovery } from './useStreamRecovery';
 
-import { cleanCardDisplayText } from '../card-content';
+import { cleanCardDisplayText } from '../card-text-clean';
 import type { SessionRuntimeAssets } from '../../api/types';
 import { stripKnownOpeningHtmlTriggers } from '../st-opening-ui';
 import { ensureStatusPlaceholder } from '../st-status-ui';
@@ -50,6 +50,7 @@ export function useMessageStream({
   loadMessages,
   loadSessionState,
   // from useStreamRecovery
+  onOpeningApplied,
   recovering,
   failedContent,
   setFailedContent,
@@ -83,6 +84,7 @@ export function useMessageStream({
   saveConfig: () => Promise<void>;
   loadMessages: () => Promise<Message[] | undefined>;
   loadSessionState: () => Promise<void>;
+  onOpeningApplied?: () => Promise<void>;
   recovering: boolean;
   failedContent: string | null;
   setFailedContent: (value: string | null) => void;
@@ -460,6 +462,7 @@ export function useMessageStream({
         });
       });
       await loadSessionState();
+      await onOpeningApplied?.();
       setStreamError(null);
     } catch (err) {
       setStreamError(err instanceof Error ? err.message : errorMessage);
@@ -613,7 +616,7 @@ export function useMessageStream({
       }
       if (!sessionId) return;
       try {
-        await api.updateSessionVariables(sessionId, variables, options.merge === true);
+        await api.updateSessionVariables(sessionId, variables);
         await loadSessionState();
       } catch (err) {
         console.error('Failed to save chat variables:', err);

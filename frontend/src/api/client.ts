@@ -152,10 +152,10 @@ export async function getSessionState(sessionId: string): Promise<any> {
   return request(`/sessions/${sessionId}/state`);
 }
 
-export async function updateSessionVariables(sessionId: string, variables: Record<string, unknown>, merge = false): Promise<{ variables: Record<string, unknown> }> {
+export async function updateSessionVariables(sessionId: string, variables: Record<string, unknown>): Promise<{ variables: Record<string, unknown> }> {
   return request(`/sessions/${sessionId}/variables`, {
     method: 'PUT',
-    body: JSON.stringify({ variables, merge }),
+    body: JSON.stringify({ changes: variables }),
   });
 }
 

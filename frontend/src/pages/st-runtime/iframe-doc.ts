@@ -197,7 +197,9 @@ export function createScriptSrcContent(bodyHtml: string): string {
 <base href="${window.location.origin}"/>
 <style>*,*::before,*::after{box-sizing:border-box;}html,body{margin:0;padding:0;overflow:hidden;}</style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/2.7.16/vue.min.js"><\/script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/vue-router/3.6.5/vue-router.min.js"><\/script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vue-router/3.6.5/vue-router.global.prod.min.js"><\/script>
+<script src="https://cdn.jsdelivr.net/npm/zod@3.23.8/lib/index.umd.js"><\/script>
+<script>window.z = window.Zod || window.z;<\/script>
 <script src="${parent_jquery_url}"><\/script>
 <script src="${predefine_url}"><\/script>
 </head>

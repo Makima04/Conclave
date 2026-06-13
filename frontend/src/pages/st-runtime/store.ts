@@ -75,6 +75,12 @@ export interface StRuntimeStore extends StRuntimeStoreState {
   // --- Load ---
   load(sessionId: string, card?: CharacterCard | null, runtimeAssets?: SessionRuntimeAssets | null): Promise<void>;
 
+  /** Lightweight load without API calls — for /lab dev page. */
+  loadLocal(sessionId: string, card?: CharacterCard | null, runtimeAssets?: SessionRuntimeAssets | null): void;
+
+  /** Re-fetch chat variables from backend (lighter than full load). */
+  reloadChatVariables(): Promise<void>;
+
   // --- Synchronous reads ---
   getMessages(range?: string): StChatMessage[];
   getVariables(scope: StVariableScope, opts?: StGetVariablesOpts): Record<string, any>;
@@ -294,10 +300,10 @@ export function createStRuntimeStore(): StRuntimeStore {
     if (_chatVarsDirty) {
       _chatVarsDirty = false;
       promises.push(
-        api.updateSessionVariables(sid, _chatVariables, true)
+        api.updateSessionVariables(sid, _chatVariables)
           .catch((err) => {
             console.error('[StRuntimeStore] chat variables flush failed, retrying:', err);
-            return api.updateSessionVariables(sid, _chatVariables, true)
+            return api.updateSessionVariables(sid, _chatVariables)
               .catch((retryErr) => {
                 console.error('[StRuntimeStore] chat variables flush retry failed:', retryErr);
               });
@@ -388,6 +394,33 @@ export function createStRuntimeStore(): StRuntimeStore {
       _userName = ''; // Will be set by caller if needed
 
       bump();
+    },
+
+    loadLocal(sessionId, card, runtimeAssets) {
+      if (_disposed) return;
+      _sessionId = sessionId;
+      _character = card ?? null;
+      _chat = [];
+      _chatVariables = {};
+      _regexScripts = getRegexScripts(card ?? null, runtimeAssets ?? undefined);
+      _userName = '';
+      bump();
+    },
+
+    // -------------------------------------------------------------------
+    // reloadChatVariables — lightweight refresh of chat variables only
+    // (used after opening swipe to pick up backend-persisted <UpdateVariable> changes)
+    // -------------------------------------------------------------------
+    async reloadChatVariables() {
+      const sid = _sessionId;
+      if (!sid || _disposed) return;
+      try {
+        const result = await api.readSessionVariables(sid, 'chat', []);
+        _chatVariables = result.values ?? {};
+        bump();
+      } catch (err) {
+        console.error('[StRuntimeStore] reloadChatVariables failed:', err);
+      }
     },
 
     // -------------------------------------------------------------------

@@ -115,12 +115,27 @@ export default function Chat() {
     setStreamText, setStreamError, setAgentStatuses,
   } = recovery;
 
+  // --- st-runtime store (v4 same-origin runtime) ---
+  const storeRef = useRef<ReturnType<typeof createStRuntimeStore> | null>(null);
+  if (!storeRef.current) storeRef.current = createStRuntimeStore();
+  const store = storeRef.current;
+
+  // Install ST globals when session loads (TavernHelper, SillyTavern, etc.)
+  useEffect(() => {
+    if (!sessionId || !characterCard) return;
+    store.load(sessionId, characterCard, runtimeAssets);
+    installStGlobals(store);
+    return () => { uninstallStGlobals(); store.dispose(); };
+  }, [sessionId, characterCard?.id]);
+
   // --- hook: message stream ---
   const stream = useMessageStream({
     sessionId, messages, setMessages, config, configDirty, characterCard,
     runtimeAssets,
     selectedGreetingIndex, setSelectedGreetingIndex, saveConfig, loadMessages,
-    loadSessionState, recovering, failedContent, setFailedContent, memoryPending,
+    loadSessionState,
+    onOpeningApplied: () => store.reloadChatVariables(),
+    recovering, failedContent, setFailedContent, memoryPending,
     setMemoryBusy, agentStatuses, setAgentStatuses,
     streamText, setStreamText, streamError, setStreamError,
     setPending, clearPending, startRecovery, stopRecovery, recoveringRef,
@@ -144,19 +159,6 @@ export default function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const emptyVariables = React.useMemo(() => ({}), []);
   const [peerSharedSaves, setPeerSharedSaves] = useState<SandboxSharedSave[]>([]);
-
-  // --- st-runtime store (v4 same-origin runtime) ---
-  const storeRef = useRef<ReturnType<typeof createStRuntimeStore> | null>(null);
-  if (!storeRef.current) storeRef.current = createStRuntimeStore();
-  const store = storeRef.current;
-
-  // Install ST globals when session loads (TavernHelper, SillyTavern, etc.)
-  useEffect(() => {
-    if (!sessionId || !characterCard) return;
-    store.load(sessionId, characterCard, runtimeAssets);
-    installStGlobals(store);
-    return () => { uninstallStGlobals(); store.dispose(); };
-  }, [sessionId, characterCard?.id]);
 
   // --- derived ---
   const cardHasStatusRenderer = React.useMemo(

@@ -54,8 +54,12 @@ if [ "$MODE" = "--prod" ]; then
 fi
 
 # ── 开发模式（默认） ──
-echo "Starting backend (dev)..."
-cd "$BACKEND" && cargo run &
+# 先编译后直接运行二进制（避免 cargo run 派生子进程导致 Ctrl+C 杀不干净）
+echo "Building backend..."
+cd "$BACKEND" && cargo build 2>&1 | tail -3
+
+echo "Starting backend..."
+cd "$BACKEND" && ./target/debug/conclave-backend &
 BACKEND_PID=$!
 
 echo "Starting frontend (dev)..."

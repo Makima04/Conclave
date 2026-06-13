@@ -583,8 +583,6 @@
   width: 100%;
   max-width: min(100%, 920px);
   min-width: 0;
-  min-height: 360px;
-  max-height: min(72vh, 860px);
   margin: 0 auto;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -599,7 +597,6 @@
   display: block;
   width: 100%;
   max-width: min(100%, 560px);
-  min-height: 420px;
   margin: 12px auto;
   border: 0;
   border-radius: 8px;
@@ -626,7 +623,6 @@
   flex: 1;
   width: 100%;
   min-height: 0;
-  max-height: var(--xrp-frame-max-height, min(72vh, 860px));
   display: flex;
   align-items: stretch;
   justify-content: center;
@@ -638,8 +634,6 @@
 .persistent-card-runtime-frame {
   display: block;
   width: 100%;
-  min-height: 420px;
-  max-height: var(--xrp-frame-max-height, min(72vh, 860px));
   border: 0;
   background: transparent;
   overflow: hidden;
@@ -656,7 +650,6 @@
   display: block;
   width: 100%;
   max-width: min(100%, 920px);
-  max-height: var(--xrp-frame-max-height, none);
   margin: 0 auto 18px;
   min-width: 0;
   overflow: hidden;
@@ -665,8 +658,6 @@
 .message-html-app-runtime-frame {
   display: block;
   width: 100%;
-  min-height: 360px;
-  max-height: var(--xrp-frame-max-height, min(72vh, 860px));
   border: 0;
   background: transparent;
   overflow: hidden;

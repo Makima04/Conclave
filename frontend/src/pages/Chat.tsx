@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as api from '../api/client';
-import {
-  cleanCardDisplayText,
-  renderCardIframeHtml,
-} from './card-content';
+import { cleanCardDisplayText } from './card-content';
 import { MessageContent } from './components/MessageContent';
-import { cleanupIframeParentRuntimeUi, IframeHtmlRuntimeHost } from './components/IframeHtmlRuntimeHost';
+import { StMessageIframe } from './st-runtime/StMessageIframe';
+import { createMessageSrcContent } from './st-runtime/iframe-doc';
+import { createStRuntimeStore } from './st-runtime/store';
+import { installStGlobals, uninstallStGlobals } from './st-runtime/globals';
 import '../styles/chat.css';
 import { ToolRail } from './components/ToolRail';
 import { ToolDrawer } from './components/ToolDrawer';
@@ -144,6 +144,19 @@ export default function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const emptyVariables = React.useMemo(() => ({}), []);
   const [peerSharedSaves, setPeerSharedSaves] = useState<SandboxSharedSave[]>([]);
+
+  // --- st-runtime store (v4 same-origin runtime) ---
+  const storeRef = useRef<ReturnType<typeof createStRuntimeStore> | null>(null);
+  if (!storeRef.current) storeRef.current = createStRuntimeStore();
+  const store = storeRef.current;
+
+  // Install ST globals when session loads (TavernHelper, SillyTavern, etc.)
+  useEffect(() => {
+    if (!sessionId || !characterCard) return;
+    store.load(sessionId, characterCard, runtimeAssets);
+    installStGlobals(store);
+    return () => { uninstallStGlobals(); store.dispose(); };
+  }, [sessionId, characterCard?.id]);
 
   // --- derived ---
   const cardHasStatusRenderer = React.useMemo(
@@ -320,22 +333,23 @@ export default function Chat() {
       submission: sandboxSubmissionRuntime,
     });
   }, [sandboxRuntimeMessages, runtimeSharedSaves, sessionId, cardVariableContract, cardPlatformState, cardWritableState, sandboxSubmissionRuntime]);
-  const runtimeAssetHostDocument = React.useMemo(() => {
+  // Runtime asset host: hidden iframe for tavern_helper scripts (M3 will replace with StScriptIframeHost)
+  const runtimeAssetHostSrcdoc = React.useMemo(() => {
     if (!characterCard || visibleMessages.length === 0 || runtimeAssets.tavern_helper_scripts.length === 0) {
       return null;
     }
-    return renderCardIframeHtml(
-      '',
-      cardProjectionVariables,
-      userPersona.name || '你',
-      characterCard.name || '{{char}}',
-      sessionId,
-      activeWorldBook?.id || characterCard.world_book_id,
-      characterCard,
-      null,
-      runtimeAssets,
-    );
-  }, [activeWorldBook?.id, cardProjectionVariables, characterCard, runtimeAssets, sessionId, userPersona.name, visibleMessages.length]);
+    // Build script tags from tavern_helper scripts
+    const scriptTags = runtimeAssets.tavern_helper_scripts
+      .map((s: any) => {
+        const code = s.code || s.script || '';
+        const isModule = typeof code === 'string' && /\bimport\b/.test(code.slice(0, 200));
+        return isModule
+          ? `<script type="module">${code}</script>`
+          : `<script defer>${code}</script>`;
+      })
+      .join('\n');
+    return createMessageSrcContent(scriptTags || '<!-- no scripts -->');
+  }, [characterCard, runtimeAssets, visibleMessages.length]);
   const runtimeAssetHostKey = React.useMemo(
     () => simpleHash(JSON.stringify({
       cardId: characterCard?.id || null,
@@ -350,8 +364,12 @@ export default function Chat() {
     [openingPreviewText, runtimeSharedSaves, selectedOpeningVariables, openingGreetingVariables, cardPlatformState, cardWritableState, characterCard?.name, sandboxSubmissionRuntime, sessionId, cardVariableContract, selectedGreetingIndex],
   );
 
+  // Cleanup floating UI on session/card change (M3 will move to StScriptIframeHost)
+  const KNOWN_PARENT_UI_SELECTORS = ['#cx-floating-status-root', '#cx-floating-status-style', '[id^="cx-floating-status-"]'];
   React.useEffect(() => () => {
-    cleanupIframeParentRuntimeUi();
+    for (const sel of KNOWN_PARENT_UI_SELECTORS) {
+      document.querySelectorAll(sel).forEach(el => el.remove());
+    }
   }, [sessionId, characterCard?.id]);
   // --- local helpers ---
   const handleRailClick = React.useCallback((tab: InspectorTab) => {
@@ -919,19 +937,15 @@ export default function Chat() {
         </div>
 
         {/* Messages list */}
-        {runtimeAssetHostDocument && (
-          <IframeHtmlRuntimeHost
+        {/* Runtime asset host: hidden iframe for tavern_helper scripts (M3 → StScriptIframeHost) */}
+        {runtimeAssetHostSrcdoc && (
+          <StMessageIframe
             key={`runtime-assets-${runtimeAssetHostKey}`}
+            srcdoc={runtimeAssetHostSrcdoc}
+            iframeName="TH-runtime-asset-host"
             className="card-runtime-assets-host"
             ariaHidden
             tabIndex={-1}
-            documentHtml={runtimeAssetHostDocument}
-            variables={cardProjectionVariables}
-            runtime={runtimeAssetHostRuntime}
-            sessionId={sessionId}
-            worldBookId={activeWorldBook?.id || characterCard?.world_book_id}
-            onAction={(event) => handleCardSandboxAction(event, 'card-runtime')}
-            onMessagesChanged={handleMessagesChanged}
           />
         )}
         <div className="messages">

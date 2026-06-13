@@ -10,8 +10,9 @@ import type { CharacterCard, SessionRuntimeAssets } from '../../api/types';
 import type { SandboxCardAction } from '../card-schema-types';
 import { CodeBlock } from './CodeBlock';
 import { CustomStatusRenderer } from './CustomStatusRenderer';
-import { IframeHtmlRuntimeHost } from './IframeHtmlRuntimeHost';
-import { cleanCardDisplayText, renderCardIframeHtml } from '../card-content';
+import { StMessageIframe } from '../st-runtime/StMessageIframe';
+import { createMessageSrcContent } from '../st-runtime/iframe-doc';
+import { cleanCardDisplayText } from '../card-content';
 import { buildStatusSchema } from '../card-schema-builders';
 import { renderMessageHtml } from '../message-html';
 
@@ -121,27 +122,13 @@ export const MessageContent = React.memo(function MessageContent({
   const schema = buildStatusSchema(card);
 
   function renderIframeOutput(html: string, key?: React.Key): React.ReactNode {
-    const iframeHtml = renderCardIframeHtml(
-      html,
-      (variables as Record<string, unknown>) || {},
-      userName,
-      charName,
-      sessionId,
-      worldBookId,
-      card,
-      runtime,
-      runtimeAssets,
-    );
+    const srcdoc = createMessageSrcContent(html);
+    const iframeName = `TH-message-0-0`;
     return (
-      <IframeHtmlRuntimeHost
-        key={key ?? simpleHash(iframeHtml)}
-        documentHtml={iframeHtml}
-        variables={(variables as Record<string, unknown>) || {}}
-        runtime={runtime}
-        sessionId={sessionId}
-        worldBookId={worldBookId}
-        onAction={onSandboxAction}
-        onMessagesChanged={onMessagesChanged}
+      <StMessageIframe
+        key={key ?? simpleHash(srcdoc)}
+        srcdoc={srcdoc}
+        iframeName={iframeName}
       />
     );
   }

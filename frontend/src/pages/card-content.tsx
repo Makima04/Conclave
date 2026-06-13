@@ -7,11 +7,12 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { CharacterCard, SessionRuntimeAssets } from '../api/types';
 import { CodeBlock } from './components/CodeBlock';
-import { IframeHtmlRuntimeHost } from './components/IframeHtmlRuntimeHost';
+import { StMessageIframe } from './st-runtime/StMessageIframe';
+import { createMessageSrcContent } from './st-runtime/iframe-doc';
 import type { RegexScript } from './st-regex-executor';
 import { getRegexedString, regex_placement } from './st-rendering-engine';
 import { processMacros, createMacroContext } from './macro-engine';
-import { buildIframeBridgeScript } from './iframe-bridge';
+import { buildStatusSchema } from './card-schema-builders';
 
 // ── ST-standard library versions (mirrors JS-Slash-Runner injection) ──
 
@@ -602,59 +603,21 @@ export function renderCardFormattedContent(
       const hasScript = /<script\b/i.test(trimmedContent);
 
       if (isFullHtmlDoc || hasScript) {
-        // Full HTML documents and fragments with scripts need iframe
-        // for script execution and style/css isolation
+        // Full HTML documents and fragments with scripts → same-origin iframe
         const macroCtx = createMacroContext({
           variables: {} as Record<string, unknown>,
           userName,
           charName,
         });
         const processed = processMacros(trimmedContent, macroCtx);
-        const bridgeScript = buildIframeBridgeScript(sessionId, worldBookId);
-
-        const iframeSrcDoc = (() => {
-          const rewritten = rewriteCdnUrls(processed);
-          if (isFullHtmlDoc) {
-            // Already a complete document — inject ST libs + bridge into existing DOM.
-            // CSS into <head>, JS before </body> (or at document end if no </body>).
-            const libCss = `<link rel="stylesheet" href="${ST_CDN_LIBS.fontAwesomeCss}">
-<link rel="stylesheet" href="${ST_CDN_LIBS.tailwindCss}">`;
-            const runtimeBootstrap = `<script>window.__XRP_INITIAL_RUNTIME=null;</script>`;
-            const headJs = `${runtimeBootstrap}<script>${buildHeadBridgeScript()}</script>`;
-            const libJs = `<script src="${ST_CDN_LIBS.jquery}"></script>
-<script src="${ST_CDN_LIBS.vue}"></script>
-<script>${VH_REPLACEMENT_SCRIPT}</script>
-<script>${bridgeScript}</script>`;
-
-            let injected = replaceViewportUnits(rewritten);
-            // headBridge must be the FIRST script in <head> — inject right after <head>
-            if (/<head[^>]*>/i.test(injected)) {
-              injected = injected.replace(/(<head[^>]*>)/i, `$1\n${headJs}`);
-            }
-            if (/<\/head>/i.test(injected)) {
-              injected = injected.replace(/<\/head>/i, `${libCss}</head>`);
-            }
-            // Inject JS before </body> or append at end
-            if (/<\/body>/i.test(injected)) {
-              injected = injected.replace(/<\/body>/i, `${libJs}</body>`);
-            } else {
-              injected += libJs;
-            }
-            return injected;
-          }
-          // Fragment with scripts — wrap in a standard document with ST libs
-          return buildIframeDocument(rewritten, bridgeScript, { card, runtime });
-        })();
+        const srcdoc = createMessageSrcContent(processed);
 
         return (
-          <IframeHtmlRuntimeHost
+          <StMessageIframe
             key={`html-iframe-${index}`}
-            documentHtml={iframeSrcDoc}
+            srcdoc={srcdoc}
+            iframeName={`TH-message-0-${index}`}
             className="card-regex-html"
-            runtime={runtime || undefined}
-            sessionId={sessionId}
-            worldBookId={worldBookId}
-            onMessagesChanged={onMessagesChanged}
           />
         );
       }
@@ -688,12 +651,5 @@ export function renderCardIframeHtml(
 ): string {
   const macroContext = createMacroContext({ variables, userName, charName });
   const processed = processMacros(html, macroContext);
-  const rewritten = rewriteCdnUrls(processed);
-  const bridgeScript = buildIframeBridgeScript(sessionId, worldBookId);
-
-  if (/^<!DOCTYPE\s+html\b|^<html\b/i.test(rewritten.trim())) {
-    return injectBridgeIntoIframeDocument(rewritten, bridgeScript, { card, runtimeAssets });
-  }
-
-  return buildIframeDocument(rewritten, bridgeScript, { card, runtime, runtimeAssets });
+  return createMessageSrcContent(processed);
 }

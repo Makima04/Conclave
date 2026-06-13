@@ -304,7 +304,7 @@ export default function CardRenderLab() {
             <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Opening Preview（主开场白）</div>
             <div className="message assistant opening-preview" style={{ background: '#1a1a1a', borderRadius: 8, padding: 16 }}>
               <div className="message-role" style={{ fontWeight: 600, marginBottom: 8, color: '#ddd' }}>{cardName}</div>
-              <div className="message-content">
+              <div className="message-content" style={{ minHeight: 200, overflow: 'auto' }}>
                 <MessageContent
                   content={openingContent}
                   card={characterCard}
@@ -327,7 +327,7 @@ export default function CardRenderLab() {
             </div>
             <div className="message assistant" style={{ background: '#1a1a1a', borderRadius: 8, padding: 16 }}>
               <div className="message-role" style={{ fontWeight: 600, marginBottom: 8, color: '#ddd' }}>{cardName}</div>
-              <div className="message-content">
+              <div className="message-content" style={{ minHeight: 200, overflow: 'auto' }}>
                 <MessageContent
                   content={greeting}
                   card={characterCard}

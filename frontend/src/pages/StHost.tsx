@@ -94,8 +94,8 @@ export default function StHost() {
   const showOpeningPreview = Boolean(characterCard && !hasOpeningMessage && !hasStarted && openingContent);
 
   const refreshRuntimeStore = useCallback(async (
-    card = characterCard,
-    assets = runtimeAssets,
+    card: CharacterCard | null,
+    assets: SessionRuntimeAssets,
   ) => {
     if (!sessionId || !card) {
       uninstallStGlobals();
@@ -106,7 +106,7 @@ export default function StHost() {
     await storeRef.current.load(sessionId, card, assets);
     installStGlobals(storeRef.current);
     setRuntimeReady(true);
-  }, [characterCard, runtimeAssets, sessionId]);
+  }, [sessionId]);
 
   const loadAll = useCallback(async (showSpinner = false) => {
     if (!sessionId) return;
@@ -187,8 +187,8 @@ export default function StHost() {
 
   useEffect(() => {
     if (!runtimeReady || !characterCard) return;
-    void refreshRuntimeStore();
-  }, [messageFingerprint(sortedMessages), runtimeReady, characterCard?.id]);
+    void refreshRuntimeStore(characterCard, runtimeAssets);
+  }, [messageFingerprint(sortedMessages), runtimeReady, characterCard?.id, runtimeAssets, refreshRuntimeStore]);
 
   async function applyOpening(index: number) {
     if (!sessionId || !characterCard || !canApplyOpening) return;

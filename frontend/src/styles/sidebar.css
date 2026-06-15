@@ -44,6 +44,11 @@
   color: var(--text);
 }
 
+.sidebar-item:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
 .sidebar-item.active {
   color: var(--text);
   background: var(--accent-soft);

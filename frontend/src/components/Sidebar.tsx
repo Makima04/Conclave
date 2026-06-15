@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import * as api from '../api/client';
 import '../styles/sidebar.css';
 
 interface NavItem {
@@ -28,6 +30,7 @@ interface SidebarProps {
 export default function Sidebar({ openNewSessionDialog }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const [openingStHost, setOpeningStHost] = useState(false);
 
   function handleCreateSession() {
     if (openNewSessionDialog?.()) {
@@ -36,9 +39,39 @@ export default function Sidebar({ openNewSessionDialog }: SidebarProps) {
     navigate('/');
   }
 
+  async function handleOpenStHost() {
+    if (openingStHost) return;
+    setOpeningStHost(true);
+    try {
+      const data = await api.listSessions({ limit: 1 });
+      const session = data.items?.[0];
+      if (!session) {
+        window.alert('还没有可打开的会话，请先新建会话。');
+        navigate('/');
+        return;
+      }
+      navigate(`/st-host/${session.id}`);
+    } catch (error) {
+      console.error('Failed to open ST Host:', error);
+      window.alert(error instanceof Error ? error.message : '打开 ST Host 失败');
+    } finally {
+      setOpeningStHost(false);
+    }
+  }
+
   return (
     <aside className="sidebar" aria-label="主导航">
       <nav className="sidebar-nav">
+        <button
+          className={`sidebar-item${location.pathname.startsWith('/st-host') ? ' active' : ''}`}
+          onClick={() => void handleOpenStHost()}
+          disabled={openingStHost}
+          aria-label="ST Host"
+          title="ST Host"
+        >
+          <span>🖥</span>
+          <span className="sidebar-tooltip">ST Host</span>
+        </button>
         {NAV_ITEMS.map(item => (
           <button
             key={item.key}

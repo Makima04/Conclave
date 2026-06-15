@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom';
 import * as api from '../api/client';
 import type { CharacterCard, Message, Session, SessionRuntimeAssets, WorldBook } from '../api/types';
-import { MessageContent } from './components/MessageContent';
+import { ConclaveCardHtml } from './components/ConclaveCardHtml';
+import { renderConclaveCardMessage } from './conclave-rendering';
 import { StScriptIframeHost } from './st-runtime/StScriptIframeHost';
 import { createStRuntimeStore } from './st-runtime/store';
 import { installStGlobals, uninstallStGlobals } from './st-runtime/globals';
@@ -85,12 +86,7 @@ export default function StHost() {
   const sortedMessages = useMemo(() => sortMessages(messages), [messages]);
   const variables = useMemo(() => safeVariables(sessionState), [sessionState]);
   const userName = session?.config?.user_persona?.name?.trim() || '你';
-  const renderMode = session?.config?.render_mode || 'auto';
   const activeWorldBookId = session?.world_pack_id || '';
-  const activeWorldBook = useMemo(
-    () => worldBooks.find(item => item.id === activeWorldBookId) || null,
-    [worldBooks, activeWorldBookId],
-  );
   const runtimeAssetHostScripts = useMemo(
     () => normalizeTavernHelperScripts(runtimeAssets.tavern_helper_scripts),
     [runtimeAssets],
@@ -108,6 +104,12 @@ export default function StHost() {
       : sortedMessages.filter(message => !(message.turn_number === 0 && message.role === 'assistant')),
     [hasStarted, sortedMessages],
   );
+  const renderCardHtml = useCallback((content: string) => renderConclaveCardMessage(content, {
+    card: characterCard,
+    runtimeAssets,
+    variables,
+    userName,
+  }), [characterCard, runtimeAssets, userName, variables]);
 
   const refreshRuntimeStore = useCallback(async (
     card: CharacterCard | null,
@@ -394,16 +396,11 @@ export default function StHost() {
               <article className="st-host-message st-host-message-assistant">
                 <div className="st-host-message-role">{characterCard.name}</div>
                 <div className="st-host-message-body">
-                  <MessageContent
+                  <ConclaveCardHtml
                     key={`opening-preview-${openingPreviewKey}`}
-                    content={openingContent}
-                    card={characterCard}
-                    runtimeAssets={runtimeAssets}
-                    variables={variables}
-                    renderMode={renderMode}
-                    userName={userName}
-                    sessionId={sessionId}
-                    worldBookId={activeWorldBook?.id || characterCard.world_book_id}
+                    html={renderCardHtml(openingContent)}
+                    cardKey={`opening:${openingPreviewKey}`}
+                    className="st-host-conclave-html"
                   />
                 </div>
               </article>
@@ -421,15 +418,10 @@ export default function StHost() {
                   {message.role === 'user' || !characterCard ? (
                     <div className="st-host-plain-text">{message.content}</div>
                   ) : (
-                    <MessageContent
-                      content={message.content}
-                      card={characterCard}
-                      runtimeAssets={runtimeAssets}
-                      variables={variables}
-                      renderMode={renderMode}
-                      userName={userName}
-                      sessionId={sessionId}
-                      worldBookId={activeWorldBook?.id || characterCard.world_book_id}
+                    <ConclaveCardHtml
+                      html={renderCardHtml(message.content)}
+                      cardKey={`message:${sessionId}:${characterCard.id}:${message.id}:${message.variant_index}:${contentFingerprint(message.content)}`}
+                      className="st-host-conclave-html"
                     />
                   )}
                 </div>
@@ -440,15 +432,10 @@ export default function StHost() {
               <article className="st-host-message st-host-message-assistant is-streaming">
                 <div className="st-host-message-role">{characterCard.name}</div>
                 <div className="st-host-message-body">
-                  <MessageContent
-                    content={streamText}
-                    card={characterCard}
-                    runtimeAssets={runtimeAssets}
-                    variables={variables}
-                    renderMode={renderMode}
-                    userName={userName}
-                    sessionId={sessionId}
-                    worldBookId={activeWorldBook?.id || characterCard.world_book_id}
+                  <ConclaveCardHtml
+                    html={renderCardHtml(streamText)}
+                    cardKey={`stream:${sessionId}:${characterCard.id}:${contentFingerprint(streamText)}`}
+                    className="st-host-conclave-html"
                   />
                 </div>
               </article>

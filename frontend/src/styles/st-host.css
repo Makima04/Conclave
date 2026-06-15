@@ -210,6 +210,23 @@
   line-height: 1.7;
 }
 
+.st-host-conclave-html {
+  width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.st-host-conclave-html > .cx-wrapper-reset {
+  margin-inline: auto;
+}
+
+.st-host-conclave-html img,
+.st-host-conclave-html video,
+.st-host-conclave-html canvas,
+.st-host-conclave-html iframe {
+  max-width: 100%;
+}
+
 .st-host-message-user {
   align-items: flex-end;
 }

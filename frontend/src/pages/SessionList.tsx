@@ -275,6 +275,13 @@ export default function SessionList() {
                   <div className="session-actions">
                     <button
                       className="rename-btn"
+                      onClick={e => { e.stopPropagation(); navigate(`/st-host/${session.id}`); }}
+                      title="ST Host"
+                    >
+                      ST Host
+                    </button>
+                    <button
+                      className="rename-btn"
                       onClick={e => { e.stopPropagation(); setRenamingId(session.id); setRenameValue(session.title); }}
                       title="重命名"
                     >

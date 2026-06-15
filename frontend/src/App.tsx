@@ -10,6 +10,7 @@ import './styles/session-debug.css';
 
 const SessionList = React.lazy(() => import('./pages/SessionList'));
 const Chat = React.lazy(() => import('./pages/Chat'));
+const StHost = React.lazy(() => import('./pages/StHost'));
 const Settings = React.lazy(() => import('./pages/Settings'));
 const AgentManager = React.lazy(() => import('./pages/AgentManager'));
 const SessionDebug = React.lazy(() => import('./pages/SessionDebug'));
@@ -35,6 +36,7 @@ export default function App() {
                 </Route>
                 {/* Routes WITHOUT sidebar (Chat has its own tool-rail layout) */}
                 <Route path="/chat/:sessionId" element={<Chat />} />
+                <Route path="/st-host/:sessionId" element={<StHost />} />
                 <Route path="/chat/:sessionId/agents" element={<AgentManager />} />
                 <Route path="/chat/:sessionId/debug" element={<SessionDebug />} />
                 <Route path="/charactercards/:id" element={<CharacterCard />} />

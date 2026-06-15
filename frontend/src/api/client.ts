@@ -353,6 +353,45 @@ export async function importWorldBook(data: any): Promise<WorldBookDetail> {
   });
 }
 
+export async function importCharacterCardFile(file: File): Promise<{
+  import_id: string;
+  package_draft: unknown;
+  import_report: unknown;
+}> {
+  const form = new FormData();
+  form.append('file', file);
+
+  const res = await fetch(`${BASE_URL}/charactercards/import`, {
+    method: 'POST',
+    headers: { ...authHeaders() },
+    body: form,
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body?.error?.message || `HTTP ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function confirmCharacterCardImport(importId: string, options?: {
+  worldBookId?: string;
+  degradeToSchema?: boolean;
+}): Promise<{
+  character_card_id: string;
+  world_pack_id: string;
+  status: string;
+}> {
+  return request(`/charactercards/import/${importId}/confirm`, {
+    method: 'POST',
+    body: JSON.stringify({
+      world_book_id: options?.worldBookId || null,
+      degrade_to_schema: options?.degradeToSchema ?? false,
+    }),
+  });
+}
+
 export async function updateWorldBook(id: string, data: { name?: string; description?: string }): Promise<any> {
   return request(`/worldbooks/${id}`, {
     method: 'PATCH',

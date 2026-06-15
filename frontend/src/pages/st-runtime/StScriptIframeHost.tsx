@@ -41,7 +41,7 @@ export const StScriptIframeHost: React.FC<StScriptIframeHostProps> = ({ cardKey,
       <div id="tavern_helper" aria-hidden="true" style={{ display: 'none' }}>
         {scripts.map((script, idx) => (
           <div
-            key={`${cardKey}--script-marker--${script.id ?? idx}`}
+            key={`${cardKey}--script-marker--${idx}--${script.id ?? 'no-id'}`}
             data-script-id={script.id ?? String(idx)}
           />
         ))}
@@ -49,7 +49,7 @@ export const StScriptIframeHost: React.FC<StScriptIframeHostProps> = ({ cardKey,
       <div id="extensions_settings2" aria-hidden="true" style={{ display: 'none' }} />
       {scripts.map((script, idx) => (
         <ScriptIframe
-          key={`${cardKey}--${script.id ?? idx}`}
+          key={`${cardKey}--${idx}--${script.id ?? 'no-id'}`}
           script={script}
           idx={idx}
         />
@@ -61,7 +61,7 @@ export const StScriptIframeHost: React.FC<StScriptIframeHostProps> = ({ cardKey,
 /** Single hidden iframe for one tavern_helper_script. */
 const ScriptIframe: React.FC<{ script: TavernHelperScript; idx: number }> = ({ script, idx }) => {
   const scriptId = script.id ?? String(idx);
-  const iframeName = `TH-script--${script.name}--${scriptId}`;
+  const iframeName = `TH-script--${idx}--${script.name}--${scriptId}`;
   const srcdoc = useMemo(() => createScriptSrcContent(script.content), [script.content]);
 
   return (

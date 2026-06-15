@@ -18,7 +18,7 @@ import {
   summarizeStateContract,
 } from './state-debug';
 import { ToolRail } from './components/ToolRail';
-import type { InspectorTab } from './components/InspectorSidebar';
+import type { InspectorTab } from './components/inspector-types';
 import '../styles/chat.css';
 
 function shortText(value: string, max = 120): string {

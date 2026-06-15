@@ -1,4 +1,5 @@
 use super::context;
+use super::ejs_preprocess::{self, PreprocessableEntry};
 use super::str_utils::truncate_str;
 use super::types::{
     AgentDebugSnapshot, ContextBundle, ContextMessage, MemoryProposal, RoleContext,
@@ -45,6 +46,36 @@ pub struct StreamTurnResult {
     /// Data from multi-agent turn for the route layer to persist after the stream completes.
     /// None for single-agent streaming.
     pub commit_data: Option<StreamCommitData>,
+}
+
+/// Extract user and character names from role contexts.
+fn extract_user_char_names(roles: &[RoleContext]) -> (String, String) {
+    let mut user_name = "User".to_string();
+    let mut char_name = "Assistant".to_string();
+    for role in roles {
+        match role.agent_type {
+            super::types::AgentType::User => {
+                if !role.label.is_empty() {
+                    user_name = role.label.clone();
+                }
+            }
+            super::types::AgentType::Npc | super::types::AgentType::Writer => {
+                if !role.label.is_empty() {
+                    char_name = role.label.clone();
+                }
+            }
+            _ => {}
+        }
+    }
+    (user_name, char_name)
+}
+
+/// Extract chat variables from structured_state for EJS template evaluation.
+fn extract_chat_variables(state: &serde_json::Value) -> serde_json::Value {
+    state
+        .get("variables")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}))
 }
 
 fn format_world_book_reference(entries: &[WorldBookContextEntry]) -> Option<String> {
@@ -193,7 +224,31 @@ fn build_single_agent_messages(
     }
 
     // User-character world-book entries are merged into Role Reference above.
-    if let Some(wb_content) = format_world_book_reference(&context_bundle.world_book_entries) {
+    // EJS preprocessing: evaluate @@preprocessing entries before formatting.
+    let mut wb_entries = context_bundle.world_book_entries.clone();
+    let (user_name, char_name) = extract_user_char_names(&context_bundle.role_contexts);
+    let variables = extract_chat_variables(&context_bundle.structured_state);
+    let mut preprocessable: Vec<PreprocessableEntry> = wb_entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| PreprocessableEntry {
+            index: i,
+            comment: String::new(), // comment not stored in WorldBookContextEntry
+            content: e.content.clone(),
+            keys: e.keys.clone(),
+        })
+        .collect();
+    ejs_preprocess::preprocess_world_book_entries(
+        &mut preprocessable,
+        &user_name,
+        &char_name,
+        &variables,
+    );
+    // Write preprocessed content back
+    for (i, entry) in preprocessable.iter().enumerate() {
+        wb_entries[i].content = entry.content.clone();
+    }
+    if let Some(wb_content) = format_world_book_reference(&wb_entries) {
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: wb_content,

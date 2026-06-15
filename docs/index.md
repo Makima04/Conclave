@@ -25,6 +25,7 @@
 - [数据库与 API](database-api.md)
 - [卡牌渲染流水线](card-rendering-pipeline.md)（v3 现状，见下方迁移说明）
 - [角色卡运行时架构 v4](card-runtime-architecture-v4.md)（v4 目标架构与迁移计划）
+- [角色卡运行时回归日志](card-runtime-regression-log.md)
 - [Artifact Renderer](artifact-renderer.md)
 - [测试与评测](testing.md)
 - [文档维护规则](docs-sync.md)

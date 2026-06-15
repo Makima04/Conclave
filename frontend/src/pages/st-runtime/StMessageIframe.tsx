@@ -103,9 +103,8 @@ export function StMessageIframe({
       className={`${className ?? ''}${isRendered ? ' sandbox-rendered' : ''}`}
       aria-hidden={ariaHidden}
       tabIndex={tabIndex}
-      loading="lazy"
       frameBorder="0"
-      style={{ width: '100%', height: 'auto', border: 0, display: 'block' }}
+      style={{ width: '100%', height: 'auto', border: 0, display: 'block', minHeight: 200 }}
       onLoad={() => {
         setIsRendered(true);
         eventSource.emit(iframe_events.MESSAGE_IFRAME_RENDER_ENDED, iframeName);

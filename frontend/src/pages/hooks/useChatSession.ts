@@ -8,7 +8,7 @@ import type { CharacterCard, Message, Preset, RenderMode, SessionConfig, Session
 import { DEFAULT_SESSION_CONFIG } from '../../api/types';
 import { loadGlobalSessionDefaults, loadUserPersonaPresets, normalizeRenderMode, normalizeSessionConfig, saveGlobalSessionDefaults, type UserPersonaPreset } from '../../settings/sessionDefaults';
 import { useProviders } from '../../contexts/AppContext';
-import { cleanCardDisplayText } from '../card-content';
+import { cleanCardDisplayText } from '../card-text-clean';
 
 function getParsedGreetings(card: CharacterCard | null): string[] {
   if (!card) return [];

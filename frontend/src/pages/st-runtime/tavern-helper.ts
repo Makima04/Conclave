@@ -17,7 +17,7 @@
 //   _.entries(TavernHelper._bind).forEach(([k,v]) => window[k.replace('_','')] = v.bind(window))
 
 import type { StRuntimeStore } from './store';
-import { eventSource, tavern_events, iframe_events } from './events';
+import { eventSource, tavern_events, iframe_events, type EventSubscription } from './events';
 import type { RegexScript } from '../st-regex-executor';
 
 // ── iframe identity helpers (ported from JSR function/util.ts) ──
@@ -59,6 +59,34 @@ function _getScriptId(this: Window): string {
 
 function _reloadIframe(this: Window): void {
   this.location.reload();
+}
+
+const scopedEventSubscriptions = new WeakMap<Window, Set<EventSubscription>>();
+
+function trackIframeSubscription(windowRef: Window, subscription: EventSubscription): EventSubscription {
+  let subscriptions = scopedEventSubscriptions.get(windowRef);
+  if (!subscriptions) {
+    subscriptions = new Set();
+    scopedEventSubscriptions.set(windowRef, subscriptions);
+  }
+
+  const tracked: EventSubscription = {
+    stop: () => {
+      subscription.stop();
+      subscriptions?.delete(tracked);
+    },
+  };
+  subscriptions.add(tracked);
+  return tracked;
+}
+
+function clearIframeSubscriptions(windowRef: Window): void {
+  const subscriptions = scopedEventSubscriptions.get(windowRef);
+  if (!subscriptions) return;
+  for (const subscription of [...subscriptions]) {
+    subscription.stop();
+  }
+  subscriptions.clear();
 }
 
 function substitudeMacros(text: string): string {
@@ -118,6 +146,53 @@ function stub(name: string): () => never {
   };
 }
 
+interface ScriptButtonState {
+  name: string;
+  visible?: boolean;
+  [key: string]: any;
+}
+
+const scriptButtons: ScriptButtonState[] = [];
+
+function getScriptButtons(): ScriptButtonState[] {
+  return scriptButtons;
+}
+
+function replaceScriptButtons(buttons: ScriptButtonState[]): void {
+  scriptButtons.splice(0, scriptButtons.length, ...buttons.map(button => ({ ...button })));
+}
+
+function appendInexistentScriptButtons(buttons: ScriptButtonState[]): void {
+  for (const button of buttons) {
+    if (!scriptButtons.some(existing => existing.name === button.name)) {
+      scriptButtons.push({ ...button });
+    }
+  }
+}
+
+function getButtonEvent(name: string): string {
+  return `script_button:${name}`;
+}
+
+// ── Global initialization (ported from JSR src/function/global.ts) ──
+
+const GLOBAL_INIT_EVENT = (global: string) => `global_${global}_initialized`;
+
+function initializeGlobal(global: string, value: unknown): void {
+  (window as any)[global] = value;
+  eventSource.emit(GLOBAL_INIT_EVENT(global));
+}
+
+async function waitGlobalInitialized(global: string): Promise<void> {
+  if ((window as any)[global] !== undefined) return;
+  return new Promise<void>(resolve => {
+    const sub = eventSource.once(GLOBAL_INIT_EVENT(global), () => {
+      sub.stop();
+      resolve();
+    });
+  });
+}
+
 // ── Main factory ──
 
 export function getTavernHelper(store: StRuntimeStore) {
@@ -133,16 +208,16 @@ export function getTavernHelper(store: StRuntimeStore) {
     // ── _bind: members that need `this` (iframe window) ──
     _bind: {
       _eventOn: function (this: Window, type: string, listener: (...args: any[]) => void) {
-        return eventSource.on(type, listener);
+        return trackIframeSubscription(this, eventSource.on(type, listener));
       },
       _eventOnce: function (this: Window, type: string, listener: (...args: any[]) => void) {
-        return eventSource.once(type, listener);
+        return trackIframeSubscription(this, eventSource.once(type, listener));
       },
       _eventMakeFirst: function (this: Window, type: string, listener: (...args: any[]) => void) {
-        return eventSource.makeFirst(type, listener);
+        return trackIframeSubscription(this, eventSource.makeFirst(type, listener));
       },
       _eventMakeLast: function (this: Window, type: string, listener: (...args: any[]) => void) {
-        return eventSource.makeLast(type, listener);
+        return trackIframeSubscription(this, eventSource.makeLast(type, listener));
       },
       _eventEmit: function (this: Window, type: string, ...args: any[]) {
         return eventSource.emit(type, ...args);
@@ -160,7 +235,7 @@ export function getTavernHelper(store: StRuntimeStore) {
         eventSource.clearListener(listener);
       },
       _eventClearAll: function (this: Window) {
-        eventSource.clearAll();
+        clearIframeSubscriptions(this);
       },
 
       // variables (identity-aware: script scope needs iframe id)
@@ -187,6 +262,33 @@ export function getTavernHelper(store: StRuntimeStore) {
       },
       _deleteVariable: function (this: Window, key: string) {
         store.deleteVariable('chat', key);
+      },
+
+      // global initialization (JSR src/function/global.ts)
+      _initializeGlobal: function (this: Window, global: string, value: unknown) {
+        (this as any)[global] = value;
+        (window as any)[global] = value;
+        eventSource.emit(GLOBAL_INIT_EVENT(global));
+      },
+      _waitGlobalInitialized: async function (this: Window, global: string): Promise<void> {
+        const parentHasIt = (window as any)[global] !== undefined;
+        const installProxy = () => {
+          Object.defineProperty(this, global, {
+            get: () => (window as any)[global],
+            configurable: true,
+          });
+        };
+        if (parentHasIt) {
+          installProxy();
+          return;
+        }
+        return new Promise<void>(resolve => {
+          const sub = eventSource.once(GLOBAL_INIT_EVENT(global), () => {
+            sub.stop();
+            installProxy();
+            resolve();
+          });
+        });
       },
 
       // identity helpers
@@ -250,9 +352,9 @@ export function getTavernHelper(store: StRuntimeStore) {
     getModelList: stub('getModelList'),
     getProxyPresetNames: stub('getProxyPresetNames'),
 
-    // -- global --
-    initializeGlobal: stub('initializeGlobal'),
-    waitGlobalInitialized: stub('waitGlobalInitialized'),
+    // -- global (ported from JSR src/function/global.ts) --
+    initializeGlobal,
+    waitGlobalInitialized,
 
     // -- import_raw (stub) --
     importRawCharacter: stub('importRawCharacter'),
@@ -293,7 +395,11 @@ export function getTavernHelper(store: StRuntimeStore) {
     setPreset: stub('setPreset'),
 
     // -- script (stub) --
-    getAllEnabledScriptButtons: stub('getAllEnabledScriptButtons'),
+    getScriptButtons,
+    replaceScriptButtons,
+    appendInexistentScriptButtons,
+    getButtonEvent,
+    getAllEnabledScriptButtons: () => scriptButtons.filter(button => button.visible !== false),
     getScriptTrees: stub('getScriptTrees'),
     replaceScriptTrees: stub('replaceScriptTrees'),
     updateScriptTreesWith: stub('updateScriptTreesWith'),
@@ -322,10 +428,10 @@ export function getTavernHelper(store: StRuntimeStore) {
     insertOrAssignVariables: (data: Record<string, any>) => store.setVariables('chat', data, { merge: true }),
     insertVariables: (data: Record<string, any>) => store.setVariables('chat', data, { merge: true, insertOnly: true }),
     deleteVariable: (key: string) => store.deleteVariable('chat', key),
-    registerVariableSchema: stub('registerVariableSchema'),
+    registerVariableSchema: () => {},
 
     // -- version (stub) --
-    getTavernHelperVersion: () => '0.0.1-conclave',
+    getTavernHelperVersion: () => '4.4.3',
     getFrontendVersion: () => '0.0.1-conclave',
     getTavernVersion: stub('getTavernVersion'),
     updateTavernHelper: stub('updateTavernHelper'),

@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "npx tsx --test src/pages/st-regex-executor.test.ts src/pages/st-runtime/store.test.ts"
+    "test": "npx tsx --test src/pages/st-regex-executor.test.ts src/pages/st-runtime/store.test.ts src/pages/st-runtime/tavern-helper.test.ts src/pages/st-runtime/zod-compat-script.test.ts"
   },
   "dependencies": {
     "@adobe/css-tools": "^4.5.0",

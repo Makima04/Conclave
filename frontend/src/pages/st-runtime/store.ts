@@ -274,6 +274,7 @@ export function createStRuntimeStore(): StRuntimeStore {
   let _character: CharacterCard | null = null;
   let _userName = '';
   let _sessionId: string | null = null;
+  let _localOnly = false;
   let _version = 0;
   let _disposed = false;
 
@@ -292,7 +293,7 @@ export function createStRuntimeStore(): StRuntimeStore {
 
   async function flush(): Promise<void> {
     const sid = _sessionId;
-    if (!sid) return;
+    if (!sid || _localOnly) return;
 
     const promises: Promise<any>[] = [];
 
@@ -363,6 +364,7 @@ export function createStRuntimeStore(): StRuntimeStore {
     async load(sessionId, card, runtimeAssets) {
       if (_disposed) return;
       _sessionId = sessionId;
+      _localOnly = false;
 
       const [messagesResult, varsResult] = await Promise.allSettled([
         api.listMessages(sessionId),
@@ -399,8 +401,27 @@ export function createStRuntimeStore(): StRuntimeStore {
     loadLocal(sessionId, card, runtimeAssets) {
       if (_disposed) return;
       _sessionId = sessionId;
+      _localOnly = true;
       _character = card ?? null;
-      _chat = [];
+      if (card) {
+        const swipes = [card.first_mes, ...(card.alternate_greetings ?? [])].filter(
+          message => typeof message === 'string' && message.trim().length > 0,
+        );
+        const opening = swipes[0] ?? '';
+        _chat = [{
+          message_id: 0,
+          name: card.name,
+          role: 'assistant',
+          is_hidden: false,
+          message: opening,
+          swipes: swipes.length > 0 ? swipes : [opening],
+          swipe_id: 0,
+          variables: { 0: {} },
+          data: {},
+        }];
+      } else {
+        _chat = [];
+      }
       _chatVariables = {};
       _regexScripts = getRegexScripts(card ?? null, runtimeAssets ?? undefined);
       _userName = '';

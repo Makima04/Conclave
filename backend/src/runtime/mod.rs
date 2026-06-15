@@ -3,6 +3,7 @@ pub mod card_state_adapter;
 pub mod compression;
 pub mod context;
 pub mod dag;
+pub mod ejs_preprocess;
 pub mod executor;
 pub mod graph;
 pub mod initializer;

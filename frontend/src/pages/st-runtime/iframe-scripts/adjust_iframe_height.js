@@ -1,49 +1,76 @@
-// Ported from JSR adjust_iframe_height.js
-// Observes body resize and sets frameElement.style.height to match content.
-// Enhanced: MutationObserver to catch dynamic content changes from card scripts.
+// adjust_iframe_height.js — self-contained iframe height adjuster
+//
+// Runs inside a same-origin blob-URL iframe. Measures body.scrollHeight
+// and sets frameElement.style.height directly (no postMessage needed).
+//
+// THREE triggers for reliable height tracking:
+//   1. Immediate measurement at script parse time (catches static content)
+//   2. ResizeObserver on body + html (catches dynamic resizing)
+//   3. MutationObserver on body (catches DOM changes from card scripts)
+//
+// Delayed re-measurements at 300ms/1s/3s for async card script rendering.
 
 (function () {
+  'use strict';
+
   function measureAndApply() {
     try {
-      const body = window.document.body;
-      const html = window.document.documentElement;
-      if (!body || !html) return;
-
-      // 取 body.scrollHeight 和 html.scrollHeight 的较大值（某些卡片内容在 html 上）
-      const height = Math.max(body.scrollHeight, html.scrollHeight);
-      if (!Number.isFinite(height) || height <= 0) return;
-
-      frameElement.style.height = `${height}px`;
-    } catch {
-      // frameElement 不可用（跨域等情况）
+      if (!frameElement) return;
+      var body = document.body;
+      var html = document.documentElement;
+      if (!body) return;
+      var height = Math.max(
+        body.scrollHeight,
+        body.offsetHeight,
+        html.scrollHeight,
+        html.offsetHeight,
+        200
+      );
+      frameElement.style.height = height + 'px';
+    } catch (_) {
+      // frameElement not accessible (cross-origin or detached)
     }
   }
 
   function startObserving() {
-    const body = document.body;
-    if (!body) return;
+    // ResizeObserver — fires when body or html size changes
+    if (typeof ResizeObserver !== 'undefined') {
+      var ro = new ResizeObserver(measureAndApply);
+      if (document.body) ro.observe(document.body);
+      if (document.documentElement) ro.observe(document.documentElement);
+    }
 
-    // ResizeObserver：元素尺寸变化时触发
-    const ro = new ResizeObserver(() => measureAndApply());
-    ro.observe(body);
-    // 也 observe html（有些卡片在 html 上设 min-height）
-    ro.observe(document.documentElement);
-
-    // MutationObserver：DOM 子树变化时触发（卡片 JS 动态插入内容）
-    const mo = new MutationObserver(() => measureAndApply());
-    mo.observe(body, { childList: true, subtree: true, characterData: true });
-
-    // 初始测量 + 延迟重测（覆盖卡片 JS 异步渲染场景）
-    measureAndApply();
-    setTimeout(measureAndApply, 300);
-    setTimeout(measureAndApply, 1000);
-    setTimeout(measureAndApply, 3000);
+    // MutationObserver — fires on childList, subtree, and characterData changes
+    if (document.body && typeof MutationObserver !== 'undefined') {
+      var mo = new MutationObserver(measureAndApply);
+      mo.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+    }
   }
 
-  // load 事件触发后开始监听
-  if (document.readyState === 'complete') {
-    startObserving();
+  // Immediate measurement at parse time (catches static content already laid out)
+  measureAndApply();
+
+  // Start observers as soon as possible
+  if (document.readyState === 'loading') {
+    // DOM not ready yet — wait for DOMContentLoaded (much earlier than 'load')
+    document.addEventListener('DOMContentLoaded', function () {
+      measureAndApply();
+      startObserving();
+    });
   } else {
-    window.addEventListener('load', startObserving);
+    // DOM already interactive/complete — start immediately
+    startObserving();
   }
+
+  // Also listen for load as a final catch-all (for images/resources that affect height)
+  window.addEventListener('load', measureAndApply);
+
+  // Delayed re-measurements for async card script rendering
+  setTimeout(measureAndApply, 300);
+  setTimeout(measureAndApply, 1000);
+  setTimeout(measureAndApply, 3000);
 })();

@@ -10,6 +10,7 @@ import {
   adjust_iframe_height_url,
   parent_jquery_url,
 } from './iframe-scripts/script_url';
+import { ZOD_V4_COMPAT_SCRIPT } from './zod-compat-script';
 
 // ── CDN library URLs (cdnjs) ──
 // JSR uses jsdelivr; we use cdnjs to avoid ad-blocker interference.
@@ -24,7 +25,9 @@ const ST_CDN_LIBS = {
   jqueryUiCss: 'https://cdnjs.cloudflare.com/ajax/libs/jqueryui/1.13.2/themes/base/theme.min.css',
   jqueryUiTouchPunch: 'https://cdnjs.cloudflare.com/ajax/libs/jquery-ui-touch-punch/0.2.3/jquery.ui.touch-punch.min.js',
   vue: 'https://cdnjs.cloudflare.com/ajax/libs/vue/2.7.16/vue.runtime.global.prod.min.js',
-  vueRouter: 'https://cdnjs.cloudflare.com/ajax/libs/vue-router/3.6.5/vue-router.global.prod.min.js',
+  vueRouter: 'https://cdnjs.cloudflare.com/ajax/libs/vue-router/3.6.5/vue-router.min.js',
+  scriptVue: 'https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.13/vue.global.prod.min.js',
+  scriptVueRouter: 'https://cdnjs.cloudflare.com/ajax/libs/vue-router/4.5.0/vue-router.global.prod.min.js',
 } as const;
 
 // ── Narrow vh → CSS-variable replacement (JSR pattern) ──
@@ -196,12 +199,55 @@ export function createScriptSrcContent(bodyHtml: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <base href="${window.location.origin}"/>
 <style>*,*::before,*::after{box-sizing:border-box;}html,body{margin:0;padding:0;overflow:hidden;}</style>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/vue/2.7.16/vue.min.js"><\/script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/vue-router/3.6.5/vue-router.global.prod.min.js"><\/script>
+<script>
+(() => {
+  const report = (kind, message, source, line, column) => {
+    try {
+      window.parent.console.error('[TH-script iframe]', window.name || 'unknown', kind, message || '', source || '', line || '', column || '');
+    } catch (_) {}
+  };
+  window.addEventListener('error', event => {
+    report('error', event.message, event.filename, event.lineno, event.colno);
+  });
+  window.addEventListener('unhandledrejection', event => {
+    const reason = event.reason;
+    report('unhandledrejection', reason && (reason.stack || reason.message || String(reason)));
+  });
+})();
+<\/script>
+<script src="${ST_CDN_LIBS.scriptVue}"><\/script>
+<script src="${ST_CDN_LIBS.scriptVueRouter}"><\/script>
 <script src="https://cdn.jsdelivr.net/npm/zod@3.23.8/lib/index.umd.js"><\/script>
-<script>window.z = window.Zod || window.z;<\/script>
+<script>
+${ZOD_V4_COMPAT_SCRIPT}
+<\/script>
 <script src="${parent_jquery_url}"><\/script>
 <script src="${predefine_url}"><\/script>
+<script>
+var $ = window.$;
+var jQuery = window.jQuery;
+var Vue = window.Vue;
+var VueRouter = window.VueRouter;
+var Zod = window.Zod;
+var z = window.z || window.Zod;
+var TavernHelper = window.TavernHelper;
+var SillyTavern = window.SillyTavern;
+var getVariables = window.getVariables;
+var getAllVariables = window.getAllVariables;
+var getChatMessages = window.getChatMessages;
+var setChatMessage = window.setChatMessage;
+var setChatMessages = window.setChatMessages;
+var eventOn = window.eventOn;
+var eventEmit = window.eventEmit;
+var tavern_events = window.tavern_events;
+var waitGlobalInitialized = window.waitGlobalInitialized;
+var initializeGlobal = window.initializeGlobal;
+var getScriptId = window.getScriptId;
+var getCurrentMessageId = window.getCurrentMessageId;
+var getLastMessageId = window.getLastMessageId;
+var triggerSlash = window.triggerSlash;
+var toastr = window.toastr;
+<\/script>
 </head>
 <body>
 <script type="module">

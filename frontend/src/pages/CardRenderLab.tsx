@@ -4,8 +4,13 @@
 //
 // 渲染管线与 Chat.tsx 一致：MessageContent → renderMessageHtml() → iframe/inline 路径
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { MessageContent } from './components/MessageContent';
+import { StScriptIframeHost } from './st-runtime/StScriptIframeHost';
+import { normalizeTavernHelperScripts } from './st-runtime/tavern-helper-scripts';
+import { createStRuntimeStore } from './st-runtime/store';
+import { installStGlobals, uninstallStGlobals } from './st-runtime/globals';
 import type { CharacterCard, SessionRuntimeAssets } from '../api/types';
 
 // ── PNG 元数据提取 ──
@@ -120,8 +125,10 @@ function extractRuntimeAssets(cardJson: Record<string, unknown>): SessionRuntime
   const tavern_helper_scripts = Array.isArray(rawScripts)
     ? rawScripts.map((s: any) => ({
         name: s.name || '',
-        code: s.code || s.script || '',
+        id: s.id || s.uuid || s.script_id || '',
+        content: s.content || s.code || s.script || '',
         type: s.type || 'script',
+        enabled: s.enabled,
         source: { scope: 'card' },
       }))
     : [];
@@ -186,6 +193,7 @@ function useConsoleCapture() {
 // ── 组件 ──
 
 export default function CardRenderLab() {
+  const navigate = useNavigate();
   const [selectedCard, setSelectedCard] = useState<FixtureCard | null>(null);
   const [cardJson, setCardJson] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
@@ -225,13 +233,36 @@ export default function CardRenderLab() {
 
   // 构造渲染所需数据（对齐 Chat.tsx 的 props 传法）
   const characterCard = cardJson ? buildCharacterCard(cardJson) : null;
-  const runtimeAssets: SessionRuntimeAssets = cardJson
-    ? extractRuntimeAssets(cardJson)
-    : { regex_scripts: [], tavern_helper_scripts: [] };
+  const runtimeAssets: SessionRuntimeAssets = useMemo(
+    () => cardJson
+      ? extractRuntimeAssets(cardJson)
+      : { regex_scripts: [], tavern_helper_scripts: [] },
+    [cardJson],
+  );
   const userName = '用户';
   const openingContent = characterCard?.first_mes || '';
   const cardName = characterCard?.name || '';
   const altGreetings = (cardJson?.data as Record<string, unknown>)?.alternate_greetings as string[] || [];
+
+  // StRuntimeStore for lab — scripts need window.TavernHelper / window.$ etc.
+  const storeRef = useRef<ReturnType<typeof createStRuntimeStore> | null>(null);
+  if (!storeRef.current) storeRef.current = createStRuntimeStore();
+  const store = storeRef.current!;
+  const [stRuntimeReady, setStRuntimeReady] = useState(false);
+
+  useEffect(() => {
+    setStRuntimeReady(false);
+    if (!characterCard) return;
+    store.loadLocal('lab-dev', characterCard, runtimeAssets);
+    installStGlobals(store);
+    setStRuntimeReady(true);
+    return () => { uninstallStGlobals(); setStRuntimeReady(false); };
+  }, [characterCard?.id, runtimeAssets]);
+
+  const scriptHostScripts = useMemo(() => {
+    if (!characterCard || runtimeAssets.tavern_helper_scripts.length === 0) return [];
+    return normalizeTavernHelperScripts(runtimeAssets.tavern_helper_scripts);
+  }, [characterCard, runtimeAssets]);
 
   const errorCount = consoleEntries.filter(e => e.level === 'error').length;
   const warnCount = consoleEntries.filter(e => e.level === 'warn').length;
@@ -240,6 +271,16 @@ export default function CardRenderLab() {
     <div style={{ display: 'flex', height: '100vh', fontFamily: 'system-ui, sans-serif', background: '#1a1a2e', color: '#e0e0e0' }}>
       {/* 左侧：卡片列表 */}
       <aside style={{ width: 220, borderRight: '1px solid #333', padding: 16, overflowY: 'auto', flexShrink: 0 }}>
+        <button
+          onClick={() => navigate('/')}
+          style={{
+            display: 'block', width: '100%', textAlign: 'left', padding: '6px 10px',
+            marginBottom: 12, borderRadius: 6, border: '1px solid #444',
+            background: 'transparent', color: '#aaa', cursor: 'pointer', fontSize: 12,
+          }}
+        >
+          ← 返回首页
+        </button>
         <h2 style={{ margin: '0 0 12px', fontSize: 14, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
           Fixtures
         </h2>
@@ -291,6 +332,14 @@ export default function CardRenderLab() {
         {loading && <div style={{ color: '#6c63ff' }}>加载中...</div>}
         {error && <div style={{ color: '#ff6b6b', padding: 12, background: '#2a1a1a', borderRadius: 6 }}>{error}</div>}
 
+        {/* M3: 脚本常驻 iframe — 卡片的 tavern_helper_scripts 在此执行 */}
+        {stRuntimeReady && scriptHostScripts.length > 0 && (
+          <StScriptIframeHost
+            cardKey={characterCard?.id || 'lab'}
+            scripts={scriptHostScripts}
+          />
+        )}
+
         {cardName && (
           <div style={{ marginBottom: 16 }}>
             <strong style={{ fontSize: 18, color: '#fff' }}>{cardName}</strong>
@@ -299,7 +348,7 @@ export default function CardRenderLab() {
         )}
 
         {/* 开场白渲染——与 Chat.tsx opening-preview 区域一致 */}
-        {characterCard && openingContent && (
+        {stRuntimeReady && characterCard && openingContent && (
           <div style={{ marginBottom: 24 }}>
             <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Opening Preview（主开场白）</div>
             <div className="message assistant opening-preview" style={{ background: '#1a1a1a', borderRadius: 8, padding: 16 }}>
@@ -310,7 +359,6 @@ export default function CardRenderLab() {
                   card={characterCard}
                   runtimeAssets={runtimeAssets}
                   variables={{}}
-                  runtime={{}}
                   renderMode="auto"
                   userName={userName}
                 />
@@ -320,7 +368,7 @@ export default function CardRenderLab() {
         )}
 
         {/* Alternate greetings 也渲染——更全面的回归覆盖 */}
-        {altGreetings.map((greeting, idx) => (
+        {stRuntimeReady && altGreetings.map((greeting, idx) => (
           <div key={idx} style={{ marginBottom: 24 }}>
             <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>
               Alternate Greeting #{idx + 1}
@@ -333,7 +381,6 @@ export default function CardRenderLab() {
                   card={characterCard}
                   runtimeAssets={runtimeAssets}
                   variables={{}}
-                  runtime={{}}
                   renderMode="auto"
                   userName={userName}
                 />

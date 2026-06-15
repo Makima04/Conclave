@@ -1,14 +1,15 @@
 // Unified ST-style message HTML rendering
 //
 // Replicates the ST + JS-Slash-Runner rendering path:
-//   1. Run regex scripts (ST's engine.js)
-//   2. Detect: full HTML doc with <script> → iframe (JS-Slash-Runner path)
-//              everything else → inline DOMPurify + style scoping (ST path)
+//   1. Macro expansion ({{user}}, {{char}}, {{getvar::...}}, etc.)
+//   2. Run regex scripts (ST engine.js — two-phase)
+//   3. Detect: full HTML doc or code fence with HTML → iframe (JS-Slash-Runner path)
+//              everything else → inline ST path
 //
-// ST path: regex → encodeStyleTags → DOMPurify → decodeStyleTags → innerHTML
-// JS-Slash-Runner path: regex → iframe srcdoc (bridge injected)
+// Inline ST path: showdown.makeHtml → encodeStyleTags → DOMPurify → decodeStyleTags → innerHTML
 
 import DOMPurify from 'dompurify';
+import showdown from 'showdown';
 import { encodeStyleTags, decodeStyleTags } from './stylescape';
 import {
   getRegexedString,
@@ -46,6 +47,19 @@ const PURIFY_CONFIG = {
   ADD_TAGS: ['custom-style'] as string[],
   ALLOW_UNKNOWN_PROTOCOLS: true,
 };
+
+// Showdown converter — mirrors ST's messageFormatting markdown step
+const showdownConverter = new showdown.Converter({
+  simplifiedAutoLink: true,
+  excludeTrailingPunctuationFromURLs: true,
+  literalMidWordUnderscores: true,
+  strikethrough: true,
+  tables: true,
+  tasklists: true,
+  disableForced4SpacesIndentedSublists: true,
+  simpleLineBreaks: true,
+  openLinksInNewWindow: true,
+});
 
 // ── Helpers ──
 
@@ -91,7 +105,9 @@ export interface RenderOutput {
 }
 
 function renderInlineProcessed(processed: string): RenderOutput {
-  const encoded = encodeStyleTags(processed);
+  // Showdown markdown → HTML (matching ST's messageFormatting step)
+  const htmlContent = showdownConverter.makeHtml(processed);
+  const encoded = encodeStyleTags(htmlContent);
   const purified = DOMPurify.sanitize(encoded, PURIFY_CONFIG);
   const decoded = decodeStyleTags(purified, '.mes-text ');
   const markdown = shouldRenderInlineMarkdown(processed) ? processed : undefined;
@@ -144,13 +160,14 @@ export function renderMessageHtml(
     runtimeAssets?: SessionRuntimeAssets | null;
     userName?: string;
     charName?: string;
+    variables?: Record<string, unknown>;
   } = {},
 ): RenderOutput {
-  const { card, runtimeAssets, userName = '{{user}}', charName = '{{char}}' } = options;
+  const { card, runtimeAssets, userName = '{{user}}', charName = '{{char}}', variables } = options;
 
   // Normalize content (matching ST's messageFormatting substitutions)
   let processed = processMacros(content, createMacroContext({
-    variables: {},
+    variables: variables ?? {},
     userName,
     charName,
   }));
@@ -178,9 +195,21 @@ export function renderMessageHtml(
   }
 
   // Step 2: Detect rendering path
-  // JS-Slash-Runner path: full HTML document or script-bearing content → iframe
-  const isFullHtmlDoc = /^(?:<!DOCTYPE\s+html\b|<html\b)/i.test(processed.trim());
-  const hasScript = /<script\b/i.test(processed);
+  // Aligned with JSR isFrontend.ts: full HTML doc OR code fence with HTML content → iframe
+  const trimmedContent = processed.trim();
+  const isFullHtmlDoc = /^(?:<!DOCTYPE\s+html\b|<html\b)/i.test(trimmedContent);
+
+  // Code fence with frontend HTML content (matching ST's isFrontend check)
+  const codeFenceRe = /```(?:html)?\s*\n?([\s\S]*?)```/gi;
+  let hasFrontendFence = false;
+  let fenceMatch: RegExpExecArray | null;
+  while ((fenceMatch = codeFenceRe.exec(processed)) !== null) {
+    if (/\b(?:html>|<head[\s>]|<body[\s>])/i.test(fenceMatch[1])) {
+      hasFrontendFence = true;
+      break;
+    }
+  }
+
   const embeddedHtmlParts = isFullHtmlDoc ? null : splitEmbeddedHtmlDocuments(processed);
 
   if (embeddedHtmlParts) {
@@ -190,7 +219,7 @@ export function renderMessageHtml(
     };
   }
 
-  if (isFullHtmlDoc || hasScript) {
+  if (isFullHtmlDoc || hasFrontendFence) {
     return {
       type: 'iframe',
       html: processed,

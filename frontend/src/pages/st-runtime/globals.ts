@@ -32,7 +32,7 @@ declare global {
     showdown: typeof showdown;
     toastr: typeof toastrFacade;
     TavernHelper: TavernHelperObject;
-    SillyTavern: {
+    SillyTavern: Record<string, any> & {
       getContext: () => Record<string, unknown>;
     };
     z?: unknown;
@@ -72,18 +72,72 @@ export function installStGlobals(store: StRuntimeStore): TavernHelperObject {
   const tavernHelper = getTavernHelper(store);
   window.TavernHelper = tavernHelper;
 
-  // SillyTavern — context proxy (predefine.js: Object.defineProperty get: SillyTavern.getContext())
-  window.SillyTavern = {
-    getContext: () => ({
+  const extensionSettings = ((window as any).__ST_EXTENSION_SETTINGS ??= {});
+  const macros = ((window as any).__ST_MACROS ??= new Map<string, () => string>());
+  const popupType = {
+    TEXT: 'text',
+    INPUT: 'input',
+    CONFIRM: 'confirm',
+  };
+  const popupResult = {
+    AFFIRMATIVE: 1,
+    NEGATIVE: 0,
+    CANCELLED: null,
+    CUSTOM1: 2,
+  };
+  const saveChat = async () => {};
+  const saveSettingsDebounced = () => {};
+  const getCurrentChatId = () => store.sessionId ?? 'conclave-local';
+  const getRequestHeaders = () => ({ 'Content-Type': 'application/json' });
+  const callGenericPopup = async (_content: string, type?: string, defaultValue?: string) => {
+    if (type === popupType.INPUT) return defaultValue ?? '';
+    if (type === popupType.CONFIRM) return popupResult.NEGATIVE;
+    return undefined;
+  };
+  const registerMacro = (name: string, fn: () => string) => { macros.set(name, fn); };
+  const unregisterMacro = (name: string) => { macros.delete(name); };
+  const toolManager = {
+    isToolCallingSupported: () => false,
+    registerFunctionTool: () => {},
+    unregisterFunctionTool: () => {},
+  };
+  const getContext = () => ({
       chat: store.chat,
       name1: store.userName,
       name2: store.character?.name || '',
       chat_metadata: { variables: store.chatVariables },
       eventSource,
       characters: store.character ? [store.character] : [],
+      characterId: 0,
+      extensionSettings,
+      POPUP_TYPE: popupType,
+      POPUP_RESULT: popupResult,
+      ToolManager: toolManager,
+      SendingMessage: {},
+      saveChat,
+      saveSettingsDebounced,
+      getCurrentChatId,
+      getRequestHeaders,
+      callGenericPopup,
+      registerMacro,
+      unregisterMacro,
+      getChatCompletionModel: () => '',
+      registerFunctionTool: toolManager.registerFunctionTool,
+      unregisterFunctionTool: toolManager.unregisterFunctionTool,
       // Fields will be added incrementally as fixtures require them
-    }),
+    });
+
+  // SillyTavern — context proxy (predefine.js expands SillyTavern.getContext()).
+  const sillyTavern: Record<string, any> & { getContext: () => Record<string, unknown> } = {
+    ...getContext(),
+    getContext,
   };
+  Object.defineProperties(sillyTavern, {
+    chat: { get: () => store.chat, configurable: true },
+    name2: { get: () => store.character?.name || '', configurable: true },
+    characters: { get: () => (store.character ? [store.character] : []), configurable: true },
+  });
+  window.SillyTavern = sillyTavern;
 
   // Expose key helpers on window for card scripts (statusbar bridgeGlobals needs these)
   (window as any).getAllVariables = tavernHelper._bind._getAllVariables.bind(window);

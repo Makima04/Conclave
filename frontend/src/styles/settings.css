@@ -199,19 +199,6 @@
   flex-wrap: wrap;
 }
 
-.global-defaults-form {
-  grid-column: 1 / -1;
-}
-
-.settings-subsection-title {
-  margin: 18px 0 8px;
-  color: var(--text-2);
-  font-size: 12px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
 .global-default-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -356,16 +343,6 @@
 }
 .edit-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
 
-.default-btn {
-  background: transparent;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  font-size: 13px;
-  padding: 5px 10px;
-  transition: all var(--transition);
-}
-.default-btn:hover { background: var(--accent); color: white; }
-
 /* Model fetch */
 .model-input-row {
   display: flex;
@@ -469,4 +446,75 @@
   .cancel-btn {
     width: 100%;
   }
+}
+
+/* Styles shared with Chat.tsx — duplicated here for Settings route */
+
+.back-btn {
+  background: transparent;
+  color: var(--accent);
+  font-size: 14px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  transition: all var(--transition);
+}
+.back-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+
+.toggle-btn {
+  padding: 6px 16px;
+  font-size: 13px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.toggle-btn.on {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.toggle-btn.off {
+  background: var(--panel);
+  color: var(--muted);
+  border-color: var(--line);
+}
+
+/* Render mode radio group */
+.render-mode-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.render-mode-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.render-mode-option:hover {
+  border-color: var(--border-hi);
+}
+.render-mode-option.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.render-mode-option input[type="radio"] {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+.render-mode-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.render-mode-desc {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 1px;
 }

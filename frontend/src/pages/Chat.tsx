@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import * as api from '../api/client';
 import { cleanCardDisplayText } from './card-text-clean';
 import { MessageContent } from './components/MessageContent';
-import { StMessageIframe } from './st-runtime/StMessageIframe';
-import { createMessageSrcContent } from './st-runtime/iframe-doc';
+import { StScriptIframeHost } from './st-runtime/StScriptIframeHost';
+import { normalizeTavernHelperScripts } from './st-runtime/tavern-helper-scripts';
 import { createStRuntimeStore } from './st-runtime/store';
 import { installStGlobals, uninstallStGlobals } from './st-runtime/globals';
 import '../styles/chat.css';
@@ -119,13 +119,33 @@ export default function Chat() {
   const storeRef = useRef<ReturnType<typeof createStRuntimeStore> | null>(null);
   if (!storeRef.current) storeRef.current = createStRuntimeStore();
   const store = storeRef.current;
+  const stRuntimeKey = `${sessionId || 'no-session'}:${characterCard?.id || 'no-card'}`;
+  const [stRuntimeReadyKey, setStRuntimeReadyKey] = useState<string | null>(null);
+  const stRuntimeReady = stRuntimeReadyKey === stRuntimeKey;
 
   // Install ST globals when session loads (TavernHelper, SillyTavern, etc.)
   useEffect(() => {
-    if (!sessionId || !characterCard) return;
-    store.load(sessionId, characterCard, runtimeAssets);
-    installStGlobals(store);
-    return () => { uninstallStGlobals(); store.dispose(); };
+    let cancelled = false;
+    setStRuntimeReadyKey(null);
+    if (!sessionId || !characterCard) {
+      uninstallStGlobals();
+      return;
+    }
+
+    void store.load(sessionId, characterCard, runtimeAssets)
+      .then(() => {
+        if (cancelled) return;
+        installStGlobals(store);
+        setStRuntimeReadyKey(stRuntimeKey);
+      })
+      .catch((err) => {
+        console.error('[st-runtime] failed to initialize runtime store:', err);
+      });
+
+    return () => {
+      cancelled = true;
+      uninstallStGlobals();
+    };
   }, [sessionId, characterCard?.id]);
 
   // --- hook: message stream ---
@@ -335,32 +355,11 @@ export default function Chat() {
       submission: sandboxSubmissionRuntime,
     });
   }, [sandboxRuntimeMessages, runtimeSharedSaves, sessionId, cardVariableContract, cardPlatformState, cardWritableState, sandboxSubmissionRuntime]);
-  // Runtime asset host: hidden iframe for tavern_helper scripts (M3 will replace with StScriptIframeHost)
-  const runtimeAssetHostSrcdoc = React.useMemo(() => {
-    if (!characterCard || visibleMessages.length === 0 || runtimeAssets.tavern_helper_scripts.length === 0) {
-      return null;
-    }
-    // Build script tags from tavern_helper scripts
-    const scriptTags = runtimeAssets.tavern_helper_scripts
-      .map((s: any) => {
-        const code = s.content || s.code || s.script || '';
-        const isModule = typeof code === 'string' && /\bimport\b/.test(code.slice(0, 200));
-        return isModule
-          ? `<script type="module">${code}</script>`
-          : `<script defer>${code}</script>`;
-      })
-      .join('\n');
-    return createMessageSrcContent(scriptTags || '<!-- no scripts -->');
-  }, [characterCard, runtimeAssets, visibleMessages.length]);
-  const runtimeAssetHostKey = React.useMemo(
-    () => simpleHash(JSON.stringify({
-      cardId: characterCard?.id || null,
-      sessionId,
-      messageCount: visibleMessages.length,
-      variables: cardProjectionVariables,
-    })),
-    [cardProjectionVariables, characterCard?.id, sessionId, visibleMessages.length],
+  const runtimeAssetHostScripts = React.useMemo(
+    () => normalizeTavernHelperScripts(runtimeAssets.tavern_helper_scripts),
+    [runtimeAssets.tavern_helper_scripts],
   );
+  const runtimeAssetHostKey = `${sessionId || 'no-session'}:${characterCard?.id || 'no-card'}`;
   const openingPreviewRuntime = React.useMemo(
     () => buildEmptySessionPreviewRuntime(openingPreviewText),
     [openingPreviewText, runtimeSharedSaves, selectedOpeningVariables, openingGreetingVariables, cardPlatformState, cardWritableState, characterCard?.name, sandboxSubmissionRuntime, sessionId, cardVariableContract, selectedGreetingIndex],
@@ -939,15 +938,11 @@ export default function Chat() {
         </div>
 
         {/* Messages list */}
-        {/* Runtime asset host: hidden iframe for tavern_helper scripts (M3 → StScriptIframeHost) */}
-        {runtimeAssetHostSrcdoc && (
-          <StMessageIframe
-            key={`runtime-assets-${runtimeAssetHostKey}`}
-            srcdoc={runtimeAssetHostSrcdoc}
-            iframeName="TH-runtime-asset-host"
-            className="card-runtime-assets-host"
-            ariaHidden
-            tabIndex={-1}
+        {/* Runtime asset host: persistent hidden iframes for tavern_helper scripts */}
+        {stRuntimeReady && characterCard && runtimeAssetHostScripts.length > 0 && (
+          <StScriptIframeHost
+            cardKey={runtimeAssetHostKey}
+            scripts={runtimeAssetHostScripts}
           />
         )}
         <div className="messages">

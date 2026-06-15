@@ -7,16 +7,13 @@ import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { CharacterCard, SessionRuntimeAssets } from '../../api/types';
-import type { SandboxCardAction } from '../card-schema-types';
 import { CodeBlock } from './CodeBlock';
 import { CustomStatusRenderer } from './CustomStatusRenderer';
 import { StMessageIframe } from '../st-runtime/StMessageIframe';
 import { createMessageSrcContent } from '../st-runtime/iframe-doc';
-import { cleanCardDisplayText } from '../card-content';
+import { cleanCardDisplayText } from '../card-text-clean';
 import { buildStatusSchema } from '../card-schema-builders';
 import { renderMessageHtml } from '../message-html';
-
-type SandboxRuntimeContext = Record<string, any>;
 
 /** Fast string hash (djb2) for keying iframes — avoids re-render when content is identical. */
 function simpleHash(s: string): string {
@@ -87,25 +84,19 @@ export const MessageContent = React.memo(function MessageContent({
   card,
   runtimeAssets,
   variables,
-  runtime,
-  onSandboxAction,
   renderMode = 'auto',
   userName = '你',
   sessionId,
   worldBookId,
-  onMessagesChanged,
 }: {
   content: string;
   card: CharacterCard | null;
   runtimeAssets?: SessionRuntimeAssets | null;
   variables: unknown;
-  runtime?: SandboxRuntimeContext;
-  onSandboxAction?: (action: SandboxCardAction) => void;
   renderMode?: 'auto' | 'schema' | 'sandbox' | 'text';
   userName?: string;
   sessionId?: string;
   worldBookId?: string;
-  onMessagesChanged?: () => void;
 }) {
   const charName = card?.name || '{{char}}';
 
@@ -118,7 +109,7 @@ export const MessageContent = React.memo(function MessageContent({
   }
 
   // Unified ST + JS-Slash-Runner rendering
-  const output = renderMessageHtml(content, { card, runtimeAssets, userName, charName });
+  const output = renderMessageHtml(content, { card, runtimeAssets, userName, charName, variables: (variables as Record<string, unknown>) || {} });
   const schema = buildStatusSchema(card);
 
   function renderIframeOutput(html: string, key?: React.Key): React.ReactNode {

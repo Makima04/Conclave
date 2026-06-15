@@ -45,6 +45,7 @@ function makeCard(overrides: Partial<CharacterCard> = {}): CharacterCard {
     personality: '',
     scenario: '',
     first_mes: '欢迎来到这个世界',
+    alternate_greetings: ['你好呀', '又是新的一天'],
     mes_example: '',
     system_prompt: '',
     tags: [],
@@ -99,6 +100,18 @@ test('StRuntimeStore: getMessages with empty chat returns empty', () => {
   assert.deepEqual(store.getMessages(), [], 'getMessages() returns []');
   assert.deepEqual(store.getMessages('-1'), [], 'getMessages("-1") returns []');
   assert.deepEqual(store.getMessages('0-5'), [], 'getMessages("0-5") returns []');
+});
+
+test('StRuntimeStore: loadLocal seeds opening message for script runtimes', () => {
+  const store = createStRuntimeStore();
+
+  store.loadLocal('lab-dev', makeCard(), { regex_scripts: [], tavern_helper_scripts: [] });
+
+  assert.equal(store.chat.length, 1);
+  assert.equal(store.chat[0].message_id, 0);
+  assert.equal(store.chat[0].message, '欢迎来到这个世界');
+  assert.deepEqual(store.chat[0].swipes, ['欢迎来到这个世界', '你好呀', '又是新的一天']);
+  assert.deepEqual(store.chat[0].variables, { 0: {} });
 });
 
 test('StRuntimeStore: getVariables returns empty on empty store', () => {

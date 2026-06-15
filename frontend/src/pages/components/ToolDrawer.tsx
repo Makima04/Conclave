@@ -11,7 +11,7 @@ import type {
   UserSettingMergeStrategy,
   WorldBook,
 } from '../../api/types';
-import type { InspectorTab } from './InspectorSidebar';
+import type { InspectorTab } from './inspector-types';
 import type { UserPersonaPreset } from '../../settings/sessionDefaults';
 
 // --- helpers ---

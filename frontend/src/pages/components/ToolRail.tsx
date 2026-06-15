@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { InspectorTab } from './InspectorSidebar';
+import type { InspectorTab } from './inspector-types';
 
 interface ToolRailProps {
   activeTab: InspectorTab | null;

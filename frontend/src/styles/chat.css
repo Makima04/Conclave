@@ -913,8 +913,6 @@
   border-radius: var(--radius);
   line-height: 1.5;
   box-shadow: var(--shadow-sm);
-  content-visibility: auto;
-  contain-intrinsic-size: auto 320px;
 }
 
 .message.user {

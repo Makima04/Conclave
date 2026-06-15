@@ -13,6 +13,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'worldbooks',   label: '世界书', icon: '📖', path: '/worldbooks' },
   { key: 'presets',      label: '预设',   icon: '⚙', path: '/presets' },
   { key: 'settings',     label: '设置',   icon: '🔧', path: '/settings' },
+  { key: 'lab',          label: '渲染实验室', icon: '🧪', path: '/lab' },
 ];
 
 function isActive(pathname: string, itemPath: string): boolean {

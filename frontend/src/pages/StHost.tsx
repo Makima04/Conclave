@@ -44,6 +44,14 @@ function messageFingerprint(messages: Message[]): string {
   return messages.map(message => `${message.id}:${message.variant_index}:${message.content.length}`).join('|');
 }
 
+function contentFingerprint(content: string): string {
+  let hash = 5381;
+  for (let index = 0; index < content.length; index += 1) {
+    hash = ((hash << 5) + hash + content.charCodeAt(index)) | 0;
+  }
+  return (hash >>> 0).toString(36);
+}
+
 function safeVariables(sessionState: unknown): Record<string, unknown> {
   if (!sessionState || typeof sessionState !== 'object') return {};
   const value = (sessionState as Record<string, unknown>).variables;
@@ -88,10 +96,18 @@ export default function StHost() {
     [runtimeAssets],
   );
   const hasStarted = sortedMessages.some(message => message.turn_number > 0);
-  const hasOpeningMessage = sortedMessages.some(message => message.turn_number === 0 && message.role === 'assistant');
   const canApplyOpening = Boolean(characterCard && !hasStarted);
   const openingContent = greetings[openingIndex] || greetings[0] || '';
-  const showOpeningPreview = Boolean(characterCard && !hasOpeningMessage && !hasStarted && openingContent);
+  const openingPreviewKey = characterCard
+    ? `${activeWorldBookId || characterCard.world_book_id || 'no-world'}:${characterCard.id}:${openingIndex}:${contentFingerprint(openingContent)}`
+    : 'no-opening';
+  const showOpeningPreview = Boolean(characterCard && !hasStarted && openingContent);
+  const displayMessages = useMemo(
+    () => hasStarted
+      ? sortedMessages
+      : sortedMessages.filter(message => !(message.turn_number === 0 && message.role === 'assistant')),
+    [hasStarted, sortedMessages],
+  );
 
   const refreshRuntimeStore = useCallback(async (
     card: CharacterCard | null,
@@ -211,7 +227,6 @@ export default function StHost() {
     if (greetings.length <= 1) return;
     const next = (openingIndex + delta + greetings.length) % greetings.length;
     setOpeningIndex(next);
-    await applyOpening(next);
   }
 
   async function selectWorldBook(worldBookId: string) {
@@ -221,6 +236,12 @@ export default function StHost() {
     try {
       const updated = await api.updateSession(sessionId, { world_pack_id: worldBookId });
       setSession(updated);
+      setCharacterCard(null);
+      setRuntimeAssets(EMPTY_RUNTIME_ASSETS);
+      setMessages([]);
+      setOpeningIndex(0);
+      setRuntimeReady(false);
+      uninstallStGlobals();
       await loadAll(false);
     } catch (errorValue) {
       setError(errorValue instanceof Error ? errorValue.message : '切换世界书失败');
@@ -374,6 +395,7 @@ export default function StHost() {
                 <div className="st-host-message-role">{characterCard.name}</div>
                 <div className="st-host-message-body">
                   <MessageContent
+                    key={`opening-preview-${openingPreviewKey}`}
                     content={openingContent}
                     card={characterCard}
                     runtimeAssets={runtimeAssets}
@@ -387,7 +409,7 @@ export default function StHost() {
               </article>
             )}
 
-            {sortedMessages.map(message => (
+            {displayMessages.map(message => (
               <article
                 key={message.id}
                 className={`st-host-message ${message.role === 'user' ? 'st-host-message-user' : 'st-host-message-assistant'}`}

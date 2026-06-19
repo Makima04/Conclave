@@ -6,18 +6,16 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import AppShell from './components/AppShell';
 import './styles/global.css';
 import './styles/session-list.css';
-import './styles/session-debug.css';
 
 const SessionList = React.lazy(() => import('./pages/SessionList'));
-const Chat = React.lazy(() => import('./pages/Chat'));
 const StHost = React.lazy(() => import('./pages/StHost'));
+const Chat = React.lazy(() => import('./pages/Chat'));
 const Settings = React.lazy(() => import('./pages/Settings'));
 const AgentManager = React.lazy(() => import('./pages/AgentManager'));
-const SessionDebug = React.lazy(() => import('./pages/SessionDebug'));
+const AgentInspector = React.lazy(() => import('./pages/inspector/Inspector'));
 const WorldBooks = React.lazy(() => import('./pages/WorldBooks'));
 const Presets = React.lazy(() => import('./pages/Presets'));
 const CharacterCard = React.lazy(() => import('./pages/CharacterCard'));
-const CardRenderLab = React.lazy(() => import('./pages/CardRenderLab'));
 
 export default function App() {
   return (
@@ -34,13 +32,12 @@ export default function App() {
                   <Route path="/worldbooks" element={<WorldBooks />} />
                   <Route path="/presets" element={<Presets />} />
                 </Route>
-                {/* Routes WITHOUT sidebar (Chat has its own tool-rail layout) */}
+                {/* Routes WITHOUT sidebar (full-screen tool-rail layouts) */}
                 <Route path="/chat/:sessionId" element={<Chat />} />
                 <Route path="/st-host/:sessionId" element={<StHost />} />
                 <Route path="/chat/:sessionId/agents" element={<AgentManager />} />
-                <Route path="/chat/:sessionId/debug" element={<SessionDebug />} />
+                <Route path="/chat/:sessionId/inspector" element={<AgentInspector />} />
                 <Route path="/charactercards/:id" element={<CharacterCard />} />
-                <Route path="/lab" element={<CardRenderLab />} />
               </Routes>
             </Suspense>
           </ErrorBoundary>

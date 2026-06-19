@@ -1,10 +1,8 @@
-use super::str_utils::truncate_with_suffix;
+use super::str_utils::{contains_any, truncate_with_suffix};
 use crate::error::AppError;
 use crate::provider::openai::OpenAiProvider;
-use crate::provider::types::{ChatMessage, ChatRequest};
-use futures::{StreamExt, stream};
+use crate::provider::types::ChatRequest;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 const INITIAL_BATCH_SIZE: usize = 12;
 const ENTRY_CONTENT_LIMIT: usize = 500;
@@ -23,9 +21,34 @@ pub struct ParsedWorldBookEntry {
     pub category: String,
     pub visibility: String,
     pub reason: String,
+    /// ST selective activation fields. The LLM only routes (category/visibility);
+    /// activation is decided at runtime by `is_entry_activated` in context.rs. These
+    /// are threaded through purely so the activation filter can see them.
+    #[serde(default)]
+    pub selective: bool,
+    #[serde(default)]
+    pub secondary_keys: Vec<String>,
+    #[serde(default)]
+    pub selective_logic: i32,
 }
 
 /// Raw entry data sent to the LLM for categorization.
+/// (id, keys, content, comment, constant, priority, selective, secondary_keys, selective_logic)
+/// — constant/keys and the selective fields are the ST activation contract; priority is the
+/// original ST order. The LLM only needs a subset for routing, but we carry the full tuple so
+/// the parse output can carry activation signals through to the runtime without re-reading DB.
+pub type WorldBookParseEntry = (
+    String,        // id
+    Vec<String>,   // keys
+    String,        // content
+    String,        // comment
+    bool,          // constant
+    i32,           // priority
+    bool,          // selective
+    Vec<String>,   // secondary_keys
+    i32,           // selective_logic
+);
+
 #[derive(Serialize)]
 struct EntryForParsing {
     index: usize,
@@ -33,6 +56,8 @@ struct EntryForParsing {
     keys: Vec<String>,
     content: String,
     constant: bool,
+    /// Whether the entry uses ST selective activation (LLM may factor this into routing).
+    selective: bool,
 }
 
 const MULTI_AGENT_PARSE_SYSTEM_PROMPT: &str = r#"You are a world book analysis engine for a multi-agent roleplay platform. Given a list of world book entries from a single-agent character card, categorize each entry for use in a multi-agent system.
@@ -50,7 +75,9 @@ Guidelines:
 - "user": Information specifically for the player/user character
 
 IMPORTANT: Output ONLY a valid JSON array. No markdown, no explanation text outside the JSON.
-Output an array of objects, one per input entry (same order), each with fields: index, category, visibility, reason."#;
+Output an array of objects, one per input entry (same order), each with fields: index, category, visibility, reason.
+
+Note: Activation (whether an entry is injected each turn) is handled separately by the runtime using each entry's `constant`/`keys`/`selective` fields — you do NOT decide activation. Your job is purely routing (who may see an entry when it IS activated)."#;
 
 const SINGLE_AGENT_PARSE_SYSTEM_PROMPT: &str = r#"You are a world book analysis engine for a single-agent roleplay runtime. Given a list of world book entries from a character card, categorize each entry for prompt routing.
 
@@ -67,13 +94,15 @@ Guidelines:
 - "user": Information specifically for the player/user character.
 
 IMPORTANT: Output ONLY a valid JSON array. No markdown, no explanation text outside the JSON.
-Output an array of objects, one per input entry (same order), each with fields: index, category, visibility, reason."#;
+Output an array of objects, one per input entry (same order), each with fields: index, category, visibility, reason.
+
+Note: Activation (whether an entry is injected each turn) is handled separately by the runtime using each entry's `constant`/`keys`/`selective` fields — you do NOT decide activation. Your job is purely routing (who may see an entry when it IS activated)."#;
 
 /// Parse world book entries for multi-agent use via LLM categorization.
 pub async fn parse_world_book_for_multi_agent(
     provider: &OpenAiProvider,
     model: &str,
-    entries: &[(String, Vec<String>, String, String, bool)], // (id, keys, content, comment, constant)
+    entries: &[WorldBookParseEntry],
 ) -> Result<Vec<ParsedWorldBookEntry>, AppError> {
     parse_world_book_with_prompt(
         provider,
@@ -89,7 +118,7 @@ pub async fn parse_world_book_for_multi_agent(
 pub async fn parse_world_book_for_single_agent(
     provider: &OpenAiProvider,
     model: &str,
-    entries: &[(String, Vec<String>, String, String, bool)], // (id, keys, content, comment, constant)
+    entries: &[WorldBookParseEntry],
 ) -> Result<Vec<ParsedWorldBookEntry>, AppError> {
     parse_world_book_with_prompt(
         provider,
@@ -110,158 +139,60 @@ enum ParseMode {
 async fn parse_world_book_with_prompt(
     provider: &OpenAiProvider,
     model: &str,
-    entries: &[(String, Vec<String>, String, String, bool)], // (id, keys, content, comment, constant)
+    entries: &[WorldBookParseEntry],
     system_prompt: &'static str,
     mode: ParseMode,
 ) -> Result<Vec<ParsedWorldBookEntry>, AppError> {
-    let all_entries = Arc::new(entries.to_vec());
-    let batches: Vec<(usize, Vec<(String, Vec<String>, String, String, bool)>)> = all_entries
-        .chunks(INITIAL_BATCH_SIZE)
-        .enumerate()
-        .map(|(batch_start, batch)| (batch_start * INITIAL_BATCH_SIZE, batch.to_vec()))
-        .collect();
-
-    let batch_futures = batches.into_iter().map(|(offset, batch)| {
-        let provider = provider.clone();
-        let model = model.to_string();
-        let all_entries = Arc::clone(&all_entries);
-
-        async move {
-            parse_batch_with_split(
-                &provider,
-                &model,
-                all_entries.as_slice(),
-                offset,
-                &batch,
-                system_prompt,
-                mode,
-            )
-            .await
-            .map(|parsed| (offset, parsed))
-        }
-    });
-
-    let mut batch_results = Vec::new();
-    let mut pending = stream::iter(batch_futures).buffer_unordered(PARSE_CONCURRENCY);
-    while let Some(batch_result) = pending.next().await {
-        batch_results.push(batch_result?);
-    }
-
-    batch_results.sort_by_key(|(offset, _)| *offset);
-
-    Ok(batch_results
-        .into_iter()
-        .flat_map(|(_, parsed)| parsed)
-        .collect())
-}
-
-fn parse_batch_with_split<'a>(
-    provider: &'a OpenAiProvider,
-    model: &'a str,
-    all_entries: &'a [(String, Vec<String>, String, String, bool)],
-    offset: usize,
-    batch: &'a [(String, Vec<String>, String, String, bool)],
-    system_prompt: &'static str,
-    mode: ParseMode,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<Vec<ParsedWorldBookEntry>, AppError>> + Send + 'a>,
-> {
-    Box::pin(async move {
-        match parse_batch(provider, model, all_entries, offset, batch, system_prompt).await {
-            Ok(parsed) => Ok(parsed),
-            Err(e) if batch.len() > 1 => {
-                tracing::warn!(
-                    offset,
-                    len = batch.len(),
-                    error = %e,
-                    "World book parse batch failed; retrying with smaller batches"
-                );
-                let mid = batch.len() / 2;
-                let mut left = parse_batch_with_split(
-                    provider,
-                    model,
-                    all_entries,
-                    offset,
-                    &batch[..mid],
-                    system_prompt,
-                    mode,
-                )
-                .await?;
-                let mut right = parse_batch_with_split(
-                    provider,
-                    model,
-                    all_entries,
-                    offset + mid,
-                    &batch[mid..],
-                    system_prompt,
-                    mode,
-                )
-                .await?;
-                left.append(&mut right);
-                Ok(left)
+    // Concurrency/batching is driven by the shared llm_batch pipeline; this closure only
+    // defines how to classify one batch (build request → call LLM → map back), and the
+    // fallback defines how to recover a single failed entry heuristically.
+    let provider = provider.clone();
+    let model = model.to_string();
+    super::llm_batch::run_batched(
+        entries,
+        INITIAL_BATCH_SIZE,
+        PARSE_CONCURRENCY,
+        move |offset, all_entries, batch| {
+            let provider = provider.clone();
+            let model = model.clone();
+            async move {
+                parse_batch(&provider, &model, &all_entries, offset, &batch, system_prompt).await
             }
-            Err(e) => {
-                tracing::warn!(
-                    offset,
-                    error = %e,
-                    "World book single-entry LLM parse failed; using heuristic fallback"
-                );
-                Ok(vec![heuristic_entry(all_entries, offset, mode)])
-            }
-        }
-    })
+        },
+        move |offset, all_entries| heuristic_entry(all_entries, offset, mode),
+        "World book",
+    )
+    .await
 }
 
 async fn parse_batch(
     provider: &OpenAiProvider,
     model: &str,
-    all_entries: &[(String, Vec<String>, String, String, bool)],
+    all_entries: &[WorldBookParseEntry],
     offset: usize,
-    entries: &[(String, Vec<String>, String, String, bool)],
+    entries: &[WorldBookParseEntry],
     system_prompt: &'static str,
 ) -> Result<Vec<ParsedWorldBookEntry>, AppError> {
     let entries_for_llm: Vec<EntryForParsing> = entries
         .iter()
         .enumerate()
-        .map(
-            |(i, (_, keys, content, comment, constant))| EntryForParsing {
+        .map(|(i, (_, keys, content, comment, constant, _, selective, _, _))| {
+            EntryForParsing {
                 index: offset + i,
                 comment: comment.clone(),
                 keys: keys.clone(),
                 content: truncate_with_suffix(content, ENTRY_CONTENT_LIMIT, "...[truncated]"),
                 constant: *constant,
-            },
-        )
+                selective: *selective,
+            }
+        })
         .collect();
 
     let user_content = serde_json::to_string_pretty(&entries_for_llm)
         .map_err(|e| AppError::Internal(format!("Failed to serialize entries: {}", e)))?;
 
-    let request = ChatRequest {
-        model: model.to_string(),
-        messages: vec![
-            ChatMessage {
-                role: "system".to_string(),
-                content: system_prompt.to_string(),
-                reasoning_content: None,
-                tool_calls: None,
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: user_content,
-                reasoning_content: None,
-                tool_calls: None,
-            },
-        ],
-        temperature: Some(0.3),
-        top_p: Some(1.0),
-        max_tokens: Some(LLM_MAX_TOKENS),
-        frequency_penalty: Some(0.0),
-        presence_penalty: Some(0.0),
-        tools: None,
-        tool_choice: None,
-        stream: false,
-    };
+    let request =
+        ChatRequest::classification_request(model, system_prompt, user_content, LLM_MAX_TOKENS);
 
     let response = provider
         .chat_completion_with_retry(request, 2)
@@ -310,17 +241,21 @@ async fn parse_batch(
             if idx < offset || idx >= offset + entries.len() || idx >= all_entries.len() {
                 return None;
             }
-            let (_, keys, content, comment, constant) = &all_entries[idx];
+            let (_, keys, content, comment, constant, priority, selective, secondary_keys, selective_logic) =
+                &all_entries[idx];
             Some(ParsedWorldBookEntry {
                 keys: keys.clone(),
                 content: content.clone(),
                 comment: comment.clone(),
                 constant: *constant,
-                priority: 100,
+                priority: *priority,
                 enabled: true,
                 category: p.category,
                 visibility: p.visibility,
                 reason: p.reason,
+                selective: *selective,
+                secondary_keys: secondary_keys.clone(),
+                selective_logic: *selective_logic,
             })
         })
         .collect();
@@ -337,11 +272,12 @@ async fn parse_batch(
 }
 
 fn heuristic_entry(
-    entries: &[(String, Vec<String>, String, String, bool)],
+    entries: &[WorldBookParseEntry],
     index: usize,
     mode: ParseMode,
 ) -> ParsedWorldBookEntry {
-    let (_, keys, content, comment, constant) = &entries[index];
+    let (_, keys, content, comment, constant, priority, selective, secondary_keys, selective_logic) =
+        &entries[index];
     let (category, visibility, reason) = classify_heuristically(keys, content, comment, mode);
 
     ParsedWorldBookEntry {
@@ -349,11 +285,14 @@ fn heuristic_entry(
         content: content.clone(),
         comment: comment.clone(),
         constant: *constant,
-        priority: 100,
+        priority: *priority,
         enabled: true,
         category,
         visibility,
         reason,
+        selective: *selective,
+        secondary_keys: secondary_keys.clone(),
+        selective_logic: *selective_logic,
     }
 }
 
@@ -469,10 +408,6 @@ fn classify_heuristically(
         "public".to_string(),
         "LLM解析失败，默认回退为公开世界设定".to_string(),
     )
-}
-
-fn contains_any(text: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| text.contains(needle))
 }
 
 #[derive(Deserialize)]

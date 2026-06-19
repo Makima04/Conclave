@@ -12,6 +12,11 @@ use crate::runtime::{initializer, state_initializer, sub_agent, user_settings};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionConfig {
+    /// Primary chat model for this session (single-agent writer, or multi-agent base).
+    /// Format mirrors other model refs: `provider:<id>:<model>`, a raw model name, or
+    /// empty to fall back to the global default provider model.
+    #[serde(default)]
+    pub model: String,
     #[serde(default = "default_max_context_turns")]
     pub max_context_turns: i32,
     #[serde(default = "default_true")]
@@ -229,7 +234,13 @@ fn clean_card_display_text(content: &str) -> String {
     }
     output = output.replace("{{user}}", "你");
     output = output.replace("<user>", "你");
-    for marker in ["<context", "<options", "<tucao", "<UpdateVariable", "<UpdateVariablevariable"] {
+    for marker in [
+        "<context",
+        "<options",
+        "<tucao",
+        "<UpdateVariable",
+        "<UpdateVariablevariable",
+    ] {
         output = strip_tag_block(&output, marker);
     }
     output = strip_initvar_tags(&output);
@@ -483,9 +494,9 @@ async fn load_latest_states(
     let rows: Vec<SharedSaveStateRow> = qb.build_query_as().fetch_all(pool).await?;
     let mut states = HashMap::new();
     for row in rows {
-        states.entry(row.session_id).or_insert_with(|| {
-            serde_json::from_str(&row.state_json).unwrap_or_else(|_| json!({}))
-        });
+        states
+            .entry(row.session_id)
+            .or_insert_with(|| serde_json::from_str(&row.state_json).unwrap_or_else(|_| json!({})));
     }
     Ok(states)
 }
@@ -668,7 +679,7 @@ pub async fn list_shared_saves(
     }
 
     let character_name: Option<String> = sqlx::query_scalar(
-        "SELECT name FROM character_cards WHERE world_book_id = ? ORDER BY created_at ASC LIMIT 1"
+        "SELECT name FROM character_cards WHERE world_book_id = ? ORDER BY created_at ASC LIMIT 1",
     )
     .bind(&params.world_pack_id)
     .fetch_optional(&state.pool)

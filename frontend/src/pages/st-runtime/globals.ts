@@ -143,8 +143,28 @@ export function installStGlobals(store: StRuntimeStore): TavernHelperObject {
   (window as any).getAllVariables = tavernHelper._bind._getAllVariables.bind(window);
   (window as any).getCurrentMessageId = () => {
     const chat = store.chat;
-    return chat.length > 0 ? chat[chat.length - 1].message_id : 0;
+    if (chat.length === 0) return 0;
+    // Status-bar cards call `getChatMessages(getCurrentMessageId())[0].data.stat_data`,
+    // and `getChatMessages(range)` resolves a single number as an ARRAY INDEX
+    // (parseMessageRange), not a message_id. In Conclave `message_id` === turn_number,
+    // and user+assistant share a turn, so chat[last].message_id is NOT chat[last]'s
+    // position — passing it to getChatMessages lands on the wrong slot (often a user
+    // message with empty metadata → stat_data undefined → status bar blank).
+    //
+    // stat_data/display_data are only written to ASSISTANT messages, so return the
+    // array index of the last assistant message. getChatMessages(idx) then yields that
+    // assistant message with its stat snapshot.
+    for (let i = chat.length - 1; i >= 0; i--) {
+      if (chat[i].role === 'assistant') return i;
+    }
+    return chat.length - 1;
   };
+
+  // Card JS now runs inside the bounded ChatSurfaceIframe, where predefine.js
+  // merges `window.parent.TavernHelper` onto the iframe window — so card scripts
+  // see `getChatMessages` / `getVariables` (etc.) as top-level globals there, not
+  // on this host window. Nothing on the host calls those merged globals directly,
+  // so we no longer replicate the merge here.
 
   return tavernHelper;
 }

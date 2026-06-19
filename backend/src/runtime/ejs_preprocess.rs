@@ -7,7 +7,7 @@
 // Reference: ST-Prompt-Template/src/modules/handler.ts (handleWorldInfoLoaded)
 //            ST-Prompt-Template/src/utils/evaluate.ts (evalTemplateWI)
 
-use boa_engine::{Context, Source, JsResult};
+use boa_engine::{Context, JsResult, Source};
 use serde_json::Value;
 use tracing::{debug, warn};
 
@@ -104,12 +104,18 @@ fn ejs_to_js(ejs_source: &str) -> String {
                 remaining = &remaining[start + end + 2..];
             } else {
                 // No closing %> — treat rest as text
-                js.push_str(&format!("__ejs_output += {};\n", escape_js_string(remaining)));
+                js.push_str(&format!(
+                    "__ejs_output += {};\n",
+                    escape_js_string(remaining)
+                ));
                 break;
             }
         } else {
             // No more tags — emit remaining as text
-            js.push_str(&format!("__ejs_output += {};\n", escape_js_string(remaining)));
+            js.push_str(&format!(
+                "__ejs_output += {};\n",
+                escape_js_string(remaining)
+            ));
             break;
         }
     }
@@ -132,11 +138,7 @@ fn escape_js_string(s: &str) -> String {
 }
 
 /// Build the JS preamble that provides ST-compatible helper functions.
-fn build_js_preamble(
-    user_name: &str,
-    char_name: &str,
-    variables: &Value,
-) -> String {
+fn build_js_preamble(user_name: &str, char_name: &str, variables: &Value) -> String {
     let vars_json = variables.to_string();
     format!(
         r#"
@@ -248,7 +250,10 @@ pub fn preprocess_ejs_entry(
     // Evaluate with boa
     match eval_js(&full_script) {
         Ok(result) => {
-            debug!("[ejs_preprocess] evaluated entry, output length: {}", result.len());
+            debug!(
+                "[ejs_preprocess] evaluated entry, output length: {}",
+                result.len()
+            );
             Some(result)
         }
         Err(e) => {
@@ -267,9 +272,7 @@ fn eval_js(code: &str) -> JsResult<String> {
     let mut context = Context::default();
     let result = context.eval(Source::from_bytes(code))?;
     // boa_engine JsValue to string
-    Ok(result
-        .to_string(&mut context)?
-        .to_std_string_escaped())
+    Ok(result.to_string(&mut context)?.to_std_string_escaped())
 }
 
 /// A world book entry for preprocessing.
@@ -301,7 +304,9 @@ pub fn preprocess_world_book_entries(
             entry.comment.chars().take(50).collect::<String>()
         );
 
-        if let Some(processed) = preprocess_ejs_entry(&entry.content, user_name, char_name, variables) {
+        if let Some(processed) =
+            preprocess_ejs_entry(&entry.content, user_name, char_name, variables)
+        {
             entry.content = processed;
         }
     }
@@ -315,7 +320,10 @@ mod tests {
     #[test]
     fn test_is_preprocessing_entry_by_comment() {
         assert!(is_preprocessing_entry("EJS_SJG控制器", "some content"));
-        assert!(is_preprocessing_entry("[Preprocessing] entry", "some content"));
+        assert!(is_preprocessing_entry(
+            "[Preprocessing] entry",
+            "some content"
+        ));
         assert!(!is_preprocessing_entry("Normal entry", "some content"));
     }
 

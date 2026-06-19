@@ -25,6 +25,26 @@
 └───────────────────────────────────────┘
 ```
 
+## 后端正则渲染阶段（`render_card_message`）
+
+`backend/src/routes/st_host_render.rs` 对每条 assistant 消息按顺序跑：
+
+1. **`wrap_narrative_if_needed`**：通用兜底——若消息缺正文的包装标签（如 `<正文>`），先整体包一层，使该卡「正文美化」类正则能命中。标签名**从卡自己的 regex 脚本里发现，绝不硬编码**（见下）。
+2. **`append_status_placeholder_if_needed`**：MVU 卡或含 `<UpdateVariable>` 的消息追加 `<StatusPlaceHolderImpl/>`。
+3. **DisplaySource 正则**（`markdownOnly=false` 且 `promptOnly=false`）。
+4. **MarkdownDisplay 正则**（`markdownOnly=true`）：此处正文美化、状态栏美化等生效。
+5. **`strip_markdown_fences`**：剥离残留的 ``` 代码围栏。
+
+### 正文包装标签的通用发现（不硬编码）
+
+`discover_narrative_wrap_tag` 从脚本能推出标签名，需同时满足：
+
+- `markdownOnly=true`、`replaceString` 非空；
+- findRegex 是 `<TAG…>…</TAG>` 形态（闭合斜杠在正则字符串里可能转义为 `<\/TAG>`），由 `extract_wrapper_tag_name` 用 `\p{L}` 提取——自闭合的 `<StatusPlaceHolderImpl/>` 因无配对闭合标签被排除；
+- `replaceString` 是复杂 HTML（`is_complex_html`：含 `<style`/`<script`/`<html` 或长度 > 2000），用于区分「正文美化器」与「子组件美化器」（`<inner>`/`<插图>`/`<赏令接取>` 等，替换串很短）。
+
+多条命中时取 `replaceString` 最长者（几乎总是主体模板）。只在渲染时注入，**不改写存库内容**；已有标签的消息（即使未闭合）原样放行（卡的 `(?:</TAG>|$)` EOF 回退兜底已能处理未闭合）。
+
 ## 关键文件
 
 | 文件 | 职责 |
@@ -184,3 +204,4 @@ iframe 通过 `postMessage` 与父窗口通信：
 | 2026-06-12 | 开场白切换混入默认 InitVar | `apply_opening` 不再将世界书默认变量覆盖开场白内容中解析出的变量 |
 | 2026-06-12 | `swipe_id` 映射偏移 | 统一为 0-based：主开场白 = 0，alternate greetings = 1, 2, ... |
 | 2026-06-12 | `runtimeUpdated` 误删父级 floating status host | Runtime 更新仅推送快照到 iframe，不触发父页面宿主的卸载 |
+| 2026-06-18 | 模型漏输出 `<正文>` 等正文包装标签 → 正文美化正则不命中、消息无样式 | `render_card_message` 渲染时 `wrap_narrative_if_needed` 通用补包：标签名从卡自身 regex 脚本发现（`<TAG>…</TAG>` 形态 + 复杂 replaceString），不硬编码 |

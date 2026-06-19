@@ -9,5 +9,6 @@ pub mod providers;
 pub mod runtime_assets;
 pub mod sessions;
 pub mod settings;
+pub mod st_host_render;
 pub mod variables;
 pub mod worldbooks;

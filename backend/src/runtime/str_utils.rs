@@ -7,6 +7,22 @@ pub fn truncate_str(s: &str, max_chars: usize) -> &str {
     }
 }
 
+/// Tail-priority truncation: when the string exceeds `max_chars` Unicode characters,
+/// keep the LAST `max_chars` (the ending) instead of the beginning. Used for narrative
+/// recent-context, where the end of a long message (e.g. an opening greeting) reflects
+/// the current story position and matters far more than the preamble.
+pub fn truncate_str_tail(s: &str, max_chars: usize) -> &str {
+    let total = s.chars().count();
+    if total <= max_chars {
+        return s;
+    }
+    let skip = total - max_chars;
+    match s.char_indices().nth(skip) {
+        Some((idx, _)) => &s[idx..],
+        None => s,
+    }
+}
+
 /// Truncate a string to `max_chars` Unicode characters with an optional suffix.
 /// Returns a new String. If no truncation needed, returns the original as String.
 pub fn truncate_with_suffix(s: &str, max_chars: usize, suffix: &str) -> String {
@@ -17,6 +33,12 @@ pub fn truncate_with_suffix(s: &str, max_chars: usize, suffix: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// True iff `text` contains any of `needles` (case-sensitive; callers lowercase first where
+/// needed). Shared by the world-book / preset heuristics for keyword-group classification.
+pub fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
 }
 
 #[cfg(test)]
@@ -46,6 +68,28 @@ mod tests {
     #[test]
     fn truncate_str_empty() {
         assert_eq!(truncate_str("", 5), "");
+    }
+
+    #[test]
+    fn truncate_str_tail_no_truncation() {
+        assert_eq!(truncate_str_tail("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_str_tail_keeps_ending_ascii() {
+        // 11 chars, cap 5 → keep the last 5
+        assert_eq!(truncate_str_tail("hello world", 5), "world");
+    }
+
+    #[test]
+    fn truncate_str_tail_keeps_ending_cjk() {
+        // 好感度规则 = 5 chars, cap 3 → keep the last 3
+        assert_eq!(truncate_str_tail("好感度规则", 3), "度规则");
+    }
+
+    #[test]
+    fn truncate_str_tail_empty() {
+        assert_eq!(truncate_str_tail("", 5), "");
     }
 
     #[test]

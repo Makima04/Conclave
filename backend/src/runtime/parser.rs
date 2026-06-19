@@ -1,4 +1,4 @@
-use super::str_utils::truncate_str;
+use super::str_utils::{truncate_str, truncate_str_tail};
 use crate::error::AppError;
 use crate::provider::openai::OpenAiProvider;
 use crate::provider::types::{ChatMessage, ChatRequest};
@@ -15,14 +15,16 @@ pub async fn run_parser(
     context: &ContextBundle,
     agent: Option<&SubAgent>,
 ) -> Result<ParsedIntent, AppError> {
-    // Build recent context summary (last 3 messages max)
+    // Build recent context summary (last 3 messages max).
+    // Tail-priority + generous cap: keep the ending of long messages (the current story
+    // position from an opening greeting) so the parsed intent reflects where the plot is.
     let recent: Vec<String> = context
         .recent_context
         .iter()
         .rev()
         .take(3)
         .rev()
-        .map(|m| format!("[{}] {}", m.role, truncate_str(&m.content, 200)))
+        .map(|m| format!("[{}] {}", m.role, truncate_str_tail(&m.content, 10000)))
         .collect();
 
     let recent_text = if recent.is_empty() {
@@ -74,6 +76,7 @@ JSON格式：
         tools: None,
         tool_choice: None,
         stream: false,
+        ..Default::default()
     };
 
     tracing::debug!("Parser Agent: sending LLM request");

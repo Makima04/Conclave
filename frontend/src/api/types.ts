@@ -12,6 +12,7 @@ export interface Session {
 }
 
 export interface SessionConfig {
+  model: string;
   max_context_turns: number;
   stream: boolean;
   temperature: number;
@@ -38,6 +39,27 @@ export interface SessionConfig {
 export type RenderMode = 'auto' | 'schema' | 'sandbox' | 'text';
 export type UserSettingMergeStrategy = 'user_overrides_worldbook' | 'worldbook_overrides_user';
 
+/**
+ * Per-agent config (stored as JSON in `sub_agents.config`). All fields optional;
+ * empty/undefined falls back to session-level defaults then the global model.
+ * Mirrors backend `AgentConfig` (backend/src/runtime/types.rs).
+ */
+export interface AgentConfig {
+  model?: string;
+  max_context_turns?: number;
+  max_tokens?: number;
+  temperature?: number;
+  top_p?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  recall_mode?: string;
+  max_recall_events?: number;
+  /** Thinking/reasoning mode (DeepSeek etc.). undefined = model default; State agents default off. */
+  thinking_enabled?: boolean;
+  /** Thinking effort: 'low' | 'high' | 'max'. Applied only when thinking is enabled. */
+  reasoning_effort?: string;
+}
+
 export interface UserPersona {
   name: string;
   avatar: string;
@@ -47,6 +69,7 @@ export interface UserPersona {
 }
 
 export const DEFAULT_SESSION_CONFIG: SessionConfig = {
+  model: '',
   max_context_turns: 20,
   stream: true,
   temperature: 0.8,
@@ -95,6 +118,7 @@ export interface DebugTurnSummary {
   agent_count: number;
   total_prompt_tokens: number;
   total_completion_tokens: number;
+  total_cached_tokens: number;
   total_duration_ms: number;
 }
 
@@ -123,7 +147,30 @@ export interface AgentDebugSnapshot {
   duration_ms: number | null;
   prompt_tokens: number;
   completion_tokens: number;
+  /** Prompt-cache hit tokens for this agent's LLM call (0 when provider doesn't report). */
+  cached_tokens: number;
   created_at: string;
+}
+
+/** Master agent's execution plan (raw_output of a `phase:"master"` snapshot). */
+export interface MasterPlanCall {
+  agent_id: string;
+  task: string;
+  inject_from?: string[];
+}
+export interface MasterLifecycleAction {
+  action: 'create' | 'cooldown' | 'delete' | 'restore' | string;
+  agent_type?: string;
+  character_id?: string | null;
+  label?: string;
+  reason?: string;
+  context?: string | null;
+}
+export interface MasterPlan {
+  calls?: MasterPlanCall[];
+  lifecycle?: MasterLifecycleAction[];
+  user_auto?: boolean;
+  final_writer_id?: string | null;
 }
 
 export interface ProviderConfig {
@@ -235,6 +282,22 @@ export interface RuntimeTavernHelperScript extends Record<string, unknown> {
 export interface SessionRuntimeAssets {
   regex_scripts: RuntimeRegexScript[];
   tavern_helper_scripts: RuntimeTavernHelperScript[];
+}
+
+export interface StHostRenderedMessage {
+  id: string;
+  rendered_html: string;
+}
+
+export interface StHostRenderPayload {
+  world_pack_id: string;
+  character_card_id: string;
+  character_name: string;
+  first_message: string;
+  rendered_html: string;
+  greetings: string[];
+  rendered_greetings: string[];
+  messages: StHostRenderedMessage[];
 }
 
 export interface ParsedWorldBookEntry {

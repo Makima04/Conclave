@@ -1,10 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import * as api from '../api/client';
-import type { CharacterCard, Message, Session, SessionRuntimeAssets, WorldBook } from '../api/types';
-import { ConclaveCardHtml } from './components/ConclaveCardHtml';
-import { renderConclaveCardMessage } from './conclave-rendering';
-import { StScriptIframeHost } from './st-runtime/StScriptIframeHost';
+import type { CharacterCard, Message, Session, SessionRuntimeAssets, StHostRenderPayload, WorldBook } from '../api/types';
+import { ChatSurfaceIframe } from './st-runtime/ChatSurfaceIframe';
 import { createStRuntimeStore } from './st-runtime/store';
 import { installStGlobals, uninstallStGlobals } from './st-runtime/globals';
 import { normalizeTavernHelperScripts } from './st-runtime/tavern-helper-scripts';
@@ -45,18 +43,25 @@ function messageFingerprint(messages: Message[]): string {
   return messages.map(message => `${message.id}:${message.variant_index}:${message.content.length}`).join('|');
 }
 
-function contentFingerprint(content: string): string {
-  let hash = 5381;
-  for (let index = 0; index < content.length; index += 1) {
-    hash = ((hash << 5) + hash + content.charCodeAt(index)) | 0;
-  }
-  return (hash >>> 0).toString(36);
+const HTML_ESCAPES: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+};
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, ch => HTML_ESCAPES[ch] ?? ch);
 }
 
-function safeVariables(sessionState: unknown): Record<string, unknown> {
-  if (!sessionState || typeof sessionState !== 'object') return {};
-  const value = (sessionState as Record<string, unknown>).variables;
-  return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+// One chat-surface message as HTML. Mirrors the old .st-host-message article, but
+// uses the cx-* classes defined inside ChatSurfaceIframe's srcdoc stylesheet.
+// `bodyHtml` for assistant messages is already HTML (backend-rendered card markup);
+// for user messages it is an escaped cx-plain box.
+function messageHtml(name: string, bodyHtml: string, isUser: boolean): string {
+  const cls = isUser ? 'cx-msg cx-msg-user' : 'cx-msg cx-msg-assistant';
+  return `<div class="${cls}"><div class="cx-msg-role">${escapeHtml(name)}</div><div class="cx-msg-body">${bodyHtml}</div></div>`;
 }
 
 export default function StHost() {
@@ -70,8 +75,8 @@ export default function StHost() {
   const [worldBooks, setWorldBooks] = useState<WorldBook[]>([]);
   const [characterCard, setCharacterCard] = useState<CharacterCard | null>(null);
   const [runtimeAssets, setRuntimeAssets] = useState<SessionRuntimeAssets>(EMPTY_RUNTIME_ASSETS);
+  const [renderPayload, setRenderPayload] = useState<StHostRenderPayload | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [sessionState, setSessionState] = useState<unknown>({});
   const [openingIndex, setOpeningIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -79,12 +84,27 @@ export default function StHost() {
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState('');
   const [input, setInput] = useState('');
+  const [collapseThreshold, setCollapseThreshold] = useState(10);
   const [error, setError] = useState<string | null>(null);
   const [runtimeReady, setRuntimeReady] = useState(false);
 
-  const greetings = useMemo(() => parsedGreetings(characterCard), [characterCard]);
+  const greetings = useMemo(() => {
+    if (renderPayload) {
+      return [renderPayload.first_message, ...(renderPayload.greetings || [])].filter(
+        item => typeof item === 'string' && item.trim().length > 0,
+      );
+    }
+    return parsedGreetings(characterCard);
+  }, [characterCard, renderPayload]);
+  const renderedGreetings = useMemo(
+    () => renderPayload ? [renderPayload.rendered_html, ...(renderPayload.rendered_greetings || [])] : [],
+    [renderPayload],
+  );
+  const renderedMessageById = useMemo(
+    () => new Map((renderPayload?.messages || []).map(message => [message.id, message.rendered_html])),
+    [renderPayload],
+  );
   const sortedMessages = useMemo(() => sortMessages(messages), [messages]);
-  const variables = useMemo(() => safeVariables(sessionState), [sessionState]);
   const userName = session?.config?.user_persona?.name?.trim() || '你';
   const activeWorldBookId = session?.world_pack_id || '';
   const runtimeAssetHostScripts = useMemo(
@@ -94,22 +114,33 @@ export default function StHost() {
   const hasStarted = sortedMessages.some(message => message.turn_number > 0);
   const canApplyOpening = Boolean(characterCard && !hasStarted);
   const openingContent = greetings[openingIndex] || greetings[0] || '';
-  const openingPreviewKey = characterCard
-    ? `${activeWorldBookId || characterCard.world_book_id || 'no-world'}:${characterCard.id}:${openingIndex}:${contentFingerprint(openingContent)}`
-    : 'no-opening';
-  const showOpeningPreview = Boolean(characterCard && !hasStarted && openingContent);
+  const openingRenderedHtml = renderedGreetings[openingIndex] || renderedGreetings[0] || '';
+  const showOpeningPreview = Boolean(characterCard && !hasStarted && openingContent && openingRenderedHtml);
   const displayMessages = useMemo(
     () => hasStarted
       ? sortedMessages
       : sortedMessages.filter(message => !(message.turn_number === 0 && message.role === 'assistant')),
     [hasStarted, sortedMessages],
   );
-  const renderCardHtml = useCallback((content: string) => renderConclaveCardMessage(content, {
-    card: characterCard,
-    runtimeAssets,
-    variables,
-    userName,
-  }), [characterCard, runtimeAssets, userName, variables]);
+  const messagesHtml = useMemo(() => {
+    if (!characterCard) return '';
+    if (showOpeningPreview) {
+      return messageHtml(characterCard.name, openingRenderedHtml, false);
+    }
+    return displayMessages.map(message => {
+      const isUser = message.role === 'user';
+      const name = isUser ? userName : (characterCard.name || 'assistant');
+      const rendered = isUser ? '' : (renderedMessageById.get(message.id) || '');
+      const body = isUser || !rendered
+        ? `<div class="cx-plain">${escapeHtml(message.content)}</div>`
+        : rendered;
+      return messageHtml(name, body, isUser);
+    }).join('');
+  }, [characterCard, showOpeningPreview, openingRenderedHtml, displayMessages, renderedMessageById, userName]);
+  const streamingHtml = useMemo(() => {
+    if (!streaming || !streamText || !characterCard) return null;
+    return messageHtml(characterCard.name, `<div class="cx-plain">${escapeHtml(streamText)}</div>`, false);
+  }, [streaming, streamText, characterCard]);
 
   const refreshRuntimeStore = useCallback(async (
     card: CharacterCard | null,
@@ -136,9 +167,9 @@ export default function StHost() {
       const [
         worldBookData,
         messageData,
-        stateData,
         runtimeAssetData,
         cardData,
+        renderData,
       ] = await Promise.all([
         api.listWorldBooks().catch(errorValue => {
           console.error('[StHost] failed to load worldbooks:', errorValue);
@@ -148,10 +179,6 @@ export default function StHost() {
           console.error('[StHost] failed to load messages:', errorValue);
           return { items: [] };
         }),
-        api.getSessionState(sessionId).catch(errorValue => {
-          console.error('[StHost] failed to load session state:', errorValue);
-          return {};
-        }),
         api.getSessionRuntimeAssets(sessionId).catch(errorValue => {
           console.error('[StHost] failed to load runtime assets:', errorValue);
           return EMPTY_RUNTIME_ASSETS;
@@ -159,6 +186,12 @@ export default function StHost() {
         sessionData.world_pack_id
           ? api.getWorldBookCharacterCard(sessionData.world_pack_id).catch(errorValue => {
             console.warn('[StHost] no character card for worldbook:', errorValue);
+            return null;
+          })
+          : Promise.resolve(null),
+        sessionData.world_pack_id
+          ? api.getSessionStHostRender(sessionId).catch(errorValue => {
+            console.warn('[StHost] failed to load backend rendered HTML:', errorValue);
             return null;
           })
           : Promise.resolve(null),
@@ -173,9 +206,9 @@ export default function StHost() {
       setSession(sessionData);
       setWorldBooks(worldBookData.items || []);
       setMessages(nextMessages);
-      setSessionState(stateData || {});
       setRuntimeAssets(nextAssets);
       setCharacterCard(cardData);
+      setRenderPayload(renderData);
       setOpeningIndex(resolveOpeningIndex(cardData, nextMessages));
 
       if (cardData) {
@@ -240,6 +273,7 @@ export default function StHost() {
       setSession(updated);
       setCharacterCard(null);
       setRuntimeAssets(EMPTY_RUNTIME_ASSETS);
+      setRenderPayload(null);
       setMessages([]);
       setOpeningIndex(0);
       setRuntimeReady(false);
@@ -306,7 +340,13 @@ export default function StHost() {
           setInput('');
           setStreaming(false);
           setStreamText('');
-          void loadAll(false);
+          // Reload chat variables after the turn: the variable tool agent writes
+          // canonical state (the MVU variable tree) into session_variables during
+          // the turn, and card UI / MVU read it via store.chatVariables. Without
+          // this reload, variable updates never reach the rendered UI.
+          void loadAll(false).then(() => {
+            void storeRef.current?.reloadChatVariables();
+          });
         },
         session?.config?.stream ?? true,
       );
@@ -376,71 +416,25 @@ export default function StHost() {
         </aside>
 
         <main className="st-host-render-pane">
-          {runtimeReady && characterCard && runtimeAssetHostScripts.length > 0 && (
-            <StScriptIframeHost
-              cardKey={`${sessionId}:${characterCard.id}`}
-              scripts={runtimeAssetHostScripts}
-            />
-          )}
-
-          <section className="st-host-message-area" aria-live="polite">
-            {error && <div className="st-host-error">{error}</div>}
-
-            {!characterCard && (
+          <div className="st-host-chat-surface">
+            {!characterCard ? (
               <div className="st-host-empty-state">
                 当前会话没有绑定可渲染的角色卡。请从左侧切换世界书，或导入 JSON/PNG。
               </div>
+            ) : !runtimeReady ? (
+              <div className="st-host-empty-state">正在初始化渲染运行时…</div>
+            ) : (
+              <ChatSurfaceIframe
+                cardKey={`${sessionId}:${characterCard.id}:${runtimeAssetHostScripts.length}`}
+                messagesHtml={messagesHtml}
+                tavernHelperScripts={runtimeAssetHostScripts}
+                streamingHtml={streamingHtml}
+                collapseThreshold={collapseThreshold}
+              />
             )}
+          </div>
 
-            {showOpeningPreview && characterCard && (
-              <article className="st-host-message st-host-message-assistant">
-                <div className="st-host-message-role">{characterCard.name}</div>
-                <div className="st-host-message-body">
-                  <ConclaveCardHtml
-                    key={`opening-preview-${openingPreviewKey}`}
-                    html={renderCardHtml(openingContent)}
-                    cardKey={`opening:${openingPreviewKey}`}
-                    className="st-host-conclave-html"
-                  />
-                </div>
-              </article>
-            )}
-
-            {displayMessages.map(message => (
-              <article
-                key={message.id}
-                className={`st-host-message ${message.role === 'user' ? 'st-host-message-user' : 'st-host-message-assistant'}`}
-              >
-                <div className="st-host-message-role">
-                  {message.role === 'user' ? userName : characterCard?.name || 'assistant'}
-                </div>
-                <div className="st-host-message-body">
-                  {message.role === 'user' || !characterCard ? (
-                    <div className="st-host-plain-text">{message.content}</div>
-                  ) : (
-                    <ConclaveCardHtml
-                      html={renderCardHtml(message.content)}
-                      cardKey={`message:${sessionId}:${characterCard.id}:${message.id}:${message.variant_index}:${contentFingerprint(message.content)}`}
-                      className="st-host-conclave-html"
-                    />
-                  )}
-                </div>
-              </article>
-            ))}
-
-            {streaming && streamText && characterCard && (
-              <article className="st-host-message st-host-message-assistant is-streaming">
-                <div className="st-host-message-role">{characterCard.name}</div>
-                <div className="st-host-message-body">
-                  <ConclaveCardHtml
-                    html={renderCardHtml(streamText)}
-                    cardKey={`stream:${sessionId}:${characterCard.id}:${contentFingerprint(streamText)}`}
-                    className="st-host-conclave-html"
-                  />
-                </div>
-              </article>
-            )}
-          </section>
+          {error && <div className="st-host-error">{error}</div>}
 
           {greetings.length > 1 && canApplyOpening && (
             <div className="st-host-opening-controls">
@@ -475,6 +469,22 @@ export default function StHost() {
               {streaming ? '发送中' : '发送'}
             </button>
           </form>
+
+          <div className="st-host-collapse-control">
+            <label htmlFor="st-host-collapse-input">保留最近轮数（更早折叠）</label>
+            <input
+              id="st-host-collapse-input"
+              type="number"
+              min={0}
+              step={1}
+              value={collapseThreshold}
+              onChange={event => {
+                const value = Number(event.target.value);
+                setCollapseThreshold(Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0);
+              }}
+            />
+            <span className="st-host-collapse-hint">0 = 不折叠</span>
+          </div>
         </main>
       </div>
     </div>

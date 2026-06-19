@@ -294,7 +294,21 @@ export function getTavernHelper(store: StRuntimeStore) {
       // identity helpers
       _getIframeName,
       _getScriptId,
-      _getCurrentMessageId,
+      // Status-bar cards (状态栏美化) call getCurrentMessageId() to pick the message
+      // whose variables to render. In native ST each message renders in its own
+      // TH-message--<id>--… iframe, so the id is unambiguous. Our chat-surface is
+      // ONE global iframe (TH-script--…) rendering the whole chat, so there is no
+      // per-message context — fall back to the latest message id (status bar shows
+      // current state) instead of throwing and aborting initDisplay before it fills
+      // values. Mirrors the isMessageIframe guard in _getAllVariables above.
+      _getCurrentMessageId: function (this: Window): number {
+        let iframeName: string | undefined;
+        try { iframeName = _getIframeName.call(this); } catch {}
+        if (iframeName?.startsWith('TH-message')) {
+          return getMessageId(iframeName);
+        }
+        return getLastMessageId(store);
+      },
       _reloadIframe,
       _errorCatched,
     },
@@ -330,7 +344,9 @@ export function getTavernHelper(store: StRuntimeStore) {
     setChatMessage: (fields: any, messageId?: number) => {
       return store.setChatMessage(fields, messageId);
     },
-    setChatMessages: stub('setChatMessages'),
+    setChatMessages: (messages: any, options?: any) => {
+      return store.setChatMessages(messages, options);
+    },
     createChatMessages: stub('createChatMessages'),
     deleteChatMessages: stub('deleteChatMessages'),
     rotateChatMessages: stub('rotateChatMessages'),

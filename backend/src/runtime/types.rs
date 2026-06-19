@@ -147,7 +147,7 @@ pub struct PresetModuleContext {
 }
 
 /// A world book entry ready for context injection.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorldBookContextEntry {
     pub content: String,
     pub keys: Vec<String>,
@@ -157,6 +157,17 @@ pub struct WorldBookContextEntry {
     pub visibility: String,
     /// Category: "global", "writer_only", "gm_only", "npc:<name>", "user"
     pub category: String,
+    /// ST selective activation: when true, the entry activates only when both primary
+    /// keys and secondary_keys match per `selective_logic`. Set on parse; consumed by the
+    /// activation filter in context.rs (`is_entry_activated`).
+    #[serde(default)]
+    pub selective: bool,
+    /// Secondary keys for selective activation (ST `keysecondary`).
+    #[serde(default)]
+    pub secondary_keys: Vec<String>,
+    /// Selective logic: 0=AND, 1=OR, 2=NOT (ST `selective_logic`).
+    #[serde(default)]
+    pub selective_logic: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,6 +246,8 @@ pub struct AgentTrace {
     pub agent_type: String,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
+    /// Tokens served from prompt cache for this agent's call (0 when provider doesn't report).
+    pub cached_tokens: u32,
     pub duration_ms: i32,
     pub input_summary: String,
     pub output_summary: String,
@@ -274,6 +287,8 @@ pub struct AgentDebugSnapshot {
     pub duration_ms: i32,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
+    /// Prompt-cache hit tokens for this snapshot's LLM call (0 when not reported).
+    pub cached_tokens: u32,
     pub created_at: String,
 }
 
@@ -386,6 +401,23 @@ pub struct AgentConfig {
     /// Per-agent model override (takes priority over session sub_agent_model)
     #[serde(default)]
     pub model: Option<String>,
+    /// Top-p (nucleus sampling) for this agent's LLM call
+    #[serde(default)]
+    pub top_p: Option<f32>,
+    /// Frequency penalty for this agent's LLM call
+    #[serde(default)]
+    pub frequency_penalty: Option<f32>,
+    /// Presence penalty for this agent's LLM call
+    #[serde(default)]
+    pub presence_penalty: Option<f32>,
+    /// Thinking/reasoning mode for models that support it (e.g. DeepSeek thinking).
+    /// `None` = use model default (no param injected). For `State` agents the backend
+    /// treats `None` as `false` (thinking disabled) so tool_choice works.
+    #[serde(default)]
+    pub thinking_enabled: Option<bool>,
+    /// Thinking effort: "low" | "high" | "max". Only applied when thinking is enabled.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 impl Default for AgentConfig {
@@ -397,6 +429,11 @@ impl Default for AgentConfig {
             recall_mode: None,
             max_recall_events: None,
             model: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            thinking_enabled: None,
+            reasoning_effort: None,
         }
     }
 }
@@ -480,5 +517,7 @@ pub struct AgentOutput {
     pub tool_calls: Option<Vec<crate::provider::types::ToolCall>>,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
+    /// Prompt-cache hit tokens for this LLM call (0 when provider doesn't report).
+    pub cached_tokens: u32,
     pub duration_ms: i32,
 }

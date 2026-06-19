@@ -120,11 +120,22 @@ pub fn build_normalized_state(
 
 /// Return the writable subset of state for the LLM tool context.
 ///
-/// In v3 there is no filtering — the entire state is writable.
-pub fn tool_state_for_context(
-    state: &Value,
-    _contract: Option<&SessionStateContract>,
-) -> Value {
+/// In v3 there is no filtering — the entire state is writable. BUT the canonical state
+/// (`state_snapshots.state_json`) wraps the variable tree under a top-level `variables`
+/// key: `{"variables": {"<user>": {...}, "时幼微": {...}}}`. The State Agent's paths are
+/// rooted at the *inner* tree (`<user>.精神状态数值.调教值`), not at the wrapper. If we
+/// returned the wrapper as-is, `normalize_changes`' existence check
+/// (`get_path_value(writable_state, "<user>.精神状态数值.调教值")`) would look for `<user>`
+/// at the top level (which only holds `variables`) → `exists=false` → every change
+/// filtered out → `extract_tool_call` returns None → persist never runs → empty
+/// stat_data → 状态栏 "角色数据缺失". Unwrap `variables` so the writable tree matches the
+/// path roots the tool actually emits.
+pub fn tool_state_for_context(state: &Value, _contract: Option<&SessionStateContract>) -> Value {
+    if let Some(inner) = state.get("variables") {
+        // The wrapper present — return the inner variable tree directly.
+        return inner.clone();
+    }
+    // Already-unwrapped (or a legacy/empty snapshot): return as-is.
     state.clone()
 }
 
@@ -200,12 +211,11 @@ pub async fn persist_normalized_changes_tx(
     }
 
     // Read current variables (or start with empty object)
-    let current_row: Option<(String,)> = sqlx::query_as(
-        "SELECT variables FROM session_variables WHERE session_id = ?",
-    )
-    .bind(session_id)
-    .fetch_optional(&mut **tx)
-    .await?;
+    let current_row: Option<(String,)> =
+        sqlx::query_as("SELECT variables FROM session_variables WHERE session_id = ?")
+            .bind(session_id)
+            .fetch_optional(&mut **tx)
+            .await?;
 
     let mut variables: Value = current_row
         .and_then(|(json,)| serde_json::from_str(&json).ok())
@@ -369,18 +379,25 @@ fn set_by_path(root: &mut Value, path: &str, value: Value) {
     }
 
     let (ref key, idx) = segments[last];
-    if !key.is_empty() {
+    if let Some(idx) = idx {
+        // `key[index]` on the parent (e.g. MVU `[value, "说明"]` — write only the
+        // value slot, preserve siblings). CRITICAL: ensure the ARRAY lives at
+        // cursor[key], not on cursor itself — ensure_array_index on cursor would
+        // replace the parent Object with a fresh array, collapsing the whole
+        // subtree (seen when `resolve_array_value_slot` folds `称号` → `称号[0]`:
+        // `<user>` got blown away into `[["咬伤主人的野猫", …]]`).
+        ensure_object(cursor, key);
+        let slot = cursor.get_mut(key).expect("key inserted by ensure_object");
+        ensure_array_index(slot, idx);
+        slot[idx] = value;
+    } else if !key.is_empty() {
         if let Value::Object(map) = cursor {
-            map.insert(key.clone(), value.clone());
+            map.insert(key.clone(), value);
         } else {
             let mut map = Map::new();
-            map.insert(key.clone(), value.clone());
+            map.insert(key.clone(), value);
             *cursor = Value::Object(map);
         }
-    }
-    if let Some(idx) = idx {
-        ensure_array_index(cursor, idx);
-        cursor[idx] = value;
     }
 }
 

@@ -2,7 +2,8 @@ use crate::error::AppError;
 use crate::routes::sessions::SessionConfig;
 use crate::runtime::executor::resolve_model_target;
 use crate::runtime::types::{
-    AgentCall, AgentDebugSnapshot, AgentStatusEvent, AgentTrace, AgentType, SubAgentExecutionDebug,
+    AgentCall, AgentDebugSnapshot, AgentInjectedOutputDebug, AgentStatusEvent, AgentTrace,
+    AgentType, SubAgentExecutionDebug,
 };
 use crate::runtime::{
     compression, context, dag, master, parser, plan_validator, sub_agent, turn_finalizer,
@@ -122,7 +123,7 @@ pub async fn execute_multi_agent_turn(
         .find(|a| a.agent_type == AgentType::Master);
 
     emit_status(&status_tx, "master", "总控", "working");
-    let plan = master::run_master(
+    let (plan, master_debug) = master::run_master(
         &master_target.provider,
         &master_target.model,
         user_input,
@@ -134,6 +135,49 @@ pub async fn execute_multi_agent_turn(
     )
     .await?;
     emit_status(&status_tx, "master", "总控", "done");
+
+    // Master snapshot — gives the inspector's top DAG a "master decided → who got
+    // called" node. raw_output is the plan JSON; injected_outputs draw the edges
+    // from master to each called agent. (Other fields empty: master doesn't go
+    // through the sub_agent execution path that fills recalled/worldbook/etc.)
+    debug_snapshots.push(AgentDebugSnapshot {
+        id: uuid::Uuid::new_v4().to_string(),
+        session_id: session_id.to_string(),
+        turn_number,
+        phase: "master".to_string(),
+        level_index: None,
+        agent_id: master_agent.map(|a| a.id.clone()),
+        agent_type: "master".to_string(),
+        agent_label: master_agent
+            .map(|a| a.label.clone())
+            .unwrap_or_else(|| "总控".to_string()),
+        model: master_target.model.clone(),
+        task: "生成执行计划".to_string(),
+        system_prompt: master_debug.system_prompt,
+        user_prompt: master_debug.user_prompt,
+        injected_from: vec![],
+        injected_outputs: plan
+            .calls
+            .iter()
+            .map(|c| AgentInjectedOutputDebug {
+                agent_id: c.agent_id.clone(),
+                agent_type: String::new(),
+                text: c.task.clone(),
+            })
+            .collect(),
+        preset_modules: vec![],
+        worldbook_entries: vec![],
+        recent_messages: vec![],
+        recalled_events: vec![],
+        state_slice: serde_json::Value::Null,
+        raw_output: serde_json::to_string_pretty(&plan).unwrap_or_default(),
+        tool_calls: serde_json::json!([]),
+        duration_ms: master_debug.duration_ms,
+        prompt_tokens: master_debug.prompt_tokens,
+        completion_tokens: master_debug.completion_tokens,
+        cached_tokens: master_debug.cached_tokens,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    });
 
     tracing::info!(
         session = session_id,
@@ -151,7 +195,70 @@ pub async fn execute_multi_agent_turn(
         session_config.max_active_agents as usize,
     );
 
-    // 6.6. Inject State Agent into the plan if variables exist and Master didn't include one.
+    // 6.6. Inject User Agent when Master enabled player auto-completion (plan.user_auto).
+    // User Agent embodies the player's character for auto-generated physical action (combat,
+    // delegated movement). Mirrors the State Agent injection in 6.7. Runs AFTER the NPCs (so its
+    // auto-action can react to what NPCs did) and BEFORE the writer (writer aggregates the
+    // player's action into the narrative). Note: the doc's "互相注入" combat pattern is simplified
+    // here to NPC→user_agent→writer (a DAG can't express a mutual cycle).
+    if plan.user_auto {
+        let user_agent_id = active_agents
+            .iter()
+            .find(|a| a.agent_type == AgentType::User)
+            .map(|a| a.id.clone());
+        match user_agent_id {
+            Some(user_agent_id) => {
+                let already_in_plan = validated
+                    .calls
+                    .iter()
+                    .any(|c| c.agent_id == user_agent_id);
+                if !already_in_plan {
+                    let npc_ids: Vec<String> = validated
+                        .calls
+                        .iter()
+                        .filter(|c| {
+                            active_agents
+                                .iter()
+                                .find(|a| a.id == c.agent_id)
+                                .map_or(false, |a| a.agent_type == AgentType::Npc)
+                        })
+                        .map(|c| c.agent_id.clone())
+                        .collect();
+                    tracing::info!(
+                        session = session_id,
+                        agent_id = %user_agent_id,
+                        depends_on = ?npc_ids,
+                        "Injecting User Agent into DAG (user_auto)"
+                    );
+                    validated.calls.push(AgentCall {
+                        agent_id: user_agent_id.clone(),
+                        task: "作为玩家角色，根据本轮用户意图和上述NPC的行为，自动补完玩家的物理动作/战斗回合。"
+                            .to_string(),
+                        inject_from: npc_ids,
+                    });
+                    // Writer must depend on (and thus see) the player's auto-action: append to
+                    // every writer call's inject_from so compile_dag orders it after user_agent.
+                    for c in validated.calls.iter_mut() {
+                        let is_writer = active_agents
+                            .iter()
+                            .find(|a| a.id == c.agent_id)
+                            .map_or(false, |a| a.agent_type == AgentType::Writer);
+                        if is_writer && !c.inject_from.contains(&user_agent_id) {
+                            c.inject_from.push(user_agent_id.clone());
+                        }
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(
+                    session = session_id,
+                    "plan.user_auto=true but no User Agent exists; skipping user_auto injection"
+                );
+            }
+        }
+    }
+
+    // 6.7. Inject State Agent into the plan if variables exist and Master didn't include one.
     // State Agent runs after NPC/User, before Writer — uses tool call to update variables.
     let has_variables = ctx
         .structured_state
@@ -265,15 +372,27 @@ pub async fn execute_multi_agent_turn(
                 writer_called = true;
             }
 
-            // Per-agent model: agent.config.model → session sub_agent_model → global default
+            // Per-agent model: agent.config.model → (State only: variable_tool_model) → sub_agent_model → global default
             let agent_config: crate::runtime::types::AgentConfig =
                 serde_json::from_value(agent.config.clone()).unwrap_or_default();
             let effective_model = agent_config
                 .model
                 .as_deref()
                 .filter(|m| !m.is_empty())
-                .unwrap_or(sub_model);
-            let target = resolve_model_target(pool, model, effective_model).await?;
+                .map(|m| m.to_string())
+                .or_else(|| {
+                    // State agent prefers the dedicated variable_tool_model knob (so the simple,
+                    // deterministic variable-update call can use a non-thinking model) before
+                    // falling back to the generic sub_agent_model used by narrative agents.
+                    if agent.agent_type == AgentType::State {
+                        let vtm = session_config.variable_tool_model.trim();
+                        (!vtm.is_empty()).then(|| vtm.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| sub_model.to_string());
+            let target = resolve_model_target(pool, model, &effective_model).await?;
 
             emit_status(
                 &status_tx,
@@ -311,6 +430,7 @@ pub async fn execute_multi_agent_turn(
                 &state,
                 &ctx,
                 agent_tools,
+                parsed_intent.as_ref(),
             ));
         }
 
@@ -414,6 +534,7 @@ pub async fn execute_multi_agent_turn(
                         agent_type: agent.agent_type.as_str().to_string(),
                         prompt_tokens: 0,
                         completion_tokens: 0,
+                        cached_tokens: 0,
                         duration_ms: 0,
                         input_summary: format!("Level {} agent call", level_idx),
                         output_summary: format!("ERROR: {}", e),
@@ -466,6 +587,7 @@ pub async fn execute_multi_agent_turn(
                 &state,
                 &ctx,
                 None,
+                parsed_intent.as_ref(),
             )
             .await?;
             emit_status(&status_tx, "writer", &writer.label, "done");
@@ -634,6 +756,7 @@ fn build_debug_snapshot(
         duration_ms: output.duration_ms,
         prompt_tokens: output.prompt_tokens,
         completion_tokens: output.completion_tokens,
+        cached_tokens: output.cached_tokens,
         created_at: chrono::Utc::now().to_rfc3339(),
     }
 }
@@ -654,6 +777,7 @@ fn build_agent_trace(output: &crate::runtime::types::AgentOutput, model: &str) -
         agent_type: output.agent_type.as_str().to_string(),
         prompt_tokens: output.prompt_tokens,
         completion_tokens: output.completion_tokens,
+        cached_tokens: output.cached_tokens,
         duration_ms: output.duration_ms,
         input_summary,
         output_summary,
@@ -697,6 +821,7 @@ mod tests {
             tool_calls: None,
             prompt_tokens: 100,
             completion_tokens: 50,
+            cached_tokens: 0,
             duration_ms: 200,
         }
     }

@@ -89,6 +89,11 @@ export interface StRuntimeStore extends StRuntimeStoreState {
   // --- Synchronous writes (memory + emit + schedule flush) ---
   setVariables(scope: StVariableScope, data: Record<string, any>, opts?: StSetVariablesOpts): void;
   setChatMessage(fields: Partial<StChatMessage>, messageId?: number): void;
+  /** Batch update multiple messages (JSR/TavernHelper setChatMessages). */
+  setChatMessages(
+    messages: Array<{ message_id?: number | string } & Partial<StChatMessage>>,
+    options?: { refresh?: 'affected' | 'all' | null } & Record<string, unknown>,
+  ): void;
   deleteVariable(scope: StVariableScope, key: string): void;
   replaceRegexScripts(scripts: RegexScript[]): void;
 
@@ -346,6 +351,52 @@ export function createStRuntimeStore(): StRuntimeStore {
     }, FLUSH_DEBOUNCE_MS);
   }
 
+  // Apply a partial field update to a single in-memory message, persisting the
+  // side effects to the backend. Shared by setChatMessage (single) and
+  // setChatMessages (batch) so the two never drift. Does NOT bump() — callers
+  // decide whether/how to notify subscribers.
+  function applyMessageFields(msg: StChatMessage, fields: Partial<StChatMessage>) {
+    if (!_sessionId) return;
+
+    // swipe_id change (switch variant / apply opening)
+    if (fields.swipe_id !== undefined && fields.swipe_id !== msg.swipe_id) {
+      const newSwipeId = Math.max(0, Math.min(fields.swipe_id, msg.swipes.length - 1));
+      msg.swipe_id = newSwipeId;
+      msg.message = msg.swipes[newSwipeId] ?? msg.message;
+
+      if (msg._backendId && _sessionId) {
+        if (msg.message_id === 0) {
+          // Opening message — use applyOpeningMessage
+          void api.applyOpeningMessage(_sessionId, msg.message).catch(err => {
+            console.error('[StRuntimeStore] applyOpeningMessage failed:', err);
+          });
+        } else {
+          // Regular message — switch variant (backend variant_index = swipe_id - 1)
+          const backendVariantIndex = newSwipeId - 1;
+          void api.switchVariant(_sessionId, msg._backendId, backendVariantIndex).catch(err => {
+            console.error('[StRuntimeStore] switchVariant failed:', err);
+          });
+        }
+      }
+    }
+
+    // text change
+    if (fields.message !== undefined && fields.message !== msg.message) {
+      msg.message = fields.message;
+      msg.swipes[msg.swipe_id] = fields.message;
+
+      if (msg._backendId && _sessionId) {
+        void api.editMessage(_sessionId, msg._backendId, fields.message).catch(err => {
+          console.error('[StRuntimeStore] editMessage failed:', err);
+        });
+      }
+    }
+
+    if (fields.name !== undefined) msg.name = fields.name;
+    if (fields.is_hidden !== undefined) msg.is_hidden = fields.is_hidden;
+    if (fields.data !== undefined) msg.data = { ...fields.data };
+  }
+
   // --- Public API ---
 
   const store: StRuntimeStore = {
@@ -362,7 +413,14 @@ export function createStRuntimeStore(): StRuntimeStore {
     // load
     // -------------------------------------------------------------------
     async load(sessionId, card, runtimeAssets) {
-      if (_disposed) return;
+      // Revive a previously-disposed store. This store lives in a useRef, so
+      // React StrictMode (dev) double-invokes effects: the unmount cleanup
+      // disposes it, then the remount calls load() again on the SAME instance.
+      // Without reviving, load() is a no-op (_disposed guard), _chat stays [],
+      // and the card status-bar JS throws "无法加载状态数据" because the
+      // iframe mounts before any message data exists. dispose() is only ever
+      // the final teardown of this instance, so re-loading is always intended.
+      _disposed = false;
       _sessionId = sessionId;
       _localOnly = false;
 
@@ -399,7 +457,7 @@ export function createStRuntimeStore(): StRuntimeStore {
     },
 
     loadLocal(sessionId, card, runtimeAssets) {
-      if (_disposed) return;
+      _disposed = false; // revive on re-load — see load()
       _sessionId = sessionId;
       _localOnly = true;
       _character = card ?? null;
@@ -544,63 +602,39 @@ export function createStRuntimeStore(): StRuntimeStore {
       const targetId = fields.message_id ?? messageId;
       if (targetId == null) return;
 
-      const idx = _chat.findIndex(m => m.message_id === targetId);
-      if (idx === -1) return;
+      const msg = _chat.find(m => m.message_id === targetId);
+      if (!msg) return;
 
-      const msg = _chat[idx];
-
-      // Handle swipe_id change
-      if (fields.swipe_id !== undefined && fields.swipe_id !== msg.swipe_id) {
-        const newSwipeId = Math.max(0, Math.min(fields.swipe_id, msg.swipes.length - 1));
-        msg.swipe_id = newSwipeId;
-        msg.message = msg.swipes[newSwipeId] ?? msg.message;
-
-        // Persist to backend: switch variant or apply opening
-        if (msg._backendId && _sessionId) {
-          if (msg.message_id === 0) {
-            // Opening message — use applyOpeningMessage
-            void api.applyOpeningMessage(_sessionId, msg.message).catch(err => {
-              console.error('[StRuntimeStore] applyOpeningMessage failed:', err);
-            });
-          } else {
-            // Regular message — switch variant
-            // Backend variant_index = swipe_id - 1 (reverse of normalization)
-            const backendVariantIndex = newSwipeId - 1;
-            void api.switchVariant(_sessionId, msg._backendId, backendVariantIndex).catch(err => {
-              console.error('[StRuntimeStore] switchVariant failed:', err);
-            });
-          }
-        }
-      }
-
-      // Handle text change
-      if (fields.message !== undefined && fields.message !== msg.message) {
-        msg.message = fields.message;
-        msg.swipes[msg.swipe_id] = fields.message;
-
-        if (msg._backendId && _sessionId) {
-          void api.editMessage(_sessionId, msg._backendId, fields.message).catch(err => {
-            console.error('[StRuntimeStore] editMessage failed:', err);
-          });
-        }
-      }
-
-      // Handle name change
-      if (fields.name !== undefined) {
-        msg.name = fields.name;
-      }
-
-      // Handle is_hidden change
-      if (fields.is_hidden !== undefined) {
-        msg.is_hidden = fields.is_hidden;
-      }
-
-      // Handle data change
-      if (fields.data !== undefined) {
-        msg.data = { ...fields.data };
-      }
-
+      applyMessageFields(msg, fields);
       bump();
+    },
+
+    // -------------------------------------------------------------------
+    // setChatMessages — batch update (JSR/TavernHelper setChatMessages).
+    // Applies each partial update to its message_id, then notifies once.
+    // MVU and card UIs use this to mutate several messages at once (e.g.
+    // appending a status placeholder, switching openings).
+    // -------------------------------------------------------------------
+    setChatMessages(messages, _options) {
+      if (_disposed || !_sessionId) return;
+
+      let changed = false;
+      for (const fields of Array.isArray(messages) ? messages : []) {
+        if (!fields || typeof fields !== 'object') continue;
+
+        // message_id may arrive as string (JSON) or number; normalize.
+        const rawId = (fields as { message_id?: number | string }).message_id;
+        const numericId = typeof rawId === 'string' ? Number(rawId) : rawId;
+        if (numericId == null || !Number.isFinite(numericId as number)) continue;
+
+        const msg = _chat.find(m => m.message_id === (numericId as number));
+        if (!msg) continue;
+
+        applyMessageFields(msg, fields);
+        changed = true;
+      }
+
+      if (changed) bump();
     },
 
     // -------------------------------------------------------------------

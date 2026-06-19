@@ -167,8 +167,8 @@ pub async fn finalize_turn_with_options(
                model, task, system_prompt, user_prompt, injected_from_json, injected_outputs_json,
                preset_modules_json, worldbook_entries_json, recent_messages_json, recalled_events_json,
                state_slice_json, raw_output, tool_calls_json, duration_ms, prompt_tokens,
-               completion_tokens, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#
+               completion_tokens, cached_tokens, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#
         )
         .bind(&snapshot.id)
         .bind(session_id)
@@ -194,6 +194,7 @@ pub async fn finalize_turn_with_options(
         .bind(snapshot.duration_ms)
         .bind(snapshot.prompt_tokens as i32)
         .bind(snapshot.completion_tokens as i32)
+        .bind(snapshot.cached_tokens as i32)
         .bind(&snapshot.created_at)
         .execute(&mut **tx)
         .await?;

@@ -5,9 +5,7 @@ use std::sync::Arc;
 
 use crate::error::AppError;
 use crate::routes::messages::AppState;
-use crate::runtime::llm_limiter::{
-    DEFAULT_LLM_CONCURRENCY_LIMIT, normalize_limit,
-};
+use crate::runtime::llm_limiter::{DEFAULT_LLM_CONCURRENCY_LIMIT, normalize_limit};
 
 #[derive(Debug, Serialize)]
 pub struct RuntimeSettings {
@@ -146,6 +144,9 @@ mod tests {
         let high_limit = load_llm_concurrency_limit(&pool)
             .await
             .expect("load high runtime setting");
-        assert_eq!(high_limit, crate::runtime::llm_limiter::MAX_LLM_CONCURRENCY_LIMIT);
+        assert_eq!(
+            high_limit,
+            crate::runtime::llm_limiter::MAX_LLM_CONCURRENCY_LIMIT
+        );
     }
 }

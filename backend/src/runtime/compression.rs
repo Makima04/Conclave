@@ -127,6 +127,7 @@ JSON格式：
         tools: None,
         tool_choice: None,
         stream: false,
+        ..Default::default()
     };
 
     tracing::debug!(model = model, "Compression Agent: sending LLM request");

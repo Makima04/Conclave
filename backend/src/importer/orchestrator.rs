@@ -25,15 +25,15 @@ pub async fn run_import(
     // 3. Build simple import report
     let stages = vec![
         report::make_stage("parse", "Parse Source", StageStatus::Success, None),
-        report::make_stage(
-            "package_build",
-            "Package Build",
-            StageStatus::Success,
-            None,
-        ),
+        report::make_stage("package_build", "Package Build", StageStatus::Success, None),
     ];
-    let import_report =
-        report::build_report(&card.source_format.to_string(), &card.source_hash, stages, vec![], vec![]);
+    let import_report = report::build_report(
+        &card.source_format.to_string(),
+        &card.source_hash,
+        stages,
+        vec![],
+        vec![],
+    );
 
     Ok((package, import_report, card))
 }
@@ -146,7 +146,14 @@ mod tests {
         assert_eq!(card.name, "Test Card");
         assert_eq!(package.manifest.name, "Test Card");
         assert_eq!(package.ui.ui_type, UiType::RawPreview);
-        assert!(package.ui.html.as_deref().unwrap_or_default().contains("Hello world"));
+        assert!(
+            package
+                .ui
+                .html
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Hello world")
+        );
         assert_eq!(report.status, ImportStatus::Success);
         assert_eq!(package.variables.len(), 0);
         assert_eq!(package.actions.len(), 0);

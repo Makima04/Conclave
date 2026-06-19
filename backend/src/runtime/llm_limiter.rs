@@ -65,7 +65,10 @@ mod tests {
     #[test]
     fn normalize_limit_clamps_bounds() {
         assert_eq!(normalize_limit(0), MIN_LLM_CONCURRENCY_LIMIT);
-        assert_eq!(normalize_limit(DEFAULT_LLM_CONCURRENCY_LIMIT), DEFAULT_LLM_CONCURRENCY_LIMIT);
+        assert_eq!(
+            normalize_limit(DEFAULT_LLM_CONCURRENCY_LIMIT),
+            DEFAULT_LLM_CONCURRENCY_LIMIT
+        );
         assert_eq!(normalize_limit(999), MAX_LLM_CONCURRENCY_LIMIT);
     }
 
@@ -79,7 +82,10 @@ mod tests {
         let first = first.unwrap().expect("permit acquisition should succeed");
 
         let second = timeout(Duration::from_millis(50), limiter.acquire()).await;
-        assert!(second.is_err(), "expected second permit to block at limit 1");
+        assert!(
+            second.is_err(),
+            "expected second permit to block at limit 1"
+        );
 
         let applied = limiter.set_limit(2);
         assert_eq!(applied, 2);

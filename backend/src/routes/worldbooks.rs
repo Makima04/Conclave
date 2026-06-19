@@ -969,17 +969,24 @@ async fn parse_worldbook_with_mode(
         return Err(AppError::BadRequest("No entries to parse".to_string()));
     }
 
-    // Prepare entries for parsing: (id, keys, content, comment, constant)
-    let entries_for_parse: Vec<(String, Vec<String>, String, String, bool)> = entry_rows
+    // Prepare entries for parsing:
+    // (id, keys, content, comment, constant, priority, selective, secondary_keys, selective_logic)
+    // — constant + selective activation fields are threaded through to the runtime activation
+    //   filter (context.rs `is_entry_activated`); priority is preserved from ST ordering.
+    let entries_for_parse: Vec<crate::runtime::worldbook_parser::WorldBookParseEntry> = entry_rows
         .iter()
         .map(
-            |(eid, _, keys_json, content, comment, constant, _, _, _, _, _, _, _, _)| {
+            |(eid, _, keys_json, content, comment, constant, priority, _, _, selective, secondary_keys_json, selective_logic, _, _)| {
                 (
                     eid.clone(),
                     parse_json_array(keys_json),
                     content.clone(),
                     comment.clone(),
                     *constant != 0,
+                    *priority,
+                    *selective != 0,
+                    parse_json_array(secondary_keys_json),
+                    *selective_logic,
                 )
             },
         )
@@ -1081,7 +1088,7 @@ async fn run_worldbook_parse_task(
     state: Arc<AppState>,
     id: String,
     entry_rows: Vec<WorldBookEntryRow>,
-    entries_for_parse: Vec<(String, Vec<String>, String, String, bool)>,
+    entries_for_parse: Vec<crate::runtime::worldbook_parser::WorldBookParseEntry>,
     mode: WorldBookParseMode,
 ) -> Result<(), AppError> {
     let parsed_result = async {

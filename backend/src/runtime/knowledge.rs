@@ -91,6 +91,7 @@ JSON格式：
         tools: None,
         tool_choice: None,
         stream: false,
+        ..Default::default()
     };
 
     let response = provider

@@ -62,11 +62,18 @@ async fn best_snapshot_variables(
         let Ok(state) = serde_json::from_str::<serde_json::Value>(&row) else {
             continue;
         };
-        let Some(variables) = state.get("variables").cloned().filter(|value| value.is_object()) else {
+        let Some(variables) = state
+            .get("variables")
+            .cloned()
+            .filter(|value| value.is_object())
+        else {
             continue;
         };
         let score = variable_payload_score(&variables);
-        if best.as_ref().map_or(true, |(best_score, _)| score > *best_score) {
+        if best
+            .as_ref()
+            .map_or(true, |(best_score, _)| score > *best_score)
+        {
             best = Some((score, variables));
         }
     }
@@ -442,6 +449,7 @@ pub async fn quiet_generate(
         tools: None,
         tool_choice: None,
         stream: false,
+        ..Default::default()
     };
 
     tracing::info!(
@@ -912,12 +920,39 @@ pub async fn send_message(
                     &accumulated,
                     traces_ref,
                     debug_snapshots_ref,
-                    is_multi_agent_commit,
+                    // Persist inline <UpdateVariable> blocks for single-agent turns too.
+                    // MVU cards instruct the narrative LLM to emit <UpdateVariable>…</UpdateVariable>
+                    // (not to call the update_variables tool), so without inline persistence their
+                    // status-bar values never reach session_variables. No-op when the LLM emits no
+                    // such block (extract() returns empty → persist_extraction_tx early-returns).
+                    true,
                     &message_metadata,
                 )
                 .await
                 .map_err(|e| e.to_string())?;
                 tx.commit().await.map_err(|e| e.to_string())?;
+
+                // Mirror session_variables (stat_data + display_data) into this turn's
+                // assistant message metadata so the ST MVU status bar can read it via
+                // `getChatMessages(id)[0].data.stat_data`. This is the multi-agent
+                // streaming path's persistence point (execute_turn calls it inside
+                // executor.rs; the streaming route persists here, so the snapshot must
+                // run here too). Essential for turn 1 (greeting) where the state agent
+                // submits empty changes but the seeded variables still need to display.
+                if let Err(e) = executor::snapshot_variables_to_message_metadata(
+                    &pool,
+                    &session_id_clone,
+                    turn_number,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        session = %session_id_clone,
+                        turn = turn_number,
+                        "Failed to snapshot variables to message metadata: {}",
+                        e
+                    );
+                }
                 Ok(())
             }
             .await;
@@ -1556,6 +1591,7 @@ pub async fn get_debug_overview(
         agent_count: i32,
         total_prompt_tokens: i32,
         total_completion_tokens: i32,
+        total_cached_tokens: i32,
         total_duration_ms: i32,
     }
 
@@ -1573,6 +1609,7 @@ pub async fn get_debug_overview(
             COUNT(DISTINCT COALESCE(agent_id, '')) AS agent_count,
             COALESCE(SUM(prompt_tokens), 0) AS total_prompt_tokens,
             COALESCE(SUM(completion_tokens), 0) AS total_completion_tokens,
+            COALESCE(SUM(cached_tokens), 0) AS total_cached_tokens,
             COALESCE(SUM(COALESCE(duration_ms, 0)), 0) AS total_duration_ms
            FROM agent_call_debug_snapshots
            WHERE session_id = ?
@@ -1619,6 +1656,7 @@ pub async fn get_debug_turn(
         duration_ms: Option<i32>,
         prompt_tokens: i32,
         completion_tokens: i32,
+        cached_tokens: i32,
         created_at: String,
     }
 
@@ -1627,7 +1665,8 @@ pub async fn get_debug_turn(
            agent_label, model, task, system_prompt, user_prompt, injected_from_json,
            injected_outputs_json, preset_modules_json, worldbook_entries_json,
            recent_messages_json, recalled_events_json, state_slice_json, raw_output,
-           tool_calls_json, duration_ms, prompt_tokens, completion_tokens, created_at
+           tool_calls_json, duration_ms, prompt_tokens, completion_tokens, cached_tokens,
+           created_at
            FROM agent_call_debug_snapshots
            WHERE session_id = ? AND turn_number = ?
            ORDER BY COALESCE(level_index, 9999), created_at ASC"#,
@@ -1665,6 +1704,7 @@ pub async fn get_debug_turn(
                 "duration_ms": row.duration_ms,
                 "prompt_tokens": row.prompt_tokens,
                 "completion_tokens": row.completion_tokens,
+                "cached_tokens": row.cached_tokens,
                 "created_at": row.created_at,
             })
         })
@@ -2116,7 +2156,10 @@ mod tests {
         let latest_state: serde_json::Value =
             serde_json::from_str(&latest_state).expect("parse state");
 
-        assert_eq!(latest_state["variables"]["世界"]["当前日期"][0], "2025年/03月/24日");
+        assert_eq!(
+            latest_state["variables"]["世界"]["当前日期"][0],
+            "2025年/03月/24日"
+        );
         assert!(latest_state["variables"]["<正文>**不幸-开场白一"].is_null());
     }
 }

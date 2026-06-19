@@ -1,0 +1,805 @@
+/* chat-v3.css — three-column chat page (/chat/:sessionId).
+   Left: settings sidebar · Center: messages · Right: input + debug rail. */
+
+.chat-page {
+  width: 100%;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  background: #0f1117;
+  color: #e5e7eb;
+  overflow: hidden;
+}
+
+.chat-header {
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 16px;
+  border-bottom: 1px solid #232733;
+  background: #14161d;
+  flex-shrink: 0;
+}
+
+.chat-header .st-host-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.chat-header h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-header .st-host-back {
+  background: transparent;
+  border: 1px solid #2b303d;
+  color: #c7ccd6;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.chat-header .st-host-actions button {
+  background: #1d212b;
+  border: 1px solid #2b303d;
+  color: #c7ccd6;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.chat-workspace {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  transition: grid-template-columns 0.15s ease;
+}
+
+/* ---- side rails ---- */
+.chat-sidebar {
+  position: relative;
+  min-width: 0;
+  border-right: 1px solid #232733;
+  background: #12141b;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chat-sidebar-right {
+  border-right: none;
+  border-left: 1px solid #232733;
+}
+
+/* Left sidebar lets its floating settings panel overflow onto the center. */
+.chat-sidebar-left {
+  overflow: visible;
+}
+
+.chat-sidebar.is-collapsed {
+  border: none;
+}
+
+/* ---- category rail + floating panel (left column shell) ---- */
+.chat-settings-shell {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.chat-category-rail {
+  width: 56px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 0 24px;
+  border-right: 1px solid #232733;
+  background: #0f1117;
+  user-select: none;
+}
+
+.chat-cat-item {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #8b93a3;
+  font-size: 20px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.chat-cat-item:hover {
+  background: #1d212b;
+  color: #e5e7eb;
+}
+
+.chat-cat-item.active {
+  color: #e5e7eb;
+  background: rgba(59, 111, 176, 0.18);
+}
+
+.chat-cat-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: #3b6fb0;
+}
+
+.chat-cat-tooltip {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 4px 10px;
+  background: #1d212b;
+  color: #e5e7eb;
+  border: 1px solid #2b303d;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 20;
+}
+
+.chat-cat-item:hover .chat-cat-tooltip {
+  opacity: 1;
+}
+
+/* Floating overlay panel: anchored to the rail's right edge and layered
+   (z-index) above the center render pane, so opening a category never
+   reflows/squeezes the chat content underneath. */
+.chat-category-panel {
+  position: absolute;
+  top: 0;
+  left: 56px;
+  bottom: 0;
+  width: 280px;
+  z-index: 30;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: #12141b;
+  border-right: 1px solid #232733;
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.4);
+  overflow-y: auto;
+  font-size: 13px;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.chat-category-panel.is-empty {
+  opacity: 0;
+  transform: translateX(-10px);
+  pointer-events: none;
+}
+
+.chat-panel-empty-hint {
+  color: #6b7280;
+  font-size: 12px;
+  text-align: center;
+}
+
+.chat-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.chat-section-title-mini {
+  font-size: 11px;
+  color: #8b93a3;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 4px;
+}
+
+/* ---- agent manager: fallback + expandable cards ---- */
+.chat-agent-fallback {
+  border: 1px solid #232733;
+  border-radius: 6px;
+  background: #14161d;
+  overflow: hidden;
+}
+
+.chat-agent-section-toggle {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: #c7ccd6;
+  padding: 7px 9px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.chat-agent-fallback-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 9px 10px;
+  border-top: 1px solid #232733;
+}
+
+.chat-agent-card-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  font-size: 11px;
+}
+
+.chat-agent-label-inline {
+  font-weight: 600;
+  font-size: 13px;
+  color: #e5e7eb;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  text-align: left;
+}
+
+.chat-agent-chevron {
+  color: #8b93a3;
+  font-size: 11px;
+}
+
+.chat-agent-card.is-open {
+  border-color: #3a3f4d;
+}
+
+.chat-agent-card-body {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-agent-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid #232733;
+}
+
+.chat-agent-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #8b93a3;
+  padding: 5px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.chat-agent-tab.active {
+  color: #e5e7eb;
+  border-bottom-color: #3b6fb0;
+}
+
+.chat-agent-tab-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-agent-effective {
+  font-size: 11px;
+  color: #8b93a3;
+}
+
+.chat-agent-edit-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chat-agent-edit-actions button {
+  background: #1d212b;
+  border: 1px solid #2b303d;
+  color: #c7ccd6;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.chat-agent-edit-actions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.chat-agent-fixed-note {
+  margin: 0;
+  font-size: 12px;
+  color: #b8862a;
+  background: rgba(184, 134, 42, 0.1);
+  border-radius: 4px;
+  padding: 5px 7px;
+}
+
+.chat-agent-routed {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-sidebar-scroll {
+  height: 100%;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.chat-rail-toggle {
+  position: absolute;
+  top: 8px;
+  right: -12px;
+  z-index: 5;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #1d212b;
+  border: 1px solid #2b303d;
+  color: #9aa1ad;
+  cursor: pointer;
+  font-size: 11px;
+  display: grid;
+  place-items: center;
+}
+
+.chat-rail-toggle-right {
+  right: auto;
+  left: -12px;
+}
+
+/* ---- center render pane ---- */
+.chat-render-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: #0f1117;
+}
+
+.chat-render-pane .st-host-chat-surface {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ---- settings sidebar ---- */
+.chat-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.chat-settings-header h2 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.chat-mode-badge {
+  display: inline-block;
+  font-size: 11px;
+  color: #8b93a3;
+  border: 1px solid #2b303d;
+  padding: 2px 8px;
+  border-radius: 10px;
+  cursor: help;
+}
+
+.chat-settings-section {
+  border: 1px solid #232733;
+  border-radius: 8px;
+  padding: 10px;
+  background: #14161d;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-section-title {
+  font-size: 12px;
+  color: #8b93a3;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.chat-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-field > span {
+  font-size: 12px;
+  color: #9aa1ad;
+}
+
+.chat-field input,
+.chat-field select,
+.chat-field textarea {
+  background: #0f1117;
+  border: 1px solid #2b303d;
+  color: #e5e7eb;
+  border-radius: 5px;
+  padding: 5px 7px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.chat-field-grow {
+  flex: 1;
+}
+
+/* Inherited session-default marker: param 未被 per-agent 覆盖时，标签后缀 + input 淡化。 */
+.chat-field-inherit {
+  color: #6b7280;
+  font-weight: 400;
+}
+
+.chat-field input.is-inherited {
+  color: #8b91a0;
+  font-style: italic;
+}
+
+.chat-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.chat-settings-hint {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.chat-settings-error {
+  font-size: 12px;
+  color: #f08080;
+}
+
+/* worldbook entries */
+.chat-wb-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-wb-entry {
+  border: 1px solid #232733;
+  border-radius: 5px;
+  padding: 6px 8px;
+}
+
+.chat-wb-entry small {
+  font-size: 11px;
+  color: #6b7280;
+}
+
+/* agent panel */
+.chat-agent-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-agent-create-btn {
+  align-self: flex-start;
+  background: #1d212b;
+  border: 1px solid #2b303d;
+  color: #c7ccd6;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.chat-agent-create-form {
+  border: 1px dashed #2b303d;
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-agent-card {
+  border: 1px solid #232733;
+  border-radius: 6px;
+  padding: 8px;
+  background: #14161d;
+}
+
+.chat-agent-card.is-fixed {
+  border-color: #3a3f4d;
+}
+
+.chat-agent-type {
+  background: #2b303d;
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: #c7ccd6;
+}
+
+.chat-agent-fixed-tag {
+  color: #8b93a3;
+}
+
+.chat-agent-status {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+}
+
+.chat-agent-label {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+
+.chat-agent-model,
+.chat-agent-char {
+  font-size: 11px;
+  color: #8b93a3;
+}
+
+.chat-agent-context {
+  font-size: 12px;
+  color: #9aa1ad;
+  margin: 4px 0;
+  max-height: 48px;
+  overflow: hidden;
+}
+
+.chat-agent-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chat-agent-actions button,
+.chat-agent-create-form button {
+  background: #1d212b;
+  border: 1px solid #2b303d;
+  color: #c7ccd6;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.chat-agent-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-agent-empty,
+.chat-agent-loading {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+/* ---- right rail: input + debug ---- */
+.chat-debug-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.chat-debug-input {
+  border: 1px solid #232733;
+  border-radius: 8px;
+  padding: 10px;
+  background: #14161d;
+}
+
+.chat-input-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-input-form textarea {
+  background: #0f1117;
+  border: 1px solid #2b303d;
+  color: #e5e7eb;
+  border-radius: 5px;
+  padding: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.chat-input-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.chat-input-actions button {
+  background: #3b6fb0;
+  border: none;
+  color: #fff;
+  padding: 6px 18px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.chat-input-actions button:disabled {
+  background: #2b303d;
+  cursor: not-allowed;
+}
+
+.chat-debug-opening,
+.chat-debug-panel {
+  border: 1px solid #232733;
+  border-radius: 8px;
+  padding: 10px;
+  background: #14161b;
+}
+
+.chat-opening-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.chat-opening-controls button {
+  background: #1d212b;
+  border: 1px solid #2b303d;
+  color: #c7ccd6;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.chat-debug-meta {
+  margin: 6px 0 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  font-size: 12px;
+}
+
+.chat-debug-meta dt {
+  color: #8b93a3;
+}
+
+.chat-debug-error {
+  color: #f08080;
+}
+
+/* Narrow-viewport drawer trigger bar + scrim. Hidden on desktop; shown only
+   inside the media query below. */
+.chat-drawer-bar {
+  display: none;
+}
+
+.chat-drawer-overlay {
+  display: none;
+}
+
+/* Narrow viewport (≤700px — e.g. browser DevTools docked, or mobile):
+   center fills the screen; left/right columns become slide-in drawer
+   overlays. Replaces the old `display:none`-the-columns approach, which
+   collapsed the whole page to just the header when DevTools squeezed it. */
+@media (max-width: 700px) {
+  /* Force single column: zero the side grid tracks (overrides the inline
+     gridTemplateColumns). Center takes the full width. */
+  .chat-workspace {
+    grid-template-columns: 0 minmax(0, 1fr) 0 !important;
+  }
+
+  /* Drawer trigger bar floats at the top of the center pane (absolute, so it
+     doesn't steal height from the message area; center gets matching top padding). */
+  .chat-render-pane {
+    position: relative;
+    padding-top: 38px;
+  }
+  .chat-drawer-bar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 38px;
+    padding: 0 8px;
+    border-bottom: 1px solid #232733;
+    background: #14161d;
+    z-index: 5;
+  }
+  .chat-drawer-btn {
+    background: #1d212b;
+    border: 1px solid #2b303d;
+    color: #c7ccd6;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  /* Scrim behind an open drawer; click to close. */
+  .chat-drawer-overlay {
+    display: block;
+    position: fixed;
+    inset: 52px 0 0 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 35;
+  }
+
+  /* Both side columns leave the grid and become fixed overlays parked off-screen. */
+  .chat-sidebar {
+    position: fixed;
+    top: 52px;
+    bottom: 0;
+    width: 300px;
+    max-width: 85vw;
+    z-index: 40;
+    transition: transform 0.2s ease;
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.55);
+  }
+  .chat-sidebar-left {
+    left: 0;
+    transform: translateX(-100%);
+  }
+  .chat-sidebar-right {
+    right: 0;
+    transform: translateX(100%);
+  }
+  .chat-sidebar.is-drawer-open {
+    transform: translateX(0);
+  }
+}

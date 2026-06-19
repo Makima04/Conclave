@@ -34,13 +34,19 @@ impl OpenAiProvider {
 
             let response = self.chat_completion(request.clone()).await?;
 
-            let content = response
+            // A response is "empty" only if it has neither content nor tool_calls.
+            // Tool-calling requests (e.g. the variable-update State Agent, forced via
+            // tool_choice) legitimately return content="" with the answer in tool_calls —
+            // those must NOT trigger a retry.
+            let has_output = response
                 .choices
                 .first()
-                .map(|c| c.message.content.as_str())
-                .unwrap_or("");
+                .map(|c| {
+                    !c.message.content.trim().is_empty() || c.message.tool_calls.is_some()
+                })
+                .unwrap_or(false);
 
-            if !content.trim().is_empty() {
+            if has_output {
                 return Ok(response);
             }
 

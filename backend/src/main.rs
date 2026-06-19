@@ -25,7 +25,7 @@ use crate::config::AppConfig;
 use crate::error::AppError;
 use crate::routes::{
     agents, card_import, charactercards, health, messages, presets, proposals, providers,
-    runtime_assets, sessions, settings, variables, worldbooks,
+    runtime_assets, sessions, settings, st_host_render, variables, worldbooks,
 };
 
 #[tokio::main]
@@ -88,7 +88,10 @@ async fn create_app(config: AppConfig) -> Router {
         .route("/api/health", get(health::health_check))
         .route("/api/sessions", post(sessions::create_session))
         .route("/api/sessions", get(sessions::list_sessions))
-        .route("/api/session-shared-saves", get(sessions::list_shared_saves))
+        .route(
+            "/api/session-shared-saves",
+            get(sessions::list_shared_saves),
+        )
         .route("/api/sessions/{id}", get(sessions::get_session))
         .route(
             "/api/sessions/{id}",
@@ -156,6 +159,10 @@ async fn create_app(config: AppConfig) -> Router {
             delete(messages::delete_message),
         )
         .route("/api/sessions/{id}/opening", post(messages::apply_opening))
+        .route(
+            "/api/sessions/{id}/st-host-render",
+            get(st_host_render::get_session_st_host_render),
+        )
         .route(
             "/api/sessions/{id}/runtime-assets",
             get(runtime_assets::get_session_runtime_assets),

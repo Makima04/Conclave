@@ -1,18 +1,20 @@
 use crate::error::AppError;
 use crate::provider::openai::OpenAiProvider;
+use crate::provider::thinking::ThinkingConfig;
 use crate::provider::types::{ChatMessage, ChatRequest, ChatTool};
 use crate::runtime::knowledge;
 use crate::runtime::recall;
 use crate::runtime::turn_state;
 use crate::runtime::types::{
     AgentCall, AgentConfig, AgentInjectedOutputDebug, AgentOutput, AgentType, ContextBundle,
-    ContextMessage, LifecycleAction, SubAgent, SubAgentExecutionDebug, TurnState,
+    ContextMessage, LifecycleAction, ParsedIntent, SubAgent, SubAgentExecutionDebug, TurnState,
 };
+use crate::runtime::variable_tool_agent::STATE_JAILBREAK_PROMPT;
 use sqlx::SqlitePool;
 use tracing::instrument;
 
 /// Execute a sub-agent: build context-aware prompt, call LLM, return output
-#[instrument(skip(pool, provider, agent, state, context, call, tools), fields(agent_id = %agent.id, agent_type = %agent.agent_type))]
+#[instrument(skip(pool, provider, agent, state, context, call, tools, parsed_intent), fields(agent_id = %agent.id, agent_type = %agent.agent_type))]
 pub async fn execute_sub_agent(
     pool: &SqlitePool,
     provider: &OpenAiProvider,
@@ -22,6 +24,7 @@ pub async fn execute_sub_agent(
     state: &TurnState,
     context: &ContextBundle,
     tools: Option<Vec<ChatTool>>,
+    parsed_intent: Option<&ParsedIntent>,
 ) -> Result<(AgentOutput, SubAgentExecutionDebug), AppError> {
     let start = std::time::Instant::now();
 
@@ -46,8 +49,22 @@ pub async fn execute_sub_agent(
     // Build system prompt: agent's own prompt + context + recent conversation + recalled events
     let system_prompt = build_contextual_system_prompt(agent, context, &agent_config, &recalled);
 
-    // Build user content: task + injected outputs
-    let mut user_content = call.task.clone();
+    // Build user content: compressed user action (replaces raw recent_context for character
+    // agents — mental isolation: NPC/User must NOT see the full raw dialogue history, only the
+    // parser-compressed gist of THIS turn + what they're explicitly injected) + task + injected outputs.
+    let mut user_content = if matches!(agent.agent_type, AgentType::Npc | AgentType::User) {
+        if let Some(intent) = parsed_intent {
+            if !intent.compressed_input.trim().is_empty() {
+                format!("本轮用户行为(压缩):\n{}\n\n---\n任务:\n{}", intent.compressed_input, call.task)
+            } else {
+                call.task.clone()
+            }
+        } else {
+            call.task.clone()
+        }
+    } else {
+        call.task.clone()
+    };
     let mut injected_outputs = Vec::new();
     for source_id in &call.inject_from {
         if let Some(output) = state.agent_outputs.get(source_id) {
@@ -93,6 +110,10 @@ pub async fn execute_sub_agent(
 
     let effective_temperature = agent_config.temperature.unwrap_or(0.8);
     let effective_max_tokens = agent_config.max_tokens.unwrap_or(10000);
+    // Per-agent sampling overrides; fall back to neutral defaults when unset.
+    let effective_top_p = agent_config.top_p.unwrap_or(1.0);
+    let effective_frequency_penalty = agent_config.frequency_penalty.unwrap_or(0.0);
+    let effective_presence_penalty = agent_config.presence_penalty.unwrap_or(0.0);
 
     let tool_choice = if tools.is_some() {
         Some(serde_json::json!({
@@ -103,7 +124,7 @@ pub async fn execute_sub_agent(
         None
     };
 
-    let request = ChatRequest {
+    let mut request = ChatRequest {
         model: model.to_string(),
         messages: vec![
             ChatMessage {
@@ -120,14 +141,25 @@ pub async fn execute_sub_agent(
             },
         ],
         temperature: Some(effective_temperature),
-        top_p: Some(1.0),
+        top_p: Some(effective_top_p),
         max_tokens: Some(effective_max_tokens),
-        frequency_penalty: Some(0.0),
-        presence_penalty: Some(0.0),
+        frequency_penalty: Some(effective_frequency_penalty),
+        presence_penalty: Some(effective_presence_penalty),
         tools,
         tool_choice,
         stream: false,
+        ..Default::default()
     };
+
+    // Inject thinking control (DeepSeek etc.). State agents default to thinking OFF so
+    // their tool_choice isn't rejected; other agents inject only if explicitly configured.
+    if let Some(thinking) = ThinkingConfig::resolve(
+        agent_config.thinking_enabled,
+        agent_config.reasoning_effort.clone(),
+        agent.agent_type == AgentType::State,
+    ) {
+        thinking.apply(&mut request);
+    }
 
     tracing::debug!(
         agent_id = %agent.id,
@@ -163,6 +195,11 @@ pub async fn execute_sub_agent(
         .as_ref()
         .map(|u| u.completion_tokens)
         .unwrap_or(0);
+    let cached = response
+        .usage
+        .as_ref()
+        .map(|u| u.cached_tokens())
+        .unwrap_or(0);
     let duration_ms = start.elapsed().as_millis() as i32;
 
     tracing::info!(
@@ -170,6 +207,7 @@ pub async fn execute_sub_agent(
         agent_type = %agent.agent_type,
         tokens_in = pt,
         tokens_out = ct,
+        cached_tokens = cached,
         duration_ms = duration_ms,
         "Sub-agent executed"
     );
@@ -182,6 +220,7 @@ pub async fn execute_sub_agent(
             tool_calls: response_tool_calls,
             prompt_tokens: pt,
             completion_tokens: ct,
+            cached_tokens: cached,
             duration_ms,
         },
         debug_snapshot,
@@ -315,10 +354,8 @@ fn visible_recent_messages(
     context: &ContextBundle,
     agent_config: &AgentConfig,
 ) -> Vec<ContextMessage> {
-    if !matches!(
-        agent.agent_type,
-        AgentType::Npc | AgentType::Writer | AgentType::Director | AgentType::User
-    ) {
+    // Keep debug snapshot honest with build_contextual_system_prompt: Npc/User get no raw history.
+    if !matches!(agent.agent_type, AgentType::Writer | AgentType::Director) {
         return vec![];
     }
 
@@ -515,82 +552,53 @@ fn build_contextual_system_prompt(
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Agent-type-specific sections (scene, events, foreshadowing)
-    let builder = PromptBuilder::new(&agent.system_prompt)
-        .section("你的专属上下文", self_context.trim())
-        .section_if(
-            matches!(
-                agent.agent_type,
-                AgentType::Writer | AgentType::Director | AgentType::User
-            ),
-            "当前参与角色",
-            &role_context_text,
-        )
-        .section_if(
-            matches!(
-                agent.agent_type,
-                AgentType::Npc
-                    | AgentType::User
-                    | AgentType::Writer
-                    | AgentType::Director
-                    | AgentType::Master
-            ),
-            "已知事实",
-            &visible_knowledge_text,
-        )
-        .section("预设指令", &preset_text);
-
-    // Per-agent-type scene/events/foreshadowing
-    let builder = match agent.agent_type {
+    // Compute per-agent-type dynamic fragments (scene/events/foreshadowing) up front so the
+    // final PromptBuilder chain can be assembled STABLE-FIRST. Visibility filtering preserves
+    // 心智隔离 / 防全知 (Task A): each character agent only sees its own perspective.
+    let scene_text = context.scene_summary.as_deref().unwrap_or("");
+    let (events_text, foreshadow_text) = match agent.agent_type {
         AgentType::Npc => {
-            let visible_events = filter_by_visibility(
+            let ev = filter_by_visibility(
                 &context.events,
                 &context.event_visibilities,
                 agent.agent_type,
                 agent.character_id.as_deref(),
                 10,
             );
-            let visible_foreshadowing = filter_by_visibility(
+            let fs = filter_by_visibility(
                 &context.foreshadowing,
                 &context.foreshadow_visibilities,
                 agent.agent_type,
                 agent.character_id.as_deref(),
                 100,
             );
-            builder
-                .section("当前场景", context.scene_summary.as_deref().unwrap_or(""))
-                .section("已知事件", visible_events.join("\n"))
-                .section("伏笔线索", visible_foreshadowing.join("\n"))
+            (ev.join("\n"), fs.join("\n"))
         }
         AgentType::Writer => {
-            let visible_foreshadowing = filter_by_visibility(
+            let fs = filter_by_visibility(
                 &context.foreshadowing,
                 &context.foreshadow_visibilities,
                 agent.agent_type,
                 agent.character_id.as_deref(),
                 100,
             );
-            builder
-                .section("当前场景", context.scene_summary.as_deref().unwrap_or(""))
-                .section("伏笔线索", visible_foreshadowing.join("\n"))
+            (String::new(), fs.join("\n"))
         }
-        AgentType::Director => builder
-            .section("当前场景", context.scene_summary.as_deref().unwrap_or(""))
-            .section("已知事件", context.events.join("\n"))
-            .section("伏笔线索", context.foreshadowing.join("\n")),
+        AgentType::Director => (
+            context.events.join("\n"),
+            context.foreshadowing.join("\n"),
+        ),
         AgentType::User => {
-            let visible_events = filter_by_visibility(
+            let ev = filter_by_visibility(
                 &context.events,
                 &context.event_visibilities,
                 agent.agent_type,
                 agent.character_id.as_deref(),
                 5,
             );
-            builder
-                .section("当前场景", context.scene_summary.as_deref().unwrap_or(""))
-                .section("已知事件", visible_events.join("\n"))
+            (ev.join("\n"), String::new())
         }
-        _ => builder,
+        _ => (String::new(), String::new()),
     };
 
     // Structured state (filtered by visibility for non-privileged agents)
@@ -607,7 +615,6 @@ fn build_contextual_system_prompt(
     } else {
         String::new()
     };
-    let builder = builder.section("世界状态", &state_text);
 
     // World book entries (visibility-filtered, excluding user category)
     let wb_text = {
@@ -619,19 +626,18 @@ fn build_contextual_system_prompt(
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let builder = builder.section("世界书设定", &wb_text);
 
-    // Recent conversation history for narrative agents
-    let recent_text = if matches!(
-        agent.agent_type,
-        AgentType::Npc | AgentType::Writer | AgentType::Director | AgentType::User
-    ) {
+    // Recent conversation history — ONLY for the omniscient synthesizers (Writer/Director).
+    // Character agents (Npc/User) are deliberately excluded: dumping raw dialogue history into
+    // them makes every character 全知 (omniscient), destroying 心智隔离. They receive the current
+    // turn's signal via the parser's compressed_input (see execute_sub_agent) and their perception
+    // stream via the knowledge_events in 已知事实 below.
+    let recent_text = if matches!(agent.agent_type, AgentType::Writer | AgentType::Director) {
         let max_turns = agent_config.max_context_turns.unwrap_or(5);
         format_recent_context(&context.recent_context, max_turns)
     } else {
         String::new()
     };
-    let builder = builder.section("最近对话", &recent_text);
 
     // Recalled structured events
     let recalled_text = recalled
@@ -651,9 +657,55 @@ fn build_contextual_system_prompt(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let builder = builder.section("召回的相关事件", &recalled_text);
 
-    builder.build()
+    // Assemble STABLE-FIRST: the prompt-cache (prefix-hash based, e.g. DeepSeek/OpenAI) hits the
+    // largest unchanging blocks (角色定义 base / 预设 / 世界书) only if they sit before the first
+    // byte that changes turn-to-turn. Any growing block in the middle shifts every byte after it
+    // and breaks the cache even if the later content is byte-identical — so all per-turn dynamic
+    // content (scene / events / foreshadowing / state / knowledge / recent / recalled) goes to the
+    // tail. 内容/过滤逻辑均不变，只换顺序。
+    PromptBuilder::new(&agent.system_prompt)
+        // [稳定前缀 — 跨轮可缓存]
+        // State Agent 专用的反审查/创作理念破限。卡的敏感状态变量（调教值/受虐/性开发度
+        // 等）若没有破限，模型会因主题敏感拒答 → 不调用 update_variables → 无 stat_data
+        // 写入 → 状态栏报"角色数据缺失"。仅 State 注入，避免污染其它 agent 的职责边界。
+        // 跨轮不变，放稳定前缀区以蹭 prompt-cache。
+        .section_if(
+            matches!(agent.agent_type, AgentType::State),
+            "创作理念与反审查",
+            STATE_JAILBREAK_PROMPT,
+        )
+        .section("你的专属上下文", self_context.trim())
+        .section("预设指令", &preset_text)
+        .section("世界书设定", &wb_text)
+        .section_if(
+            matches!(
+                agent.agent_type,
+                AgentType::Writer | AgentType::Director | AgentType::User
+            ),
+            "当前参与角色",
+            &role_context_text,
+        )
+        // [动态尾巴 — 每轮变，不缓存]
+        .section("当前场景", scene_text)
+        .section("已知事件", &events_text)
+        .section("伏笔线索", &foreshadow_text)
+        .section("世界状态", &state_text)
+        .section_if(
+            matches!(
+                agent.agent_type,
+                AgentType::Npc
+                    | AgentType::User
+                    | AgentType::Writer
+                    | AgentType::Director
+                    | AgentType::Master
+            ),
+            "已知事实",
+            &visible_knowledge_text,
+        )
+        .section("最近对话", &recent_text)
+        .section("召回的相关事件", &recalled_text)
+        .build()
 }
 
 // --- Lifecycle management ---
@@ -955,7 +1007,9 @@ fn default_system_prompt_for_type(agent_type: AgentType) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::types::{ContextBundle, ContextMessage, RoleContext};
+    use crate::runtime::types::{
+        ContextBundle, ContextMessage, PresetModuleContext, RoleContext, WorldBookContextEntry,
+    };
 
     fn empty_context() -> ContextBundle {
         ContextBundle {
@@ -1275,5 +1329,233 @@ mod tests {
         assert!(result[0].get("secret_role").is_none());
         assert_eq!(result[1]["name"], "Bob");
         assert!(result[1].get("gm_notes").is_none());
+    }
+
+    // --- mental isolation: Npc/User must NOT receive raw recent_context ---
+
+    fn make_sub_agent(agent_type: AgentType, label: &str) -> SubAgent {
+        SubAgent {
+            id: format!("{}_1", agent_type.as_str()),
+            session_id: "s".to_string(),
+            agent_type,
+            character_id: None,
+            label: label.to_string(),
+            system_prompt: String::new(),
+            context: String::new(),
+            status: "active".to_string(),
+            last_active_turn: 1,
+            config: serde_json::json!({}),
+        }
+    }
+
+    fn context_with_recent() -> ContextBundle {
+        let mut ctx = empty_context();
+        ctx.recent_context = vec![
+            ContextMessage {
+                role: "user".to_string(),
+                content: "玩家原文动作描写，带大量修辞".to_string(),
+                turn_number: 1,
+            },
+            ContextMessage {
+                role: "assistant".to_string(),
+                content: "writer润色后的叙事文本，带大量修辞".to_string(),
+                turn_number: 1,
+            },
+        ];
+        ctx
+    }
+
+    #[test]
+    fn build_prompt_excludes_recent_context_for_npc() {
+        let agent = make_sub_agent(AgentType::Npc, "时幼微");
+        let config = AgentConfig {
+            max_context_turns: Some(5),
+            ..Default::default()
+        };
+        let recalled = recall::RecalledContext { events: vec![] };
+        let prompt =
+            build_contextual_system_prompt(&agent, &context_with_recent(), &config, &recalled);
+
+        // The raw history (recent_context) must NOT leak into an NPC's system prompt —
+        // 心智隔离 / 防全知.
+        assert!(
+            !prompt.contains("玩家原文动作描写"),
+            "NPC prompt leaked raw user history"
+        );
+        assert!(
+            !prompt.contains("writer润色后的叙事文本"),
+            "NPC prompt leaked raw assistant history"
+        );
+    }
+
+    #[test]
+    fn build_prompt_excludes_recent_context_for_user() {
+        let agent = make_sub_agent(AgentType::User, "浅野堇");
+        let config = AgentConfig {
+            max_context_turns: Some(5),
+            ..Default::default()
+        };
+        let recalled = recall::RecalledContext { events: vec![] };
+        let prompt =
+            build_contextual_system_prompt(&agent, &context_with_recent(), &config, &recalled);
+
+        assert!(
+            !prompt.contains("玩家原文动作描写"),
+            "User Agent prompt leaked raw history"
+        );
+    }
+
+    #[test]
+    fn npc_prompt_common_prefix_spans_stable_blocks_across_turns() {
+        // Cache win, quantified at unit level: two consecutive turns differ only in the
+        // per-turn dynamic content (scene summary / events). The prompt-cache (prefix hash)
+        // can only hit the bytes before the first divergence — so the common prefix of the
+        // two prompts must now extend PAST the stable blocks (预设指令正文 / 世界书正文) into
+        // the dynamic tail, proving the reordering enlarged the cacheable prefix.
+        let agent = make_sub_agent(AgentType::Npc, "时幼微");
+        let config = AgentConfig::default();
+        let recalled = recall::RecalledContext { events: vec![] };
+
+        let base_preset = PresetModuleContext {
+            name: "规则".to_string(),
+            content: "预设指令正文".to_string(),
+            role: "system".to_string(),
+            target_agents: vec!["npc".to_string()],
+            injection_order: 0,
+        };
+        let base_wb = WorldBookContextEntry {
+            content: "世界书正文".to_string(),
+            keys: vec![],
+            constant: false,
+            priority: 0,
+            visibility: "public".to_string(),
+            category: "global".to_string(),
+            ..Default::default()
+        };
+
+        let mut ctx1 = empty_context();
+        ctx1.scene_summary = Some("场景A".to_string());
+        ctx1.events = vec!["事件1".to_string()];
+        ctx1.event_visibilities = vec!["public".to_string()];
+        ctx1.preset_modules = vec![base_preset.clone()];
+        ctx1.world_book_entries = vec![base_wb.clone()];
+
+        let mut ctx2 = empty_context();
+        ctx2.scene_summary = Some("场景B".to_string()); // changed
+        ctx2.events = vec!["事件1".to_string(), "事件2".to_string()]; // grew
+        ctx2.event_visibilities = vec!["public".to_string(), "public".to_string()];
+        ctx2.preset_modules = vec![base_preset.clone()];
+        ctx2.world_book_entries = vec![base_wb.clone()];
+
+        let p1 = build_contextual_system_prompt(&agent, &ctx1, &config, &recalled);
+        let p2 = build_contextual_system_prompt(&agent, &ctx2, &config, &recalled);
+
+        let wb_pos = p1.find("世界书正文").expect("worldbook present");
+        let preset_pos = p1.find("预设指令正文").expect("preset present");
+        // Common-prefix length in BYTES (matches str::find byte offsets; Chinese chars are 3
+        // bytes each, so char-count and byte-offset are NOT interchangeable).
+        let common_chars = p1
+            .chars()
+            .zip(p2.chars())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let lcp = p1
+            .char_indices()
+            .nth(common_chars)
+            .map(|(i, _)| i)
+            .unwrap_or_else(|| p1.len());
+
+        // The common prefix must reach at least the END of the worldbook block — i.e. the
+        // stable prefix (preset + worldbook) survives turn-to-turn and is cacheable.
+        assert!(
+            lcp > wb_pos,
+            "common prefix ({}) must extend past worldbook ({}) for cache to hit",
+            lcp,
+            wb_pos
+        );
+        assert!(
+            lcp > preset_pos,
+            "preset block must be inside the cacheable prefix"
+        );
+    }
+
+    #[test]
+    fn build_prompt_stable_blocks_precede_dynamic_blocks_for_npc() {
+        // Cache optimization: the prompt-cache is prefix-hash based, so the large STABLE blocks
+        // (预设指令 / 世界书设定) must come before any per-turn DYNAMIC block (当前场景) —
+        // otherwise the dynamic block shifts every byte after it and breaks the cache every turn.
+        let agent = make_sub_agent(AgentType::Npc, "时幼微");
+        let config = AgentConfig::default();
+        let recalled = recall::RecalledContext { events: vec![] };
+        let mut ctx = empty_context();
+        ctx.scene_summary = Some("本轮场景摘要".to_string());
+        ctx.preset_modules = vec![PresetModuleContext {
+            name: "规则".to_string(),
+            content: "预设指令正文".to_string(),
+            role: "system".to_string(),
+            target_agents: vec!["npc".to_string()],
+            injection_order: 0,
+        }];
+        ctx.world_book_entries = vec![WorldBookContextEntry {
+            content: "世界书正文".to_string(),
+            keys: vec![],
+            constant: false,
+            priority: 0,
+            visibility: "public".to_string(),
+            category: "global".to_string(),
+            ..Default::default()
+        }];
+
+        let prompt = build_contextual_system_prompt(&agent, &ctx, &config, &recalled);
+        let pos_preset = prompt.find("预设指令正文").expect("preset section present");
+        let pos_worldbook = prompt.find("世界书正文").expect("worldbook content present");
+        let pos_scene = prompt.find("本轮场景摘要").expect("scene summary present");
+
+        assert!(
+            pos_preset < pos_scene,
+            "预设指令 must precede 当前场景 for cache prefix stability"
+        );
+        assert!(
+            pos_worldbook < pos_scene,
+            "世界书设定 must precede 当前场景 for cache prefix stability"
+        );
+    }
+
+    #[test]
+    fn build_prompt_keeps_recent_context_for_writer_and_director() {
+        // Writer/Director are omniscient synthesizers by design — they keep raw history.
+        let config = AgentConfig {
+            max_context_turns: Some(5),
+            ..Default::default()
+        };
+        let recalled = recall::RecalledContext { events: vec![] };
+        let ctx = context_with_recent();
+
+        let writer = make_sub_agent(AgentType::Writer, "writer");
+        let writer_prompt = build_contextual_system_prompt(&writer, &ctx, &config, &recalled);
+        assert!(
+            writer_prompt.contains("writer润色后的叙事文本"),
+            "Writer should keep recent_context for narrative continuity"
+        );
+
+        let director = make_sub_agent(AgentType::Director, "director");
+        let director_prompt = build_contextual_system_prompt(&director, &ctx, &config, &recalled);
+        assert!(
+            director_prompt.contains("玩家原文动作描写"),
+            "Director (GM) should keep recent_context"
+        );
+    }
+
+    #[test]
+    fn visible_recent_messages_excludes_npc_and_user() {
+        let ctx = context_with_recent();
+        let config = AgentConfig {
+            max_context_turns: Some(5),
+            ..Default::default()
+        };
+        // Debug snapshot metadata must stay honest with the actual prompt.
+        assert!(visible_recent_messages(&make_sub_agent(AgentType::Npc, "n"), &ctx, &config).is_empty());
+        assert!(visible_recent_messages(&make_sub_agent(AgentType::User, "u"), &ctx, &config).is_empty());
+        assert!(!visible_recent_messages(&make_sub_agent(AgentType::Writer, "w"), &ctx, &config).is_empty());
     }
 }

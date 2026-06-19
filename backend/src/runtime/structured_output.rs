@@ -59,6 +59,7 @@ where
         tools: None,
         tool_choice: None,
         stream: false,
+        ..Default::default()
     };
 
     let response = match provider.chat_completion(request).await {

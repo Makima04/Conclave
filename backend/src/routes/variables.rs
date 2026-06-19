@@ -33,31 +33,55 @@ use crate::routes::messages::AppState;
 // Path helpers
 // ---------------------------------------------------------------------------
 
-/// Parse one dot-separated path component.
+/// Split a dotted/bracketed path into a flat list of `(key, optional_index)`
+/// segments, supporting multiple bracket indices per component.
 ///
-/// `"targets[0]"` → `("targets", Some(0))`
-/// `"affinity"`   → `("affinity", None)`
-fn parse_path_part(part: &str) -> (&str, Option<usize>) {
-    if let Some(open) = part.rfind('[') {
-        if part.ends_with(']') {
-            let key = &part[..open];
-            let index = part[open + 1..part.len() - 1].parse::<usize>().ok();
-            return (key, index);
+///   `"foo.bar"`         → `[("foo",None), ("bar",None)]`
+///   `"targets[0].x"`    → `[("targets",Some(0)), ("x",None)]`
+///   `"a[1][2].b"`       → `[("a",Some(1)), ("",Some(2)), ("b",None)]`
+///
+/// A `[n]` immediately following a key attaches to that key's segment; a `[n]`
+/// following another index (consecutive brackets) becomes an empty-key index
+/// segment. Empty/`.`-only paths return an empty list (no mutation).
+fn parse_path(path: &str) -> Vec<(String, Option<usize>)> {
+    let mut out: Vec<(String, Option<usize>)> = Vec::new();
+    let mut chars = path.trim().chars().peekable();
+    let mut key = String::new();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '.' => {
+                if !key.is_empty() {
+                    out.push((std::mem::take(&mut key), None));
+                }
+            }
+            '[' => {
+                // Read digits until the closing ']'.
+                let mut num = String::new();
+                while let Some(&c) = chars.peek() {
+                    if c == ']' {
+                        chars.next();
+                        break;
+                    }
+                    num.push(c);
+                    chars.next();
+                }
+                let idx = num.parse::<usize>().ok();
+                if !key.is_empty() {
+                    // `[n]` attaches to the pending key.
+                    out.push((std::mem::take(&mut key), idx));
+                } else {
+                    // Consecutive brackets: empty-key index segment.
+                    out.push((String::new(), idx));
+                }
+            }
+            c => key.push(c),
         }
     }
-    (part, None)
-}
-
-/// Split a path like `"targets[0].affinity"` into `(key, optional_index)` pairs.
-fn parse_path(path: &str) -> Vec<(String, Option<usize>)> {
-    path.trim()
-        .split('.')
-        .filter(|s| !s.is_empty())
-        .map(|part| {
-            let (key, idx) = parse_path_part(part);
-            (key.to_string(), idx)
-        })
-        .collect()
+    if !key.is_empty() {
+        out.push((key, None));
+    }
+    out
 }
 
 /// Ensure `cursor` is a JSON Object, converting it from Null / non-Object
@@ -93,6 +117,17 @@ fn ensure_array_index(cursor: &mut Value, idx: usize) {
     }
 }
 
+/// Ensure `cursor[key]` is an Array with at least `idx + 1` elements, WITHOUT
+/// converting an existing array into an object. Used by `set_by_path` for a
+/// final `key[index]` segment so that writing the value slot of an MVU-style
+/// `[value, "说明"]` array overwrites only `[index]` and preserves the siblings
+/// (e.g. the 说明 at `[1]`).
+fn ensure_array_key(cursor: &mut Value, key: &str, idx: usize) {
+    ensure_object(cursor, key);
+    let entry = cursor.get_mut(key).expect("key inserted by ensure_object");
+    ensure_array_index(entry, idx);
+}
+
 /// Deep-set the `value` at the given path, creating intermediate objects and
 /// arrays as needed.
 fn set_by_path(root: &mut Value, path: &str, value: Value) {
@@ -119,12 +154,20 @@ fn set_by_path(root: &mut Value, path: &str, value: Value) {
 
     // Write the final segment.
     let (last_key, last_index) = &segments[last_idx];
-    if !last_key.is_empty() {
+    if last_key.is_empty() {
+        // Pure index segment on an existing array: write the slot, preserve siblings.
+        if let Some(idx) = last_index {
+            ensure_array_index(cursor, *idx);
+            cursor[*idx] = value;
+        }
+    } else if let Some(idx) = last_index {
+        // `key[index]` on the parent: ensure the key holds an array and write the
+        // slot, preserving siblings (e.g. MVU [value, "说明"] — keep 说明).
+        ensure_array_key(cursor, last_key, *idx);
+        cursor.get_mut(last_key).unwrap()[*idx] = value;
+    } else {
         ensure_object(cursor, last_key);
         cursor[last_key.clone()] = value;
-    } else if let Some(idx) = last_index {
-        ensure_array_index(cursor, *idx);
-        cursor[*idx] = value;
     }
 }
 
@@ -280,27 +323,30 @@ mod tests {
 
     #[test]
     fn parse_path_simple_keys() {
-        assert_eq!(parse_path("foo.bar"), vec![
-            ("foo".into(), None),
-            ("bar".into(), None),
-        ]);
+        assert_eq!(
+            parse_path("foo.bar"),
+            vec![("foo".into(), None), ("bar".into(), None),]
+        );
     }
 
     #[test]
     fn parse_path_with_bracket_index() {
-        assert_eq!(parse_path("targets[0].affinity"), vec![
-            ("targets".into(), Some(0)),
-            ("affinity".into(), None),
-        ]);
+        assert_eq!(
+            parse_path("targets[0].affinity"),
+            vec![("targets".into(), Some(0)), ("affinity".into(), None),]
+        );
     }
 
     #[test]
     fn parse_path_multiple_indices() {
-        assert_eq!(parse_path("a[1][2].b"), vec![
-            ("a".into(), Some(1)),
-            ("".into(), Some(2)),
-            ("b".into(), None),
-        ]);
+        assert_eq!(
+            parse_path("a[1][2].b"),
+            vec![
+                ("a".into(), Some(1)),
+                ("".into(), Some(2)),
+                ("b".into(), None),
+            ]
+        );
     }
 
     #[test]
@@ -343,5 +389,25 @@ mod tests {
         // The path ". " splits to [""], which has an empty key and no index →
         // no segments are returned, so no mutation happens.
         assert_eq!(root["x"], json!(1));
+    }
+
+    #[test]
+    fn set_by_path_preserves_value_explanation_array_siblings() {
+        // MVU variables are stored as [value, "说明"]. Writing the value slot
+        // must overwrite only [0] and keep the 说明 at [1].
+        let mut root = json!({ "时幼微": { "耐心值": [72, "对主人的忍耐"] } });
+        set_by_path(&mut root, "时幼微.耐心值[0]", json!(90));
+        let arr = root["时幼微"]["耐心值"].as_array().unwrap();
+        assert_eq!(arr.len(), 2, "说明 must be preserved, not dropped");
+        assert_eq!(arr[0], json!(90));
+        assert_eq!(arr[1], json!("对主人的忍耐"));
+    }
+
+    #[test]
+    fn set_by_path_creates_value_slot_in_empty_mv_array() {
+        // Writing a value slot where the array doesn't exist yet creates it.
+        let mut root = json!({ "世界": {} });
+        set_by_path(&mut root, "世界.当前时间[0]", json!("夜晚"));
+        assert_eq!(root["世界"]["当前时间"][0], json!("夜晚"));
     }
 }

@@ -1,10 +1,8 @@
-use super::str_utils::truncate_with_suffix;
+use super::str_utils::{contains_any, truncate_with_suffix};
 use crate::error::AppError;
 use crate::provider::openai::OpenAiProvider;
-use crate::provider::types::{ChatMessage, ChatRequest};
-use futures::{StreamExt, stream};
+use crate::provider::types::ChatRequest;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 const MODULE_CONTENT_LIMIT: usize = 200;
 const LLM_MAX_TOKENS: u32 = 4096;
@@ -59,6 +57,7 @@ Rules:
 3. Modules with Chinese names should be understood by their meaning
 4. When in doubt between writer and director: if it's about HOW to write prose → writer; if it's about WHAT happens in the story → director
 5. The "enabled" field in the source indicates whether the user had this module active; preserve it
+6. EVERY module MUST get at least one concrete target — `target_agents` must NEVER be empty. If a module is not clearly for one of writer/director/master/compression/state/parser/inject_all and is not a platform-specific hack, classify it as `inject_all` rather than leaving it empty.
 
 IMPORTANT: Output ONLY a valid JSON array. No markdown fences, no explanation text outside the JSON.
 Output an array of objects, one per input entry (same order), each with fields: index, target_agents (string array), reason (brief Chinese explanation)."#;
@@ -69,85 +68,25 @@ pub async fn classify_preset_modules(
     model: &str,
     modules: &[(String, String, String, String)], // (identifier, name, role, content)
 ) -> Result<Vec<ClassifiedModule>, AppError> {
-    let all_modules = Arc::new(modules.to_vec());
-
-    let batches: Vec<(usize, Vec<(String, String, String, String)>)> = all_modules
-        .chunks(CLASSIFY_BATCH_SIZE)
-        .enumerate()
-        .map(|(batch_idx, chunk)| (batch_idx * CLASSIFY_BATCH_SIZE, chunk.to_vec()))
-        .collect();
-
-    let batch_futures = batches.into_iter().map(|(offset, batch)| {
-        let provider = provider.clone();
-        let model = model.to_string();
-        let all_modules = Arc::clone(&all_modules);
-
-        async move {
-            classify_batch_with_split(&provider, &model, all_modules.as_slice(), offset, &batch)
-                .await
-                .map(|classified| (offset, classified))
-        }
-    });
-
-    let mut batch_results: Vec<(usize, Vec<ClassifiedModule>)> = Vec::new();
-    let mut pending = stream::iter(batch_futures).buffer_unordered(CLASSIFY_CONCURRENCY);
-    while let Some(batch_result) = pending.next().await {
-        batch_results.push(batch_result?);
-    }
-
-    batch_results.sort_by_key(|(offset, _)| *offset);
-
-    Ok(batch_results
-        .into_iter()
-        .flat_map(|(_, classified)| classified)
-        .collect())
-}
-
-/// Recursively split a batch on failure. If a single module still fails, use heuristic fallback.
-fn classify_batch_with_split<'a>(
-    provider: &'a OpenAiProvider,
-    model: &'a str,
-    all_modules: &'a [(String, String, String, String)],
-    offset: usize,
-    batch: &'a [(String, String, String, String)],
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<Vec<ClassifiedModule>, AppError>> + Send + 'a>,
-> {
-    Box::pin(async move {
-        match classify_batch(provider, model, all_modules, offset, batch).await {
-            Ok(classified) => Ok(classified),
-            Err(e) if batch.len() > 1 => {
-                tracing::warn!(
-                    offset,
-                    len = batch.len(),
-                    error = %e,
-                    "Preset classify batch failed; retrying with smaller batches"
-                );
-                let mid = batch.len() / 2;
-                let mut left =
-                    classify_batch_with_split(provider, model, all_modules, offset, &batch[..mid])
-                        .await?;
-                let mut right = classify_batch_with_split(
-                    provider,
-                    model,
-                    all_modules,
-                    offset + mid,
-                    &batch[mid..],
-                )
-                .await?;
-                left.append(&mut right);
-                Ok(left)
+    // Concurrency/batching driven by the shared llm_batch pipeline; the closure defines how
+    // to classify one batch, the fallback defines how to recover a single failed module.
+    let provider = provider.clone();
+    let model = model.to_string();
+    super::llm_batch::run_batched(
+        modules,
+        CLASSIFY_BATCH_SIZE,
+        CLASSIFY_CONCURRENCY,
+        move |offset, all_modules, batch| {
+            let provider = provider.clone();
+            let model = model.clone();
+            async move {
+                classify_batch(&provider, &model, &all_modules, offset, &batch).await
             }
-            Err(e) => {
-                tracing::warn!(
-                    offset,
-                    error = %e,
-                    "Preset single-module LLM classify failed; using heuristic fallback"
-                );
-                Ok(vec![heuristic_classify(all_modules, offset)])
-            }
-        }
-    })
+        },
+        move |offset, all_modules| heuristic_classify(all_modules, offset),
+        "Preset",
+    )
+    .await
 }
 
 /// Send a single batch to the LLM for classification.
@@ -173,31 +112,12 @@ async fn classify_batch(
     let user_content = serde_json::to_string_pretty(&modules_for_llm)
         .map_err(|e| AppError::Internal(format!("Failed to serialize modules: {}", e)))?;
 
-    let request = ChatRequest {
-        model: model.to_string(),
-        messages: vec![
-            ChatMessage {
-                role: "system".to_string(),
-                content: CLASSIFY_SYSTEM_PROMPT.to_string(),
-                reasoning_content: None,
-                tool_calls: None,
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: user_content,
-                reasoning_content: None,
-                tool_calls: None,
-            },
-        ],
-        temperature: Some(0.3),
-        top_p: Some(1.0),
-        max_tokens: Some(LLM_MAX_TOKENS),
-        frequency_penalty: Some(0.0),
-        presence_penalty: Some(0.0),
-        tools: None,
-        tool_choice: None,
-        stream: false,
-    };
+    let request = ChatRequest::classification_request(
+        model,
+        CLASSIFY_SYSTEM_PROMPT,
+        user_content,
+        LLM_MAX_TOKENS,
+    );
 
     let response = provider
         .chat_completion_with_retry(request, 2)
@@ -267,8 +187,15 @@ fn heuristic_classify(
     let (identifier, name, role, content) = &all_modules[index];
     let combined = format!("{} {} {} {}", identifier, name, role, content).to_lowercase();
 
-    let target_agents = classify_heuristically(&combined);
-    let reason = format!("LLM分类失败，启发式关键词回退: {:?}", target_agents);
+    let (target_agents, low_confidence) = classify_heuristically(&combined);
+    let reason = if low_confidence {
+        format!(
+            "{}：LLM分类失败，未命中明确类别，保守回退 writer",
+            LOW_CONFIDENCE_REASON_PREFIX
+        )
+    } else {
+        format!("LLM分类失败，启发式关键词回退: {:?}", target_agents)
+    };
 
     ClassifiedModule {
         identifier: identifier.clone(),
@@ -278,99 +205,116 @@ fn heuristic_classify(
 }
 
 /// Keyword-based heuristic classification for a single module's combined text.
-fn classify_heuristically(combined: &str) -> Vec<String> {
-    // Discard: jailbreak, prefill, cache hacks, clewd
-    if combined.contains("穿甲")
-        || combined.contains("破限")
-        || combined.contains("预填充")
-        || combined.contains("clewd")
-        || combined.contains("缓存")
-        || combined.contains("prefill")
-        || combined.contains("jailbreak")
-        || combined.contains("cache")
-    {
-        return vec!["discard".to_string()];
+/// Returns `(target_agents, low_confidence)` — the flag marks cases where no concrete
+/// category matched and we conservatively defaulted to writer (so callers/UI can surface it
+/// for review instead of silently soaking every ambiguous module into the writer prompt).
+/// Heuristic fallback returns a `reason` prefix so callers can tell apart genuine
+/// classifications from low-confidence defaults. Used by `heuristic_classify`.
+const LOW_CONFIDENCE_REASON_PREFIX: &str = "低置信度启发式默认";
+
+fn classify_heuristically(combined: &str) -> (Vec<String>, bool) {
+    // Discard: model-specific jailbreaks, prefill hacks, cache-busting tricks, and proxy
+    // (Clewd) regex — these target a particular LLM/proxy and have no effect here.
+    // Match by structural intent, not card-specific Chinese slang.
+    const DISCARD_NEEDLES: &[&str] = &[
+        // proxy / prefill / cache machinery
+        "clewd",
+        "prefill",
+        "prefix回复",
+        "prefix response",
+        "jailbreak",
+        "cache",
+        "缓存",
+        "穿透",
+        "预填充",
+        "穿甲",
+        "破限",
+        "nsfw切换",
+        "sk-",
+        "anthropic-version",
+        // model-specific workarounds (kept broad on purpose)
+        "deepseek",
+        "glm",
+        "gpt-4",
+        "claude",
+        "gemini",
+        "groq",
+        "openrouter",
+        "openai",
+    ];
+    if DISCARD_NEEDLES.iter().any(|n| combined.contains(n)) {
+        // Only discard when the module looks like a hack (mentions one of the above AND a
+        // hack/switch/injection verb), to avoid killing legit model-selection presets.
+        let looks_like_hack = [
+            "破限",
+            "穿甲",
+            "预填充",
+            "prefill",
+            "jailbreak",
+            "clewd",
+            "穿透",
+            "切换",
+            "越狱",
+            "绕过",
+            "绕过审核",
+            "bypass",
+        ]
+        .iter()
+        .any(|n| combined.contains(n));
+        if looks_like_hack {
+            return (vec!["discard".to_string()], false);
+        }
     }
 
     let mut targets = Vec::new();
 
     // Writer indicators
-    if combined.contains("文风")
-        || combined.contains("风格")
-        || combined.contains("描写")
-        || combined.contains("写")
-        || combined.contains("对白")
-        || combined.contains("nsfw")
-        || combined.contains("人称")
-        || combined.contains("排版")
-        || combined.contains("禁词")
-        || combined.contains("抗八股")
-        || combined.contains("抗重复")
-        || combined.contains("抗滥用")
-        || combined.contains("格式姬")
-        || combined.contains("不抢话")
-        || combined.contains("抢话")
-        || combined.contains("字数")
-        || combined.contains("段落")
-        || combined.contains("叙事")
-        || combined.contains("prose")
-        || combined.contains("narration")
-        || combined.contains("style")
-        || combined.contains("writing")
-        || combined.contains("format")
-        || combined.contains("banned")
-        || combined.contains("pov")
-        || combined.contains("dialogue")
-    {
+    if contains_any(
+        combined,
+        &[
+            "文风", "风格", "描写", "写", "对白", "nsfw", "人称", "排版", "禁词", "抗八股",
+            "抗重复", "抗滥用", "格式姬", "不抢话", "抢话", "字数", "段落", "叙事", "prose",
+            "narration", "style", "writing", "format", "banned", "pov", "dialogue",
+        ],
+    ) {
         targets.push("writer".to_string());
     }
 
     // Director indicators
-    if combined.contains("节奏")
-        || combined.contains("剧情")
-        || combined.contains("情节")
-        || combined.contains("世界观")
-        || combined.contains("角色分析")
-        || combined.contains("信息控制")
-        || combined.contains("反全知")
-        || combined.contains("情感基调")
-        || combined.contains("限速器")
-        || combined.contains("冒险")
-        || combined.contains("保守")
-        || combined.contains("爆炸")
-        || combined.contains("director")
-        || combined.contains("pacing")
-        || combined.contains("plot")
-        || combined.contains("world")
-    {
+    if contains_any(
+        combined,
+        &[
+            "节奏", "剧情", "情节", "世界观", "角色分析", "信息控制", "反全知", "情感基调",
+            "限速器", "冒险", "保守", "爆炸", "director", "pacing", "plot", "world",
+        ],
+    ) {
         targets.push("director".to_string());
     }
 
     // State / Variable indicators
-    if combined.contains("变量") || combined.contains("variable") || combined.contains("state") {
+    if contains_any(combined, &["变量", "variable", "state"]) {
         targets.push("state".to_string());
     }
 
     // Lore master indicators
-    if combined.contains("lore")
-        || combined.contains("设定")
-        || combined.contains("背景")
-        || combined.contains("lore_master")
-    {
+    if contains_any(combined, &["lore", "设定", "背景", "lore_master"]) {
         targets.push("lore_master".to_string());
     }
 
     // Compression indicators
-    if combined.contains("总结") || combined.contains("摘要") || combined.contains("summary") {
+    if contains_any(combined, &["总结", "摘要", "summary"]) {
         targets.push("compression".to_string());
     }
 
-    // Default: writer
-    if targets.is_empty() {
+    // Default: when no class matched, keep writer as a conservative default but flag it as
+    // low-confidence so the reason surfaces for review instead of silently soaking every
+    // ambiguous module into the writer prompt.
+    let low_confidence = targets.is_empty();
+    if low_confidence {
         targets.push("writer".to_string());
     }
 
-    targets
+    (targets, low_confidence)
 }
 
 fn extract_json_array(text: &str) -> &str {

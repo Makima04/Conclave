@@ -1,4 +1,4 @@
-use super::str_utils::truncate_str;
+use super::str_utils::{truncate_str, truncate_str_tail};
 use crate::error::AppError;
 use crate::provider::openai::OpenAiProvider;
 use crate::provider::types::{ChatMessage, ChatRequest};
@@ -7,6 +7,19 @@ use crate::runtime::types::{
 };
 use crate::runtime::{structured_output, turn_state};
 use tracing::instrument;
+
+/// Master agent 执行的调试元 —— 给 Agent 工作台顶部的 DAG 补一条 master snapshot 用。
+/// 字段对应 run_master 内部已算好的 system_prompt / user_prompt / token / 耗时。
+#[derive(Debug, Clone, Default)]
+pub struct MasterRunDebug {
+    pub system_prompt: String,
+    pub user_prompt: String,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    /// Prompt-cache hit tokens for the master's LLM call (0 when not reported).
+    pub cached_tokens: u32,
+    pub duration_ms: i32,
+}
 
 /// Run the Master Agent: analyze user input + context + agent states → produce execution plan
 #[instrument(skip(provider, active_agents, turn_state, context, user_input, parsed_intent, agent), fields(agent_count = active_agents.len()))]
@@ -19,7 +32,7 @@ pub async fn run_master(
     context: &ContextBundle,
     parsed_intent: Option<&ParsedIntent>,
     agent: Option<&SubAgent>,
-) -> Result<MasterPlan, AppError> {
+) -> Result<(MasterPlan, MasterRunDebug), AppError> {
     // Build agent status summary
     let agent_summaries = if active_agents.is_empty() {
         "(无活跃子Agent)".to_string()
@@ -113,12 +126,12 @@ JSON格式：
 规则：
 1. calls中的agent_id必须是已有子Agent的id，或新创建Agent的id
 2. inject_from指定哪些Agent的输出需要注入到当前Agent的上下文中
-3. user_auto=true表示启用用户自动代理（如战斗自动补完）
+3. user_auto：当 action_type 为 attack/move 等需要自动补完玩家物理动作的回合，或玩家明确放权（如"让他来打"、"自动战斗"）时，设 user_auto=true，运行时会自动把玩家Agent注入DAG；普通对话/言语互动保持 user_auto=false
 4. 如果用户只是普通对话，通常只需调用相关NPC + writer
 5. lifecycle可以为空数组[]，calls也可以为空（但通常至少要有一个writer来生成回复）
 6. final_writer_id：当有多个writer时，指定最终产出叙事文本的writer的agent_id
-6. 如果没有子Agent，先创建需要的Agent
-7. 根据用户意图解析结果，精准调度相关Agent{scene_section}{state_section}{events_section}{foreshadow_section}"#
+7. 如果没有子Agent，先创建需要的Agent
+8. 根据用户意图解析结果，精准调度相关Agent"#
     );
 
     // Use agent's DB prompt if available, otherwise fall back to hardcoded default
@@ -127,7 +140,11 @@ JSON格式：
         .map(|a| a.system_prompt.clone())
         .unwrap_or(default_prompt);
 
-    // Build recent conversation section
+    // Build recent conversation section.
+    // Tail-priority + generous cap: the end of a long opening greeting reflects the
+    // current story position (e.g. a transformation that already happened), which is
+    // what the plan must be based on. Truncating the head would lose that and make the
+    // Master misjudge the scene as "still at the opening", cascading re-narration.
     let recent_section = if context.recent_context.is_empty() {
         String::new()
     } else {
@@ -136,16 +153,29 @@ JSON格式：
             .iter()
             .map(|m| {
                 let role_label = if m.role == "user" { "用户" } else { "助手" };
-                let content = truncate_str(&m.content, 300);
+                let content = truncate_str_tail(&m.content, 10000);
                 format!("[{}] {}", role_label, content)
             })
             .collect();
         format!("\n最近对话:\n{}", lines.join("\n"))
     };
 
+    // Dynamic per-turn context (scene/state/events/foreshadow) goes in the USER message, not the
+    // system message — this keeps the system message fully static (rules + JSON schema) so the
+    // prompt-cache prefix hits across turns. Previously these were format!-spliced into the
+    // system message body, which broke the cache every turn. This also fixes a latent gap: when
+    // a custom agent.system_prompt was used, those sections were dropped entirely.
     let user_content = format!(
-        "当前活跃子Agent:\n{}\n\n{}用户输入:\n{}{}\n\n本轮已有输出:\n{}",
-        agent_summaries, recent_section, user_input, intent_section, turn_summaries
+        "当前活跃子Agent:\n{}\n\n{}用户输入:\n{}{}\n\n本轮已有输出:\n{}{}{}{}{}",
+        agent_summaries,
+        recent_section,
+        user_input,
+        intent_section,
+        turn_summaries,
+        scene_section,
+        state_section,
+        events_section,
+        foreshadow_section,
     );
 
     let request = ChatRequest {
@@ -159,7 +189,7 @@ JSON格式：
             },
             ChatMessage {
                 role: "user".to_string(),
-                content: user_content,
+                content: user_content.clone(),
                 reasoning_content: None,
                 tool_calls: None,
             },
@@ -172,14 +202,31 @@ JSON格式：
         tools: None,
         tool_choice: None,
         stream: false,
+        ..Default::default()
     };
 
     tracing::debug!(model = model, "Master Agent: sending LLM request");
 
+    let master_start = std::time::Instant::now();
     let response = provider
         .chat_completion_with_retry(request, 3)
         .await
         .map_err(|e| AppError::Provider(e.to_string()))?;
+    let duration_ms = master_start.elapsed().as_millis() as i32;
+    let (prompt_tokens, completion_tokens, cached_tokens) = response
+        .usage
+        .as_ref()
+        .map(|u| (u.prompt_tokens, u.completion_tokens, u.cached_tokens()))
+        .unwrap_or((0, 0, 0));
+
+    let debug = MasterRunDebug {
+        system_prompt: system_prompt.clone(),
+        user_prompt: user_content.clone(),
+        prompt_tokens,
+        completion_tokens,
+        cached_tokens,
+        duration_ms,
+    };
 
     let text = response
         .choices
@@ -200,13 +247,13 @@ JSON格式：
     )
     .await
     {
-        Ok(plan) => Ok(plan),
+        Ok(plan) => Ok((plan, debug)),
         Err(e) => {
             tracing::warn!(
                 "Master Agent output parse failed after repair: {}, falling back to default plan",
                 e
             );
-            Ok(fallback_plan(active_agents, user_input))
+            Ok((fallback_plan(active_agents, user_input), debug))
         }
     }
 }

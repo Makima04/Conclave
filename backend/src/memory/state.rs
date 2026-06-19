@@ -208,6 +208,27 @@ fn is_path_allowed(proposed_by: &str, target: &str) -> bool {
         return lower.starts_with("variables.");
     }
 
+    // variable_tool_agent: writes canonical platform_state paths (the
+    // structured state the LLM updates via the update_variables tool). Allows
+    // mutable game state — characters, relationships, scene, inventory, flags,
+    // location, atmosphere — incl. structural ops (add/remove on arrays such as
+    // characters[]). Blocked: world rules, meta, gm notes, hidden/secret/internal.
+    if proposed_by == "variable_tool_agent" {
+        if lower.contains("hidden_") || lower.contains("secret_") || lower.contains("internal_") {
+            return false;
+        }
+        return lower.starts_with("variables.")
+            || lower.starts_with("platform_state.")
+            || lower.starts_with("characters")
+            || lower.starts_with("relationships")
+            || lower.starts_with("scene")
+            || lower.starts_with("inventory")
+            || lower.starts_with("flags")
+            || lower.starts_with("atmosphere")
+            || lower.starts_with("location")
+            || lower.starts_with("world.");
+    }
+
     // single_agent, unknown: allow common paths
     if proposed_by == "single_agent" {
         return !lower.starts_with("world_rules")
@@ -258,12 +279,9 @@ async fn apply_changes(
 
     // Load the session contract to route through the adapter when available.
     let fallback_variables = state.get("variables").cloned();
-    let contract = card_state_adapter::load_session_contract(
-        pool,
-        session_id,
-        fallback_variables.as_ref(),
-    )
-    .await?;
+    let contract =
+        card_state_adapter::load_session_contract(pool, session_id, fallback_variables.as_ref())
+            .await?;
 
     if let Some(ref contract) = contract {
         // Adapter path: write_rule validation + card_variables re-projection

@@ -3,7 +3,9 @@ import type {
   WorldBook, WorldBookDetail, WorldBookEntry, CharacterCard,
   ParsedWorldBookEntry, Preset, PresetDetail,
   RuntimeSettings, SessionRuntimeAssets,
+  StHostRenderPayload,
   DebugMessage, DebugTurnSummary, AgentDebugSnapshot,
+  AgentConfig,
 } from './types';
 import { consumeSseResponse, type ChatSseHandler } from './sse';
 
@@ -70,6 +72,10 @@ export async function getSession(id: string): Promise<Session> {
 
 export async function getSessionRuntimeAssets(id: string): Promise<SessionRuntimeAssets> {
   return request(`/sessions/${id}/runtime-assets`);
+}
+
+export async function getSessionStHostRender(id: string): Promise<StHostRenderPayload> {
+  return request(`/sessions/${id}/st-host-render`);
 }
 
 export async function deleteSession(id: string): Promise<void> {
@@ -302,7 +308,7 @@ export interface SubAgent {
   last_active_turn: number;
   context: string;
   context_preview: string;
-  config: Record<string, any>;
+  config: AgentConfig;
   fixed: boolean;
 }
 
@@ -317,7 +323,7 @@ export async function createAgent(sessionId: string, data: { agent_type: string;
   });
 }
 
-export async function updateAgent(sessionId: string, agentId: string, data: { label?: string; system_prompt?: string; context?: string; config?: Record<string, any> }): Promise<void> {
+export async function updateAgent(sessionId: string, agentId: string, data: { label?: string; system_prompt?: string; context?: string; config?: Partial<AgentConfig> }): Promise<void> {
   await request(`/sessions/${sessionId}/agents/${agentId}`, {
     method: 'PUT',
     body: JSON.stringify(data),

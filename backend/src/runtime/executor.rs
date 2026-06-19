@@ -493,7 +493,6 @@ pub async fn execute_turn(
     user_input: &str,
 ) -> Result<TurnResult, AppError> {
     let provider = load_provider(pool).await?;
-    let model = load_provider_model(pool).await?;
 
     let session = sqlx::query_as::<_, SessionRow>(
         "SELECT mode, current_turn, config, title_source FROM sessions WHERE id = ? AND deleted_at IS NULL"
@@ -505,6 +504,14 @@ pub async fn execute_turn(
 
     let session_config: SessionConfig = serde_json::from_str(&session.config).unwrap_or_default();
     let turn_number = session.current_turn + 1;
+
+    // Per-session chat model: use session_config.model if set, otherwise the global
+    // default provider model. (single-agent writer + multi-agent base model)
+    let model = if session_config.model.trim().is_empty() {
+        load_provider_model(pool).await?
+    } else {
+        session_config.model.clone()
+    };
 
     tracing::info!(
         session = session_id,
@@ -576,6 +583,19 @@ pub async fn execute_turn(
             turn = turn_number,
             "Multi-agent turn persisted successfully"
         );
+
+        // Mirror session_variables (stat_data + display_data) into this turn's assistant
+        // message metadata so the ST status bar can read it. `finalize_turn` writes
+        // metadata='{}' for multi-agent turns; this populates the snapshot the card's MVU
+        // status bar reads via `getChatMessages(id)[0].data.stat_data || .display_data`.
+        if let Err(e) =
+            snapshot_variables_to_message_metadata(pool, session_id, turn_number).await
+        {
+            tracing::warn!(
+                "Failed to snapshot variables to message metadata: {}",
+                e
+            );
+        }
 
         // Post-commit extras (non-fatal)
         turn_finalizer::persist_turn_extras(pool, session_id, turn_number, &commit.compression)
@@ -660,6 +680,7 @@ pub async fn execute_turn(
         tools: None,
         tool_choice: None,
         stream: false,
+        ..Default::default()
     };
 
     tracing::info!(
@@ -738,6 +759,11 @@ pub async fn execute_turn(
             .as_ref()
             .map(|u| u.completion_tokens)
             .unwrap_or(0),
+        cached_tokens: response
+            .usage
+            .as_ref()
+            .map(|u| u.cached_tokens())
+            .unwrap_or(0),
         duration_ms,
         input_summary: format!("User: {}", truncate_str(user_input, 200)),
         output_summary: format!("Response: {}", truncate_str(&narrative_text, 200)),
@@ -786,7 +812,9 @@ pub async fn execute_turn(
         &narrative_text,
         &[trace],
         &[],
-        false,
+        // Persist inline <UpdateVariable> for MVU cards in single-agent mode (they emit
+        // <UpdateVariable> rather than calling the update_variables tool). See messages.rs.
+        true,
         &serde_json::json!({}),
     )
     .await?;
@@ -828,6 +856,24 @@ pub async fn execute_turn(
                     Ok(()) => {
                         if let Err(e) = tx.commit().await {
                             tracing::warn!("Failed to commit variable changes: {}", e);
+                        } else {
+                            // Mirror session_variables into this turn's assistant
+                            // message metadata (stat_data + display_data) so the ST
+                            // status bar can read it via
+                            // `getChatMessages(id)[0].data.stat_data` (mapped to
+                            // messages.metadata.stat_data via store.ts normalizeMessage).
+                            if let Err(e) = snapshot_variables_to_message_metadata(
+                                pool,
+                                session_id,
+                                turn_number,
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    "Failed to snapshot variables to message metadata: {}",
+                                    e
+                                );
+                            }
                         }
                     }
                     Err(e) => {
@@ -855,6 +901,69 @@ pub async fn execute_turn(
         },
         turn_number,
     })
+}
+
+/// Snapshot the full variable tree from `session_variables.variables` into the current
+/// turn's assistant message `metadata.stat_data` (and `display_data` as fallback), so ST
+/// status-bar cards can read it via `getChatMessages(id)[0].data.stat_data`
+/// (`messages.metadata.stat_data` via `store.ts normalizeMessage`).
+///
+/// Why the whole tree: the card's MVU status bar does
+///   `d = m[0].data.stat_data || m[0].data.display_data;`
+/// then walks dotted paths (`SafeGetValue(d, "a.b.c")`) keyed by top-level variable names
+/// like `"<user>"`, `"时幼微"`, `"世界"`. Those top-level keys are exactly what
+/// `session_variables.variables` already holds (the card has no separate `stat_data`
+/// subobject — variables are stored flat under character/world names). In native ST the
+/// MVU extension writes this snapshot per message; Conclave has no MVU extension, so we
+/// mirror it here. Both `stat_data` and `display_data` get the same value (the latter is
+/// the documented fallback path).
+///
+/// `metadata` is merged via `json_set`, preserving other keys. Skips silently when
+/// `session_variables` is empty/missing (avoids overwriting with an empty object).
+pub async fn snapshot_variables_to_message_metadata(
+    pool: &SqlitePool,
+    session_id: &str,
+    turn_number: i32,
+) -> Result<(), AppError> {
+    let variables_json: Option<String> =
+        sqlx::query_scalar("SELECT variables FROM session_variables WHERE session_id = ?")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await?;
+
+    let variables = variables_json
+        .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
+        .filter(|v| v.as_object().map_or(false, |o| !o.is_empty()));
+
+    let Some(variables) = variables else {
+        return Ok(());
+    };
+    let vars_json = serde_json::to_string(&variables).unwrap_or_else(|_| "null".to_string());
+
+    // json_set is nested: set $.display_data first, then $.stat_data on the result,
+    // so both keys land on the same (merged) base object.
+    sqlx::query(
+        "UPDATE messages
+         SET metadata = json_set(
+             json_set(
+                 CASE WHEN metadata IS NULL OR metadata = '' OR json_valid(metadata) = 0
+                      THEN '{}' ELSE metadata END,
+                 '$.display_data',
+                 json(?)
+             ),
+             '$.stat_data',
+             json(?)
+         )
+         WHERE session_id = ? AND turn_number = ? AND role = 'assistant'",
+    )
+    .bind(&vars_json)
+    .bind(&vars_json)
+    .bind(session_id)
+    .bind(turn_number)
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 pub fn default_system_prompt() -> String {
@@ -897,6 +1006,7 @@ async fn generate_title(
         tools: None,
         tool_choice: None,
         stream: false,
+        ..Default::default()
     };
 
     let response = provider
@@ -982,7 +1092,6 @@ pub async fn execute_turn_stream(
     broadcast_tx: broadcast::Sender<SseEvent>,
 ) -> Result<StreamTurnResult, AppError> {
     let provider = load_provider(pool).await?;
-    let model = load_provider_model(pool).await?;
 
     let session = sqlx::query_as::<_, SessionRow>(
         "SELECT mode, current_turn, config, title_source FROM sessions WHERE id = ? AND deleted_at IS NULL"
@@ -994,6 +1103,13 @@ pub async fn execute_turn_stream(
 
     let session_config: SessionConfig = serde_json::from_str(&session.config).unwrap_or_default();
     let turn_number = session.current_turn + 1;
+
+    // Per-session chat model: prefer session_config.model, else global default.
+    let model = if session_config.model.trim().is_empty() {
+        load_provider_model(pool).await?
+    } else {
+        session_config.model.clone()
+    };
 
     tracing::info!(
         session = session_id,
@@ -1152,6 +1268,7 @@ pub async fn execute_turn_stream(
         tools: None,
         tool_choice: None,
         stream: true,
+        ..Default::default()
     };
 
     tracing::info!(
@@ -1354,6 +1471,7 @@ mod tests {
             priority: 0,
             visibility: "public".to_string(),
             category: "state_agent".to_string(),
+            ..Default::default()
         };
         assert!(is_variable_rule_entry(&entry));
     }
@@ -1367,6 +1485,7 @@ mod tests {
             priority: 0,
             visibility: "public".to_string(),
             category: "global".to_string(),
+            ..Default::default()
         };
         assert!(is_variable_rule_entry(&entry));
     }
@@ -1380,6 +1499,7 @@ mod tests {
             priority: 0,
             visibility: "public".to_string(),
             category: "global".to_string(),
+            ..Default::default()
         };
         assert!(!is_variable_rule_entry(&entry));
     }
@@ -1393,6 +1513,7 @@ mod tests {
             priority: 0,
             visibility: "public".to_string(),
             category: "global".to_string(),
+            ..Default::default()
         };
         assert!(is_variable_rule_entry(&entry));
     }
@@ -1413,6 +1534,7 @@ mod tests {
             priority: 0,
             visibility: "public".to_string(),
             category: "user".to_string(),
+            ..Default::default()
         }];
         assert!(format_world_book_reference(&entries).is_none());
     }
@@ -1426,6 +1548,7 @@ mod tests {
             priority: 0,
             visibility: "public".to_string(),
             category: "global".to_string(),
+            ..Default::default()
         }];
         assert!(format_world_book_reference(&entries).is_none());
     }
@@ -1440,6 +1563,7 @@ mod tests {
                 priority: 10,
                 visibility: "public".to_string(),
                 category: "global".to_string(),
+                ..Default::default()
             },
             WorldBookContextEntry {
                 content: "The tavern serves ale".to_string(),
@@ -1448,6 +1572,7 @@ mod tests {
                 priority: 5,
                 visibility: "public".to_string(),
                 category: "global".to_string(),
+                ..Default::default()
             },
         ];
         let result = format_world_book_reference(&entries);
@@ -1634,8 +1759,6 @@ pub async fn regenerate_turn(
     session_id: &str,
     message_id: &str,
 ) -> Result<(String, String, i32), AppError> {
-    let model = load_provider_model(pool).await?;
-
     // Load the assistant message
     let msg = sqlx::query_as::<_, (String, i32, String, String)>(
         "SELECT id, turn_number, content, variants FROM messages WHERE id = ? AND session_id = ? AND role = 'assistant'"
@@ -1670,6 +1793,13 @@ pub async fn regenerate_turn(
     .ok_or_else(|| AppError::NotFound("Session not found".to_string()))
     .map(|c| serde_json::from_str(&c).unwrap_or_default())?;
 
+    // Per-session chat model: prefer session_config.model, else global default.
+    let model = if session_config.model.trim().is_empty() {
+        load_provider_model(pool).await?
+    } else {
+        session_config.model.clone()
+    };
+
     // Build context (exclude the current assistant message to avoid contamination)
     let context_bundle = context::build_context_for_regenerate(
         pool,
@@ -1702,6 +1832,7 @@ pub async fn regenerate_turn(
         tools: None,
         tool_choice: None,
         stream: false,
+        ..Default::default()
     };
 
     tracing::info!(
@@ -1786,6 +1917,11 @@ pub async fn regenerate_turn(
             .usage
             .as_ref()
             .map(|u| u.completion_tokens)
+            .unwrap_or(0),
+        cached_tokens: response
+            .usage
+            .as_ref()
+            .map(|u| u.cached_tokens())
             .unwrap_or(0),
         duration_ms,
         input_summary: format!("Regenerate: {}", truncate_str(&user_input, 200)),

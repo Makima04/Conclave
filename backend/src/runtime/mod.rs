@@ -12,6 +12,7 @@ pub mod llm_limiter;
 pub mod master;
 pub mod parser;
 pub mod plan_validator;
+pub mod llm_batch;
 pub mod preset_parser;
 pub mod recall;
 pub mod sse_types;

@@ -138,6 +138,7 @@ pub async fn call_llm_json(
         tools: None,
         tool_choice: None,
         stream: false,
+        ..Default::default()
     };
 
     let response = provider

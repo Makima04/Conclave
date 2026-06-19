@@ -438,9 +438,9 @@ CREATE TABLE world_books (
 | `original_format` | `ccv2`（Character Card V2/V3）或 `sillytavern`。 |
 | `source_data` | 原始导入 JSON 文本。 |
 | `parse_status` | `none`、`parsing`、`done`、`error`。LLM 分类多 Agent 条目的状态。 |
-| `parsed_entries` | JSON 数组，LLM 解析后的多 Agent 条目（含 `category`、`visibility`、`reason`）。 |
+| `parsed_entries` | JSON 数组，LLM 解析后的多 Agent 条目（含 `category`、`visibility`、`reason`，并透传 ST 激活字段 `constant`/`keys`/`selective`/`secondary_keys`/`selective_logic` + 原始 `priority`）。解析器只决定**路由**，激活（是否注入）由运行时 `is_entry_activated`（context.rs）按 ST 语义判断。 |
 | `single_agent_parse_status` | 单 Agent 路由解析状态，值同 `parse_status`。 |
-| `single_agent_parsed_entries` | JSON 数组，单 Agent 路由解析后的条目。 |
+| `single_agent_parsed_entries` | JSON 数组，单 Agent 路由解析后的条目（字段同 `parsed_entries`）。 |
 
 ---
 
@@ -474,7 +474,7 @@ CREATE INDEX idx_wb_entries_book ON world_book_entries(world_book_id);
 | `priority` | 优先级，数值越大越优先。 |
 | `position` | 插入位置：`before_char`、`after_char`、`@D`、`@A` 等 SillyTavern 标准位。 |
 | `selective` | 0/1，是否需要同时匹配 `secondary_keys`。 |
-| `selective_logic` | 0 = AND ANY，1 = AND ALL，2 = NOT ANY。 |
+| `selective_logic` | 0 = AND ANY，1 = NOT ALL，2 = NOT ANY，3 = AND ALL（SillyTavern 标准）。运行时 `is_entry_activated` 按此组合 `secondary_keys`。 |
 
 ---
 

@@ -1,5 +1,4 @@
 use crate::error::AppError;
-use crate::provider::adapter::ProviderAdapter;
 use crate::provider::openai::OpenAiProvider;
 use crate::provider::thinking::ThinkingConfig;
 use crate::provider::types::{ChatMessage, ChatRequest, ChatTool, ChatToolFunction, ToolCall};
@@ -86,7 +85,7 @@ pub fn build_update_variables_tool(writable_state: &serde_json::Value) -> ChatTo
                                     "description": "path 的兼容别名，与 path 二选一。"
                                 },
                                 "value": {
-                                    "description": "变量的新值。必须与变量当前类型匹配。"
+                                    "description": "变量的完整新值，与当前类型严格匹配。数组变量（[值,说明]）必须给完整新数组；数值带「数值 | 描述」格式。绝不写 Yes/No/是否更新/理由/说明文本。"
                                 },
                                 "to": {
                                     "description": "value 的兼容别名，与 value 二选一。"
@@ -126,7 +125,7 @@ fn variable_to_schema(value: &serde_json::Value) -> serde_json::Value {
             if arr.len() >= 2 {
                 serde_json::json!({
                     "type": "array",
-                    "description": format!("[当前值, 说明] — 只更新第0项"),
+                    "description": "[当前值, 说明] — 字段级整值：给出完整的新数组 [新值, 说明]。说明通常原样保留，只换新值。不要只给标量。",
                     "example": arr
                 })
             } else {
@@ -189,12 +188,15 @@ pub async fn propose_variable_changes(
 必须调用 update_variables 工具；没有变量变化时传 {"changes":[]}。
 
 规则：
-1. path 使用 state_definitions 中给出的变量键（中文键亦可，如 时幼微.耐心值），不要加 variables. 或 platform_state. 前缀，不要发明新路径。
-2. 只更新本轮明确发生变化的变量；对 [值,"说明"] 这类数组变量，给出值的绝对新值，不要给加减量。
-3. op：set=改值（默认）；add=向数组追加或新增键（如新角色加入）；remove=删除（需人工确认）。移动=「set 新位置 + remove 旧位置」。
-4. value/to 必须是变量的新真实值，不要写 Yes/No、是否更新、理由、说明文本。
-5. from 尽量填写当前原值，用于冲突检测。
-6. 数值变化要保守，除非叙事明确发生重大转折。"#);
+1. 【增量】只提交本轮叙事中**明确发生变化**的字段；未变化的字段一律不报（原样保留即可，不要把整棵状态树抄一遍）。通常一轮只改 0~4 个字段。
+2. path 使用 state_definitions 中给出的变量键（中文键亦可，如 时幼微.耐心值），不要加 variables. 或 platform_state. 前缀，不要发明新路径。嵌套对象的内部变量必须带完整中间层。
+3. 【完整新值】value/to 必须是该字段的完整新值：
+   - 对 [值,"说明"] 数组变量，给出**完整的新数组 [新值, 说明]**，说明通常原样保留、只换新值。绝对不要只给标量、不要给加减量（如 +5）。
+   - 数值字段保持「数值 | 描述」格式（如 "15 | 屈辱萌动"），数值须在说明的 范围[min-max] 之内。
+   - 绝不写 Yes/No、是/否、"是否更新"、理由或说明文本——这会被直接丢弃。
+4. op：set=改值（默认）；add=向数组追加或新增键（如新角色加入）；remove=删除（需人工确认）。移动=「set 新位置 + remove 旧位置」。
+5. from 填写当前原值，用于冲突检测。
+6. 数值变化要保守，除非叙事明确发生重大转折；能判定没变就别报。"#);
 
     let user_content = format!(
         "当前可写平台状态:\n{}\n\n用户输入:\n{}\n\n最终叙事:\n{}",
@@ -248,7 +250,7 @@ pub async fn propose_variable_changes(
 
     tracing::debug!("Variable tool agent: sending tool-call request (single-agent)");
     let response = provider
-        .chat_completion(request)
+        .chat_completion_with_retry(request, 3)
         .await
         .map_err(|e| AppError::Provider(e.to_string()))?;
 
@@ -365,17 +367,11 @@ fn normalize_changes(
         .into_iter()
         .filter_map(|c| normalize_change(c, writable_state))
         .filter(|change| {
-            // Resolve the path relative to the MVU variables tree for existence checks.
-            // normalize_change already stripped any `variables.`/`platform_state.` prefix
-            // and folded array vars to their `[0]` value slot, so `change.target` is now a
-            // bare key path like `时幼微.耐心值[0]`.
+            // Resolve the path relative to the MVU variables tree for existence
+            // checks. `normalize_change` strips any `variables.`/`platform_state.`
+            // prefix; `change.target` is a bare key path like `时幼微.耐心值`.
             let relative = strip_state_prefix(&change.target);
-            let exists = card_state_adapter::get_path_value(writable_state, relative).is_some()
-                || card_state_adapter::get_path_value(
-                    writable_state,
-                    relative.strip_suffix("[0]").unwrap_or(relative),
-                )
-                .is_some();
+            let exists = card_state_adapter::get_path_value(writable_state, relative).is_some();
 
             match change.op.as_str() {
                 // `add` creates new entries (new character into characters[], a new
@@ -420,10 +416,12 @@ fn parent_path_exists(state: &serde_json::Value, path: &str) -> bool {
 /// `session_variables` blob, and what the card UI / MVU reads).
 ///
 /// Canonical state IS the MVU variable tree (v3 has no platform_state wrapper).
-/// Array variables are stored as `[value, "说明"]`; for `set`/`update` the value
-/// is written into the `[0]` slot so the 说明 at `[1]` is preserved (absolute
-/// overwrite). `add`/`remove` keep the path as-is for structural ops.
-fn normalize_change(change: ToolChange, writable_state: &serde_json::Value) -> Option<StateChangeCandidate> {
+/// Field-level whole-value semantics (ST-style merge): a change carries the
+/// field's complete new value — for `[value, 说明]` arrays that means the whole
+/// new array. The target stays a bare path; no `[0]` slot folding. The write-back
+/// path (`merge_variables`) replaces the field wholesale. `add`/`remove` keep the
+/// path as-is for structural ops.
+fn normalize_change(change: ToolChange, _writable_state: &serde_json::Value) -> Option<StateChangeCandidate> {
     let raw_target = change.path.or(change.target)?;
 
     // op: tool "set"→update, "add"→add, "remove"→remove. Default to set.
@@ -444,23 +442,15 @@ fn normalize_change(change: ToolChange, writable_state: &serde_json::Value) -> O
         change.value.or(change.to)?
     };
 
-    // Only `set`/`update` values are sanity-checked for yes/no explanations
-    // (add/remove structural ops bypass this check).
-    if op == "update" && is_yes_no_explanation(&to) {
-        return None;
-    }
-
     // Canonical target = bare MVU-variables-tree path (strip any legacy prefix).
-    let mut target = strip_state_prefix(raw_target.trim()).to_string();
+    // No `[0]` value-slot folding: the change carries the field's complete new
+    // value (a `[value, 说明]` array stays a whole array); the write-back path
+    // merges it wholesale via `merge_variables`. Folding to `[0]` is what caused
+    // the [[value, 说明], 说明] double-wrap. Value sanity (yes/no, shape, range)
+    // is enforced later by the `variable_validation` layer, not here.
+    let target = strip_state_prefix(raw_target.trim()).to_string();
 
-    // For value writes (update/add into a `[value, 说明]` array var), fold the
-    // target onto its `[0]` value slot so the 说明 is preserved. Structural `add`
-    // (array append / new key) and `remove` keep the raw path.
-    if op == "update" {
-        target = resolve_array_value_slot(&target, writable_state);
-    }
-
-    let from = normalize_from_value(change.from, &target);
+    let from = change.from;
     Some(StateChangeCandidate {
         op: op.to_string(),
         target,
@@ -470,135 +460,9 @@ fn normalize_change(change: ToolChange, writable_state: &serde_json::Value) -> O
     })
 }
 
-/// If `target` points at an MVU `[value, 说明]` array, return the `target[0]`
-/// value-slot path; otherwise return `target` unchanged. Structural paths that
-/// already carry an explicit index are left alone.
-fn resolve_array_value_slot(target: &str, writable_state: &serde_json::Value) -> String {
-    if target.ends_with(']') {
-        return target.to_string();
-    }
-    let current = match card_state_adapter::get_path_value(writable_state, target) {
-        Some(v) => v,
-        None => return target.to_string(),
-    };
-    if current.as_array().is_some_and(|arr| arr.len() >= 2) {
-        format!("{}[0]", target)
-    } else {
-        target.to_string()
-    }
-}
-
-fn normalize_from_value(
-    from: Option<serde_json::Value>,
-    normalized_target: &str,
-) -> Option<serde_json::Value> {
-    let value = from?;
-    if normalized_target.ends_with("[0]") {
-        if let Some(first) = value.as_array().and_then(|arr| arr.first()) {
-            return Some(first.clone());
-        }
-    }
-    Some(value)
-}
-
-#[cfg(test)]
-fn normalize_existing_variable_target(
-    target: &str,
-    variables: &serde_json::Value,
-) -> Option<String> {
-    let normalized = if target.trim().starts_with("variables.") {
-        target.trim().to_string()
-    } else {
-        format!("variables.{}", target.trim())
-    };
-    let relative = normalized.strip_prefix("variables.")?;
-
-    if get_path_value(variables, relative).is_some() {
-        if get_path_value(variables, relative)
-            .is_some_and(|value| value.as_array().map_or(false, |arr| arr.len() >= 2))
-        {
-            return Some(format!("{}[0]", normalized));
-        }
-        return Some(normalized);
-    }
-
-    if let Some(base) = relative.strip_suffix("[0]") {
-        if get_path_value(variables, base)
-            .is_some_and(|value| value.as_array().map_or(false, |arr| arr.len() >= 2))
-        {
-            return Some(normalized);
-        }
-    }
-
-    None
-}
-
-#[cfg(test)]
-fn get_path_value<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
-    let mut current = root;
-    for part in path.split('.') {
-        let (key, index) = parse_path_part(part);
-        current = current.get(key)?;
-        if let Some(index) = index {
-            current = current.get(index)?;
-        }
-    }
-    Some(current)
-}
-
-#[cfg(test)]
-fn parse_path_part(part: &str) -> (&str, Option<usize>) {
-    if let Some(open) = part.rfind('[') {
-        if part.ends_with(']') {
-            let key = &part[..open];
-            let index = part[open + 1..part.len() - 1].parse::<usize>().ok();
-            return (key, index);
-        }
-    }
-    (part, None)
-}
-
-fn is_yes_no_explanation(value: &serde_json::Value) -> bool {
-    value.as_str().is_some_and(|text| {
-        let trimmed = text.trim();
-        trimmed.starts_with("Yes (") || trimmed.starts_with("No (")
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn normalizes_array_variable_to_first_slot() {
-        let variables = serde_json::json!({
-            "<user>": { "精神状态数值": { "调教值": ["0 | 最初", "说明"] } }
-        });
-        assert_eq!(
-            normalize_existing_variable_target("variables.<user>.精神状态数值.调教值", &variables),
-            Some("variables.<user>.精神状态数值.调教值[0]".to_string())
-        );
-    }
-
-    #[test]
-    fn rejects_missing_paths_and_yes_no_values() {
-        let variables = serde_json::json!({ "<user>": { "内心想法": ["旧", "说明"] } });
-        assert!(
-            normalize_existing_variable_target("variables.<user>.不存在", &variables).is_none()
-        );
-        assert!(is_yes_no_explanation(&serde_json::json!("Yes (需要更新)")));
-    }
-
-    #[test]
-    fn normalizes_array_from_value_to_first_slot() {
-        assert_eq!(
-            normalize_from_value(
-                Some(serde_json::json!(["0 | 最初", "说明"])),
-                "variables.<user>.精神状态数值.调教值[0]",
-            ),
-            Some(serde_json::json!("0 | 最初"))
-        );
-    }
 
     #[test]
     fn dynamic_tool_schema_includes_variable_definitions() {
@@ -708,18 +572,24 @@ mod tests {
     }
 
     #[test]
-    fn update_folds_mv_array_var_onto_value_slot() {
-        // canonical state IS the MVU variable tree. A `set` on a [value, 说明]
-        // array must target the [0] value slot so the 说明 is preserved.
+    fn update_keeps_array_target_unslotted() {
+        // Field-level whole-value semantics (ST-style merge): a `set` on a
+        // [value, 说明] array variable keeps the bare path (no folding to `[0]`),
+        // and `to` is the caller's complete new array. The write-back merge
+        // replaces the array wholesale, preserving 说明 when the LLM echoes it.
         let state = serde_json::json!({ "时幼微": { "耐心值": [72, "对主人的忍耐"] } });
         let out = normalize_changes(
-            vec![tool_change(Some("set"), "时幼微.耐心值", serde_json::json!(90))],
+            vec![tool_change(
+                Some("set"),
+                "时幼微.耐心值",
+                serde_json::json!([90, "对主人的忍耐"]),
+            )],
             &state,
         );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].op, "update");
-        assert_eq!(out[0].target, "时幼微.耐心值[0]");
-        assert_eq!(out[0].to, serde_json::json!(90));
+        assert_eq!(out[0].target, "时幼微.耐心值");
+        assert_eq!(out[0].to, serde_json::json!([90, "对主人的忍耐"]));
     }
 
     #[test]

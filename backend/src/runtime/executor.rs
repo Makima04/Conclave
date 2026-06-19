@@ -7,7 +7,6 @@ use super::types::{
 };
 use crate::config::AppConfig;
 use crate::error::AppError;
-use crate::provider::adapter::ProviderAdapter;
 use crate::provider::openai::OpenAiProvider;
 use crate::provider::types::{ChatMessage, ChatRequest, StreamChunk};
 use crate::routes::sessions::SessionConfig;
@@ -1282,9 +1281,12 @@ pub async fn execute_turn_stream(
         "LLM call starting (streaming)"
     );
 
+    // Retry the SSE *connection* phase on transient network errors (connect/
+    // timeout/5xx/429) before any tokens are on the wire. Mid-stream failures are
+    // not retried here — they surface as stream_error and the frontend re-runs the turn.
     let provider_stream = target
         .provider
-        .chat_completion_stream(request)
+        .chat_completion_stream_with_connect_retry(request, 3)
         .await
         .map_err(|e| AppError::Provider(e.to_string()))?;
 

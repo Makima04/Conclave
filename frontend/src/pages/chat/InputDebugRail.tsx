@@ -118,7 +118,18 @@ export function InputDebugRail({
           {error && (
             <>
               <dt>错误</dt>
-              <dd className="chat-debug-error">{error}</dd>
+              <dd className="chat-debug-error">
+                {error}
+                {!streaming && (
+                  <button
+                    type="button"
+                    onClick={() => controllerRef.current?.retryLast()}
+                    title="用上一条输入重新发送（断线重连）"
+                  >
+                    重试本轮
+                  </button>
+                )}
+              </dd>
             </>
           )}
         </dl>

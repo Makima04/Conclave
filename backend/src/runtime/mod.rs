@@ -27,4 +27,5 @@ pub mod types;
 pub mod user_settings;
 pub mod variable_tool_agent;
 pub mod variable_update;
+pub mod variable_validation;
 pub mod worldbook_parser;

@@ -153,6 +153,56 @@ export function sendMessageStream(
   return controller;
 }
 
+/**
+ * Reattach to a turn that is still running on the backend — used after the chat
+ * page unmounts and remounts (navigating away and back, or a refresh) while a
+ * generation is in flight. The backend keeps an in-memory broadcast per active
+ * session (`active_turns`); this subscribes to it.
+ *
+ * If no turn is active the endpoint returns 404 / "no_active_turn" — handled
+ * silently via `onDone` *without* firing `onActive`, so callers stay idle instead
+ * of flashing a false "running" indicator. A live stream fires `onActive` first,
+ * then the normal `onMessage`/`onDone` lifecycle.
+ */
+export function reconnectStream(
+  sessionId: string,
+  handlers: {
+    onActive?: () => void;
+    onMessage: ChatSseHandler;
+    onError: (error: Error) => void;
+    onDone: () => void;
+  },
+): AbortController {
+  const controller = new AbortController();
+
+  (async () => {
+    try {
+      const res = await fetch(`${BASE_URL}/sessions/${sessionId}/reconnect`, {
+        method: 'GET',
+        headers: { Accept: 'text/event-stream', ...authHeaders() },
+        signal: controller.signal,
+      });
+
+      // Any non-OK status (notably 404 no_active_turn) means nothing is running —
+      // resolve without signalling an active turn.
+      if (!res.ok) {
+        handlers.onDone();
+        return;
+      }
+
+      handlers.onActive?.();
+      await consumeSseResponse(res, handlers.onMessage);
+      handlers.onDone();
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        handlers.onError(err);
+      }
+    }
+  })();
+
+  return controller;
+}
+
 // State
 export async function getSessionState(sessionId: string): Promise<any> {
   return request(`/sessions/${sessionId}/state`);
@@ -246,17 +296,6 @@ export async function getSessionDebugOverview(sessionId: string): Promise<{ mess
 
 export async function getSessionDebugTurn(sessionId: string, turn: number): Promise<{ items: AgentDebugSnapshot[] }> {
   return request(`/sessions/${sessionId}/debug/${turn}`);
-}
-
-// SSE reconnect for recovery: returns the fetch Response (200 = active stream, 404 = no active turn)
-export async function reconnectStream(
-  sessionId: string,
-  signal?: AbortSignal,
-): Promise<Response> {
-  return fetch(`${BASE_URL}/sessions/${sessionId}/reconnect`, {
-    headers: { 'Accept': 'text/event-stream', ...authHeaders() },
-    signal,
-  });
 }
 
 // Regenerate

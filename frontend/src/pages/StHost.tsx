@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import * as api from '../api/client';
+import type { ChatSseMessage } from '../api/sse';
 import type { CharacterCard, Message, Session, SessionRuntimeAssets, StHostRenderPayload, WorldBook } from '../api/types';
 import { ChatSurfaceIframe } from './st-runtime/ChatSurfaceIframe';
 import { createStRuntimeStore } from './st-runtime/store';
@@ -69,6 +70,10 @@ export default function StHost() {
   const navigate = useNavigate();
   const storeRef = useRef(createStRuntimeStore());
   const streamAbortRef = useRef<AbortController | null>(null);
+  // Tracks the sessionId we've already attempted to reconnect for, so a remount
+  // (navigate away and back) reattempts exactly once but a normal post-turn
+  // reload does not spuriously reattach.
+  const reconnectSessionRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [session, setSession] = useState<Session | null>(null);
@@ -236,6 +241,60 @@ export default function StHost() {
     };
   }, []);
 
+  // Shared SSE handlers for both a fresh send and a reconnect — same event shapes.
+  const handleStreamMessage = useCallback((message: ChatSseMessage) => {
+    if (message.event === 'message_delta') {
+      setStreamText(current => current + message.data.content);
+    } else if (message.event === 'turn_end') {
+      setStreamText(message.data.message_content);
+    } else if (message.event === 'stream_error') {
+      setError(message.data.error);
+    } else if (message.event === 'turn_ready') {
+      void loadAll(false);
+    }
+  }, [loadAll]);
+
+  const finishTurn = useCallback((options: { clearInput?: boolean } = {}) => {
+    if (options.clearInput) setInput('');
+    setStreaming(false);
+    setStreamText('');
+    // Reload chat variables after the turn: the variable tool agent writes
+    // canonical state (the MVU variable tree) into session_variables during
+    // the turn, and card UI / MVU read it via store.chatVariables. Without
+    // this reload, variable updates never reach the rendered UI.
+    void loadAll(false).then(() => {
+      void storeRef.current?.reloadChatVariables();
+    });
+  }, [loadAll]);
+
+  const startReconnect = useCallback(() => {
+    if (!sessionId) return;
+    setStreamText('');
+    setError(null);
+    streamAbortRef.current = api.reconnectStream(sessionId, {
+      onActive: () => setStreaming(true),
+      onMessage: handleStreamMessage,
+      onError: errorValue => {
+        setError(errorValue.message);
+        setStreaming(false);
+      },
+      onDone: () => finishTurn(),
+    });
+  }, [sessionId, handleStreamMessage, finishTurn]);
+
+  // On mount / return-from-another-page: if the session is mid-generation,
+  // reattach to its running stream so the UI keeps showing "running". Runs at
+  // most once per session per mount (a normal post-turn reload sees status=idle
+  // and is a no-op).
+  useEffect(() => {
+    if (!sessionId || !session) return;
+    if (reconnectSessionRef.current === sessionId) return;
+    reconnectSessionRef.current = sessionId;
+    if (session.status === 'processing' && !streaming) {
+      startReconnect();
+    }
+  }, [sessionId, session, streaming, startReconnect]);
+
   useEffect(() => {
     if (!runtimeReady || !characterCard) return;
     void refreshRuntimeStore(characterCard, runtimeAssets);
@@ -321,33 +380,12 @@ export default function StHost() {
       streamAbortRef.current = api.sendMessageStream(
         sessionId,
         content,
-        message => {
-          if (message.event === 'message_delta') {
-            setStreamText(current => current + message.data.content);
-          } else if (message.event === 'turn_end') {
-            setStreamText(message.data.message_content);
-          } else if (message.event === 'stream_error') {
-            setError(message.data.error);
-          } else if (message.event === 'turn_ready') {
-            void loadAll(false);
-          }
-        },
+        handleStreamMessage,
         errorValue => {
           setError(errorValue.message);
           setStreaming(false);
         },
-        () => {
-          setInput('');
-          setStreaming(false);
-          setStreamText('');
-          // Reload chat variables after the turn: the variable tool agent writes
-          // canonical state (the MVU variable tree) into session_variables during
-          // the turn, and card UI / MVU read it via store.chatVariables. Without
-          // this reload, variable updates never reach the rendered UI.
-          void loadAll(false).then(() => {
-            void storeRef.current?.reloadChatVariables();
-          });
-        },
+        () => finishTurn({ clearInput: true }),
         session?.config?.stream ?? true,
       );
     } catch (errorValue) {

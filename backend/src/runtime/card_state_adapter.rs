@@ -221,23 +221,39 @@ pub async fn persist_normalized_changes_tx(
         .and_then(|(json,)| serde_json::from_str(&json).ok())
         .unwrap_or_else(|| Value::Object(Map::new()));
 
-    // Apply changes
+    // Validate each change against the current variable tree (the writable
+    // state). LLM output is untrusted: drop changes that fail a deterministic
+    // rule (shape mismatch / out-of-range / yes-no / empty) rather than letting
+    // them corrupt the tree. Each drop is a no-op for the rest of the turn.
+    // `add`/`remove` structural ops skip value checks inside validate_change.
+    let validated: Vec<StateChangeCandidate> = changes
+        .iter()
+        .filter_map(|change| crate::runtime::variable_validation::validate_change(change, &variables))
+        .collect();
+    let changes = validated.as_slice();
+
+    // Apply changes via ST-style whole-object merge. `update`/`add` writes are
+    // first aggregated into a single `patch` object (each change set at its bare
+    // path with its complete value — no `[0]` value-slot folding), then merged
+    // in one pass. `remove` is structural and handled separately. Building one
+    // patch and merging once (rather than set_by_path per change) is what makes
+    // `[value, 说明]` arrays replace wholesale instead of double-wrapping; see
+    // `merge_variables`.
+    let mut patch = Value::Object(Map::new());
+    let mut removes: Vec<&str> = Vec::new();
     for change in changes {
         let relative = change
             .target
             .strip_prefix("variables.")
             .unwrap_or(&change.target);
         match change.op.as_str() {
-            "update" | "add" => {
-                set_by_path(&mut variables, relative, change.to.clone());
-            }
-            "remove" => {
-                remove_by_path(&mut variables, relative);
-            }
-            _ => {
-                set_by_path(&mut variables, relative, change.to.clone());
-            }
+            "remove" => removes.push(relative),
+            _ => set_by_path(&mut patch, relative, change.to.clone()),
         }
+    }
+    merge_variables(&mut variables, &patch);
+    for relative in removes {
+        remove_by_path(&mut variables, relative);
     }
 
     // Upsert
@@ -320,6 +336,44 @@ async fn mirror_variables_to_state_snapshot_tx(
 // Internal helpers — deep JSON navigation
 // ---------------------------------------------------------------------------
 
+/// Deep-merge `patch` into `variables` with SillyTavern / JS-Slash-Runner
+/// `mergeWith` semantics (see JSR `variables.ts::insertOrAssignVariables`):
+/// the customizer is `(lhs, rhs) => isArray(rhs) ? rhs : undefined` —
+/// arrays and scalars are replaced wholesale, objects recurse.
+///
+/// This is the single source of truth for applying variable updates. Unlike the
+/// old `set_by_path` + `resolve_array_value_slot` path-slot approach, it never
+/// produces a half-written `[value, 说明]` array (the `[[value, 说明], 说明]`
+/// double-wrap): an array field is either left untouched (not in patch) or
+/// replaced by the caller's complete new array. Mirrors how the frontend
+/// `store.ts::deepMerge` already behaves, so host and client agree.
+pub fn merge_variables(variables: &mut Value, patch: &Value) {
+    // Object + object → recurse key by key. A non-object patch (array or
+    // scalar) replaces the target wholesale. Matching on `patch` (not the
+    // mutable target) keeps the borrow flow single-threaded through the loop.
+    if let Value::Object(source) = patch {
+        // If the target is not an object, become one so we can merge keys in.
+        if !variables.is_object() {
+            *variables = Value::Object(Map::new());
+        }
+        let target = variables.as_object_mut().expect("object ensured");
+        for (key, value) in source {
+            match target.get_mut(key) {
+                Some(existing) => merge_variables(existing, value),
+                None => {
+                    target.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    } else {
+        // Array patch (the `[value, 说明]` whole-array replace) or scalar patch
+        // (number / string / bool overwrite) or type-changing write. Mirrors the
+        // JSR customizer `isArray(rhs) ? rhs : undefined`: a non-object rhs is
+        // never deep-merged, it replaces.
+        *variables = patch.clone();
+    }
+}
+
 fn ensure_object(cursor: &mut Value, key: &str) {
     match cursor {
         Value::Object(map) => {
@@ -380,12 +434,11 @@ fn set_by_path(root: &mut Value, path: &str, value: Value) {
 
     let (ref key, idx) = segments[last];
     if let Some(idx) = idx {
-        // `key[index]` on the parent (e.g. MVU `[value, "说明"]` — write only the
-        // value slot, preserve siblings). CRITICAL: ensure the ARRAY lives at
-        // cursor[key], not on cursor itself — ensure_array_index on cursor would
-        // replace the parent Object with a fresh array, collapsing the whole
-        // subtree (seen when `resolve_array_value_slot` folds `称号` → `称号[0]`:
-        // `<user>` got blown away into `[["咬伤主人的野猫", …]]`).
+        // `key[index]` write: set element `index` of the array at `cursor[key]`,
+        // growing it with nulls and preserving siblings. Used for genuine indexed
+        // writes (e.g. `add` into `characters[1]`). MVU `[value, 说明]` arrays are
+        // NOT written through here anymore — they arrive as whole-array `to`
+        // values and are replaced wholesale by `merge_variables`.
         ensure_object(cursor, key);
         let slot = cursor.get_mut(key).expect("key inserted by ensure_object");
         ensure_array_index(slot, idx);
@@ -460,6 +513,62 @@ mod tests {
         let pool = db::create_pool(&url).await.expect("create pool");
         db::run_migrations(&pool).await.expect("run migrations");
         pool
+    }
+
+    #[test]
+    fn merge_replaces_mvu_array_wholesale_no_double_wrap() {
+        // Regression for the [[value, 说明], 说明] double-wrap. The patch gives the
+        // complete new [value, 说明] array; merge replaces the whole field rather than
+        // slotting into [0].
+        let mut variables = serde_json::json!({
+            "<user>": { "爱意值": ["0 | 我只会恨你", "范围[0-100]"] }
+        });
+        let patch = serde_json::json!({
+            "<user>": { "爱意值": ["15 | 屈辱萌动", "范围[0-100]"] }
+        });
+        merge_variables(&mut variables, &patch);
+
+        let arr = variables["<user>"]["爱意值"].as_array().unwrap();
+        assert_eq!(arr.len(), 2, "must stay a flat [value, 说明], not double-wrapped");
+        assert_eq!(arr[0], serde_json::json!("15 | 屈辱萌动"));
+        assert_eq!(arr[1], serde_json::json!("范围[0-100]"));
+    }
+
+    #[test]
+    fn merge_recurses_into_objects() {
+        let mut variables = serde_json::json!({
+            "世界": { "当前日期": ["2025年/03月/24日", "说明"], "天气": "晴" }
+        });
+        let patch = serde_json::json!({ "世界": { "当前日期": ["2025年/03月/25日", "说明"] } });
+        merge_variables(&mut variables, &patch);
+
+        assert_eq!(
+            variables["世界"]["当前日期"][0],
+            serde_json::json!("2025年/03月/25日")
+        );
+        // Untouched sibling survives.
+        assert_eq!(variables["世界"]["天气"], serde_json::json!("晴"));
+    }
+
+    #[test]
+    fn merge_overwrites_scalar_and_inserts_new_key() {
+        let mut variables = serde_json::json!({ "hp": 10, "name": "旧名" });
+        let patch = serde_json::json!({ "hp": 42, "mood": "calm" });
+        merge_variables(&mut variables, &patch);
+
+        assert_eq!(variables["hp"], serde_json::json!(42));
+        assert_eq!(variables["name"], serde_json::json!("旧名"));
+        assert_eq!(variables["mood"], serde_json::json!("calm"));
+    }
+
+    #[test]
+    fn merge_replaces_scalar_with_array_when_type_changes() {
+        // ST semantics: a non-object patch replaces wholesale, even across types.
+        let mut variables = serde_json::json!({ "字段": "Yes" });
+        let patch = serde_json::json!({ "字段": ["新值", "说明"] });
+        merge_variables(&mut variables, &patch);
+        assert_eq!(variables["字段"][0], serde_json::json!("新值"));
+        assert_eq!(variables["字段"][1], serde_json::json!("说明"));
     }
 
     #[tokio::test]
@@ -550,9 +659,14 @@ mod tests {
         .await
         .expect("load latest snapshot");
         let latest_state: Value = serde_json::from_str(&latest_state).expect("parse state");
+        // ST-style merge semantics: an empty-object patch `to: {}` is a no-op
+        // (it merges nothing into the existing object). To clear a subtree you
+        // must use op "remove". The old per-path-replace behavior that this
+        // test asserted is exactly what produced the [[v, d], d] double-wrap, so
+        // it is intentionally gone. Assert the surviving subtree instead.
         assert_eq!(
-            latest_state["variables"]["人际交往"]["当前接触人物"],
-            serde_json::json!({})
+            latest_state["variables"]["人际交往"]["当前接触人物"]["沈慕微"]["心情"],
+            serde_json::json!("心虚")
         );
 
         let variables: String =
@@ -565,6 +679,89 @@ mod tests {
         assert_eq!(
             latest_state["variables"]["人际交往"]["当前接触人物"],
             variables["人际交往"]["当前接触人物"]
+        );
+    }
+
+    // Regression for the production bug: an MVU `[value, 说明]` array updated by
+    // the State Agent must not become `[[value, 说明], 说明]`. The persist path
+    // builds a patch from the change's whole-array `to` value and merges it, so
+    // the array is replaced wholesale.
+    #[tokio::test]
+    async fn persist_replaces_mvu_array_wholesale_no_double_wrap() {
+        let pool = setup_test_pool().await;
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        sqlx::query(
+            "INSERT INTO sessions (id, title, mode, config, world_pack_id, current_turn, title_source, status, created_at, updated_at)
+             VALUES (?, '', 'single_agent', '{}', NULL, 0, 'auto', 'idle', ?, ?)",
+        )
+        .bind(&session_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("insert session");
+
+        sqlx::query(
+            "INSERT INTO session_variables (id, session_id, variables, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&session_id)
+        .bind(
+            serde_json::json!({
+                "<user>": {
+                    "精神状态数值": { "爱意值": ["0 | 我只会恨你", "范围[0-100]"] },
+                    "当前位置": ["空庭，主卧的床上", "<user>当前所在的地点。"]
+                }
+            })
+            .to_string(),
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("insert variables");
+
+        let mut tx = pool.begin().await.expect("begin tx");
+        persist_normalized_changes_tx(
+            &mut tx,
+            &session_id,
+            &[
+                // State Agent submits the COMPLETE new [value, 说明] array.
+                StateChangeCandidate {
+                    op: "update".to_string(),
+                    target: "<user>.精神状态数值.爱意值".to_string(),
+                    from: None,
+                    to: serde_json::json!(["12 | 微弱的好感", "范围[0-100]"]),
+                    evidence_turns: vec![],
+                },
+                // Untouched field (当前位置) must survive untouched.
+            ],
+            "test",
+        )
+        .await
+        .expect("persist changes");
+        tx.commit().await.expect("commit tx");
+
+        let variables: String =
+            sqlx::query_scalar("SELECT variables FROM session_variables WHERE session_id = ?")
+                .bind(&session_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load variables");
+        let variables: Value = serde_json::from_str(&variables).expect("parse variables");
+
+        let affection = &variables["<user>"]["精神状态数值"]["爱意值"];
+        let arr = affection.as_array().expect("爱意值 must stay an array");
+        assert_eq!(arr.len(), 2, "flat [value, 说明], not double-wrapped: {affection}");
+        assert_eq!(arr[0], serde_json::json!("12 | 微弱的好感"));
+        assert_eq!(arr[1], serde_json::json!("范围[0-100]"));
+        // Untouched sibling survived.
+        assert_eq!(
+            variables["<user>"]["当前位置"][0],
+            serde_json::json!("空庭，主卧的床上")
         );
     }
 }

@@ -8,6 +8,7 @@ import {
   useState,
 } from 'react';
 import * as api from '../../api/client';
+import type { ChatSseMessage } from '../../api/sse';
 import type { CharacterCard, Message, SessionRuntimeAssets, StHostRenderPayload } from '../../api/types';
 import { ChatSurfaceIframe } from '../../pages/st-runtime/ChatSurfaceIframe';
 import { normalizeTavernHelperScripts } from '../../pages/st-runtime/tavern-helper-scripts';
@@ -31,6 +32,8 @@ export interface ChatPaneController {
   changeOpening: (delta: number) => string;
   /** Re-fetch messages/render payload from the backend. */
   reload: () => Promise<void>;
+  /** Re-send the last user input after a failed turn ("重试本轮"). */
+  retryLast: () => void;
 }
 
 export interface ChatPaneProps {
@@ -81,6 +84,9 @@ export const ChatPane = forwardRef<ChatPaneController, ChatPaneProps>(function C
   const [error, setError] = useState<string | null>(null);
   const [turnNumber, setTurnNumber] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // Last sent input — preserved even after the input box is cleared on send, so a
+  // failed turn can be retried with the same text ("重试本轮").
+  const lastInputRef = useRef<string>('');
 
   useEffect(() => {
     onStateChange?.({ streaming, streamText, error, turnNumber });
@@ -177,28 +183,34 @@ export const ChatPane = forwardRef<ChatPaneController, ChatPaneProps>(function C
     // We re-render from props, so only a parent reload updates messages.
   }, [onMessagesUpdated]);
 
+  const handleStreamMessage = useCallback(
+    (message: ChatSseMessage) => {
+      if (message.event === 'message_delta') {
+        setStreamText(current => current + message.data.content);
+      } else if (message.event === 'turn_end') {
+        setStreamText(message.data.message_content);
+        setTurnNumber(message.data.turn_number ?? null);
+      } else if (message.event === 'stream_error') {
+        setError(message.data.error);
+      } else if (message.event === 'turn_ready') {
+        void reload();
+      }
+    },
+    [reload],
+  );
+
   const sendMessage = useCallback(
     (content: string) => {
       const trimmed = content.trim();
       if (!sessionId || streaming || !trimmed) return null;
+      lastInputRef.current = trimmed;
       setStreaming(true);
       setStreamText('');
       setError(null);
       abortRef.current = api.sendMessageStream(
         sessionId,
         trimmed,
-        message => {
-          if (message.event === 'message_delta') {
-            setStreamText(current => current + message.data.content);
-          } else if (message.event === 'turn_end') {
-            setStreamText(message.data.message_content);
-            setTurnNumber(message.data.turn_number ?? null);
-          } else if (message.event === 'stream_error') {
-            setError(message.data.error);
-          } else if (message.event === 'turn_ready') {
-            void reload();
-          }
-        },
+        handleStreamMessage,
         errorValue => {
           setError(errorValue.message);
           setStreaming(false);
@@ -209,7 +221,7 @@ export const ChatPane = forwardRef<ChatPaneController, ChatPaneProps>(function C
       );
       return abortRef.current;
     },
-    [sessionId, streaming, reload],
+    [sessionId, streaming, handleStreamMessage],
   );
 
   const applyOpening = useCallback(
@@ -237,10 +249,20 @@ export const ChatPane = forwardRef<ChatPaneController, ChatPaneProps>(function C
     setStreaming(false);
   }, []);
 
+  // Re-send the last user input — wired to the frontend "重试本轮" button. On
+  // failure the DB is already clean (no committed message, current_turn not
+  // advanced, status reset to failed_generation which re-allows processing), so
+  // this just re-runs the turn with the same input.
+  const retryLast = useCallback(() => {
+    const last = lastInputRef.current;
+    if (!last || streaming) return;
+    sendMessage(last);
+  }, [sendMessage, streaming]);
+
   useImperativeHandle(
     ref,
-    () => ({ sendMessage, stop, applyOpening, changeOpening, reload }),
-    [sendMessage, stop, applyOpening, changeOpening, reload],
+    () => ({ sendMessage, stop, applyOpening, changeOpening, reload, retryLast }),
+    [sendMessage, stop, applyOpening, changeOpening, reload, retryLast],
   );
 
   useEffect(() => {
@@ -248,6 +270,43 @@ export const ChatPane = forwardRef<ChatPaneController, ChatPaneProps>(function C
       abortRef.current?.abort();
     };
   }, []);
+
+  // Reattach to a turn still running on the backend when this pane (re)mounts —
+  // e.g. after navigating to another page and back while a generation was in
+  // flight. Runs at most once per session per mount: fetches the session; if it
+  // is mid-generation (status === 'processing'), subscribes to the live stream
+  // so the "running" indicator stays on. A session that is idle is a no-op.
+  const reconnectSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!sessionId || reconnectSessionRef.current === sessionId) return;
+    reconnectSessionRef.current = sessionId;
+    let cancelled = false;
+    void api
+      .getSession(sessionId)
+      .then(session => {
+        if (cancelled || streaming) return;
+        if (session.status !== 'processing') return;
+        setStreamText('');
+        setError(null);
+        abortRef.current = api.reconnectStream(sessionId, {
+          onActive: () => setStreaming(true),
+          onMessage: handleStreamMessage,
+          onError: errorValue => {
+            setError(errorValue.message);
+            setStreaming(false);
+          },
+          onDone: () => {
+            setStreaming(false);
+          },
+        });
+      })
+      .catch(() => {
+        // A failed status fetch is non-fatal — just don't reconnect.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, streaming, handleStreamMessage]);
 
   return (
     <div className="st-host-chat-surface">

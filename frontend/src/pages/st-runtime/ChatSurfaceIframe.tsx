@@ -164,6 +164,11 @@ const INLINE_BRIDGE = `<script>
         if (turns >= keepTurns) { cut = i; break; }
       }
     }
+    // If the conversation has fewer than keepTurns turns the loop never breaks,
+    // so cut stays at msgs.length. Bail out and keep everything visible — this
+    // is the "default = no collapse" path the comment above describes. Without it
+    // the whole chat gets folded away behind the toggle early in a conversation.
+    if (cut >= msgs.length) return;
     // Never collapse the very first message — always keep the opening visible.
     if (cut <= 1) return;
     var oldMsgs = msgs.slice(0, cut);
